@@ -2,10 +2,11 @@
  * post.js — the full post-processing chain.
  *
  * Chain (extends ARCHITECTURE.md §3.1.4 / graphics-aaa.md §4 with a grade):
- *   SceneAAPass (MSAA render + resolve) → AerialPass (+ specular-AA firefly
- *   clamp) → GTAOPass → LateFxPass (copied depth) → UnrealBloomPass →
- *   OutputGradePass (ACES + sRGB + grade) → SMAAPass → FSR1
- *   (EASU + RCAS)
+ *   SceneAAPass (multisampled scene render + resolve copy — or a direct
+ *   raster into the composer buffer when MSAA is off, see WA8 below) →
+ *   AerialPass (+ specular-AA firefly clamp) → GTAOPass → LateFxPass
+ *   (copied depth) → UnrealBloomPass → OutputGradePass (ACES + sRGB +
+ *   grade) → SMAAPass → FSR1 (EASU + RCAS)
  *
  * The scene renders into a quality-aware multisampled HalfFloat HDR target
  * with a DepthTexture, then resolves once into the composer's single-sampled
@@ -1258,6 +1259,50 @@ function capLuminance(c, maxLum) {
   if (lum > maxLum) c.multiplyScalar(maxLum / lum);
 }
 
+// --- WA8 scene resolve-copy elimination -------------------------------------
+// The resolve copy exists to hand a MULTISAMPLED scene render to the
+// single-sampled post buffers. With msaaSamples === 0 (the high/medium/low/
+// mobile defaults) both targets are single-sampled with identical formats,
+// color spaces and clear state, and CopyShader multiplies by opacity 1 under
+// NoBlending — exact in IEEE-754 — so the blit is a bit-exact no-op and the
+// scene can rasterize into the composer's read buffer directly. Pure policy
+// (Node-tested): MSAA > 0 always keeps the stock path.
+/**
+ * @param {number} msaaSamples - active scene-only MSAA sample count
+ * @param {boolean} forcedStockPath - QA bisect override (window.__SCENE_RESOLVE_COPY)
+ * @returns {boolean} true when the resolve copy is provably redundant
+ */
+export function sceneResolveCopyEliminated(msaaSamples, forcedStockPath) {
+  return msaaSamples === 0 && !forcedStockPath;
+}
+
+/**
+ * Give the composer ping-pong buffers their own DepthTextures (direct mode)
+ * or return them to depthless post buffers (stock mode). Each buffer gets its
+ * OWN depth texture: a shared attachment would make every fullscreen draw
+ * into the sibling buffer sample a texture attached to the draw framebuffer —
+ * a WebGL feedback loop. `depthBuffer` must follow the texture:
+ * WebGLTextures.setupRenderTarget only wires depth attachments when it is
+ * true (three r185). dispose() drops the GL objects; three reallocates lazily
+ * on the next bind, exactly like SceneAAPass.setSamples.
+ * @param {THREE.WebGLRenderTarget[]} targets @param {boolean} enable
+ * @returns {void}
+ */
+export function setComposerDepthAttachments(targets, enable) {
+  for (const rt of targets) {
+    if (enable) {
+      if (rt.depthTexture) continue;
+      rt.depthTexture = new THREE.DepthTexture(rt.width, rt.height);
+      rt.depthBuffer = true;
+    } else {
+      if (!rt.depthTexture) continue;
+      rt.depthTexture = null;
+      rt.depthBuffer = false;
+    }
+    rt.dispose();
+  }
+}
+
 /**
  * @typedef {object} Post
  * @property {EffectComposer} composer
@@ -1276,11 +1321,28 @@ function capLuminance(c, maxLum) {
  * copy the resolved color into the composer's current read buffer. Keeping the
  * composer buffers single-sampled is important: otherwise every aerial/AO/
  * bloom/grade/SMAA fullscreen draw would pay MSAA bandwidth for no visual gain.
+ *
+ * WA8: when `directResolve` is set (only ever true for msaaSamples === 0 —
+ * see sceneResolveCopyEliminated) there is no multisample resolve to perform,
+ * so the pass skips its own target and the copy entirely: the scene
+ * rasterizes straight into the composer's read buffer (same HalfFloat format,
+ * color space and clear state as the stock path — bit-identical output), and
+ * `onSceneRendered` hands the frame's actual depth texture to createPost so
+ * the downstream depth consumers can be repointed before they run. The stock
+ * path reports sceneTarget.depthTexture through the same hook, keeping one
+ * code path for mode switches.
+ *
+ * Exported for the Node self-test (no GL required to exercise the routing).
  */
-class SceneAAPass extends RenderPass {
+export class SceneAAPass extends RenderPass {
   constructor(scene, camera, target) {
     super(scene, camera);
     this.sceneTarget = target;
+    // WA8 guard: flipped only by createPost' updateSceneResolveMode from
+    // sceneResolveCopyEliminated(msaaSamples, ...). Never set directly.
+    this.directResolve = false;
+    /** @type {?((depthTexture: THREE.DepthTexture) => void)} */
+    this.onSceneRendered = null;
     this.copyMaterial = new THREE.ShaderMaterial({
       name: 'SceneAAPass.Copy',
       uniforms: THREE.UniformsUtils.clone(CopyShader.uniforms),
@@ -1315,15 +1377,24 @@ class SceneAAPass extends RenderPass {
       // Layer 30 is transparent combat media and must wait until the opaque
       // scene depth is resolved. It is deliberately absent from this pass.
       this.camera.layers.disable(LATE_FX_LAYER);
-      renderer.setRenderTarget(this.sceneTarget);
+      // WA8: direct mode rasterizes into the composer's own read buffer —
+      // the copy below would only re-write identical values.
+      renderer.setRenderTarget(this.directResolve ? readBuffer : this.sceneTarget);
       renderer.clear(renderer.autoClearColor, renderer.autoClearDepth, renderer.autoClearStencil);
       renderer.render(this.scene, this.camera);
 
-      // One cheap full-screen draw hands the resolved scene to the composer's
-      // single-sampled ping-pong chain.
-      this.copyMaterial.uniforms.tDiffuse.value = this.sceneTarget.texture;
-      renderer.setRenderTarget(this.renderToScreen ? null : readBuffer);
-      this.copyQuad.render(renderer);
+      if (this.directResolve) {
+        // The scene IS the resolved frame; publish its depth for the
+        // downstream consumers (aerial/GTAO/late FX) before any of them runs.
+        this.onSceneRendered(readBuffer.depthTexture);
+      } else {
+        // One cheap full-screen draw hands the resolved scene to the
+        // composer's single-sampled ping-pong chain.
+        this.copyMaterial.uniforms.tDiffuse.value = this.sceneTarget.texture;
+        renderer.setRenderTarget(this.renderToScreen ? null : readBuffer);
+        this.copyQuad.render(renderer);
+        this.onSceneRendered(this.sceneTarget.depthTexture);
+      }
     } finally {
       this.camera.layers.mask = oldLayerMask;
       renderer.autoClear = oldAutoClear;
@@ -1338,8 +1409,10 @@ class SceneAAPass extends RenderPass {
  * haze the puff a second time, visually stamping the ridge across a foreground
  * smoke column. This pass avoids that category error and gives the shaders a
  * resolved scene-depth source for soft intersections.
+ *
+ * Exported for the Node self-test (no GL required to exercise the routing).
  */
-class LateFxPass extends Pass {
+export class LateFxPass extends Pass {
   constructor(scene, camera, sceneTarget, target, softState) {
     super();
     this.scene = scene;
@@ -1350,6 +1423,14 @@ class LateFxPass extends Pass {
     this.needsSwap = false;
     this.softDepthCopies = 0;
     this.prepared = false;
+    // WA8: the frame's ACTIVE scene depth (createPost repoints it every frame
+    // — composer-buffer depth in direct-resolve mode, sceneTarget's own in
+    // stock mode). Defaults to the stock source so pre-first-frame state is
+    // always valid.
+    this.sceneDepthTexture = sceneTarget.depthTexture;
+    // WA8: direct mode never binds sceneTarget; warming it up here would
+    // allocate its full HDR color+depth for nothing.
+    this.skipSceneTargetWarmup = false;
     this.copyMaterial = new THREE.ShaderMaterial({
       name: 'LateFxPass.Copy',
       uniforms: THREE.UniformsUtils.clone(CopyShader.uniforms),
@@ -1369,10 +1450,10 @@ class LateFxPass extends Pass {
   }
   prepare(renderer) {
     if (this.prepared) return;
-    renderer.initRenderTarget(this.sceneTarget);
+    if (!this.skipSceneTargetWarmup) renderer.initRenderTarget(this.sceneTarget);
     renderer.initRenderTarget(this.target);
     if (this.softState) {
-      this.softState.uSceneDepth.value = this.sceneTarget.depthTexture;
+      this.softState.uSceneDepth.value = this.sceneDepthTexture;
       this.softState.uSoftViewport.value.set(this.target.width, this.target.height);
       this.softState.uCameraNear.value = this.camera.near;
       this.softState.uCameraFar.value = this.camera.far;
@@ -1389,16 +1470,18 @@ class LateFxPass extends Pass {
     renderer.autoClear = false;
     try {
       // Copy the already-hazed/AO-grounded opaque world, then attach a copy of
-      // its resolved depth. The shader samples sceneTarget.depthTexture while
-      // hardware depth testing uses target.depthTexture: source and attached
-      // destination are distinct, so there is no framebuffer feedback loop.
+      // its resolved depth. The shader samples the active scene depth texture
+      // while hardware depth testing uses target.depthTexture: source and
+      // attached destination are distinct, so there is no framebuffer
+      // feedback loop. (WA8: the source is whichever depth the scene pass
+      // published this frame — see sceneDepthTexture above.)
       renderer.setRenderTarget(this.target);
       renderer.clear(true, true, true);
       this.copyMaterial.uniforms.tDiffuse.value = readBuffer.texture;
       this.copyQuad.render(renderer);
-      renderer.copyTextureToTexture(this.sceneTarget.depthTexture, this.target.depthTexture);
+      renderer.copyTextureToTexture(this.sceneDepthTexture, this.target.depthTexture);
       this.softDepthCopies++;
-      this.softState.uSceneDepth.value = this.sceneTarget.depthTexture;
+      this.softState.uSceneDepth.value = this.sceneDepthTexture;
       this.softState.uCameraNear.value = this.camera.near;
       this.softState.uCameraFar.value = this.camera.far;
 
@@ -1476,21 +1559,32 @@ export function createPost(renderer, scene, camera) {
   const composer = new EffectComposer(renderer, target);
   const sceneDepth = sceneTarget.depthTexture;
   const softState = scene.getObjectByName('fx')?.userData?.softParticles || null;
+  // WA8: every consumer of the frame's scene depth registers a repointer
+  // here. SceneAAPass fires them once per frame — after the scene draw,
+  // before any consumer runs — with the depth texture that actually holds
+  // this frame's raster (composer-buffer depth in direct-resolve mode,
+  // sceneTarget's own in stock mode). Assigning the same reference in stock
+  // mode is free and keeps preset/bisect mode switches instantly consistent.
+  const sceneDepthRepointers = [];
   const sceneAA = new SceneAAPass(scene, camera, sceneTarget);
   const lateFx = new LateFxPass(scene, camera, sceneTarget, lateTarget, softState);
+  sceneDepthRepointers.push((d) => { lateFx.sceneDepthTexture = d; });
+  if (softState) sceneDepthRepointers.push((d) => { softState.uSceneDepth.value = d; });
   const publishAAState = () => {
     renderer.domElement.dataset.sceneMsaaSamples = String(msaaSamples);
     renderer.domElement.dataset.postAa = 'smaa-high+fsr1';
   };
   publishAAState();
-  composer.addPass(sceneAA); // 1. multisampled scene + single resolve/copy
+  composer.addPass(sceneAA); // 1. scene raster (+ resolve copy when MSAA > 0)
 
   // 2. depth-driven aerial perspective — one distance curve for every
   // material (see AerialShader above). Runs in linear HDR space, pre-bloom.
-  // The sampled depth belongs to SceneAAPass' independent target, so neither
-  // composer ping-pong buffer can form a framebuffer feedback loop.
+  // The sampled depth is never attached to the buffer this pass draws into
+  // (stock: SceneAAPass' independent target; wa8 direct: the sibling
+  // ping-pong buffer), so no draw can form a framebuffer feedback loop.
   const aerial = new ShaderPass(AerialShader);
   aerial.uniforms.tDepth.value = sceneDepth;
+  sceneDepthRepointers.push((d) => { aerial.uniforms.tDepth.value = d; });
   composer.addPass(aerial);
 
   const gtao = new GTAOPass(scene, camera, size.x, size.y); // 3. AO multiply
@@ -1513,6 +1607,13 @@ export function createPost(renderer, scene, camera) {
   // existed), so canopies get proper grounding instead of being AO-invisible.
   // The scene depth is complete and resolved before this pass runs.
   gtao.setGBuffer(sceneDepth);
+  // WA8: with an external GBuffer the pass reads depth ONLY through these two
+  // material uniforms (r185 GTAOPass.render touches no other depth state when
+  // _renderGBuffer is false), so repointing them per frame is complete.
+  sceneDepthRepointers.push((d) => {
+    gtao.gtaoMaterial.uniforms.tDepth.value = d;
+    gtao.pdMaterial.uniforms.tDepth.value = d;
+  });
   // Temporal reprojection below turns half-resolution AO into a converged
   // signal across frames. High/Medium therefore need eight fresh taps, not
   // sixteen nearly redundant taps every 8.33 ms; Ultra keeps the full 16-tap
@@ -1663,6 +1764,7 @@ export function createPost(renderer, scene, camera) {
       depthWrite: false,
       blending: THREE.NoBlending,
     });
+    sceneDepthRepointers.push((d) => { emaMat.uniforms.tDepth.value = d; });
     let emaPrev = gtao.pdRenderTarget.clone();
     let emaCur = gtao.pdRenderTarget.clone();
     // PERF (full-frame copy): stock OUTPUT.Default spends two fullscreen
@@ -1872,6 +1974,39 @@ export function createPost(renderer, scene, camera) {
     origSmaaRender(renderer2, smaaTarget, gradeTarget, deltaTime, maskActive);
   };
   upscaler.externalSource = smaaTarget;
+
+  // --- WA8 scene resolve-copy elimination ------------------------------------
+  // With msaaSamples === 0 (high/medium/low/mobile defaults) SceneAAPass'
+  // fullscreen CopyShader blit is a bit-exact no-op (see the WA8 block above
+  // the pass class), so direct mode removes its full-frame read+write
+  // (~75 MB/frame at the retina High raster) and one fullscreen draw: the
+  // scene rasterizes straight into the composer's read buffer. Buffer parity:
+  // BOTH ping-pong buffers carry their own DepthTexture so aerial/GTAO/late
+  // FX keep a complete depth source whichever way the ping-pong phase lands;
+  // no pass ever samples a texture attached to its own draw framebuffer (the
+  // only post-scene draw into the scene buffer is bloom's additive blend,
+  // which samples only bloom-internal textures). Depth consumers are
+  // repointed inside SceneAAPass.render, before any of them runs.
+  // MSAA > 0 (ultra 4x / mobile-high 2x) keeps the stock multisample target +
+  // resolve-copy path untouched. QA bisect: window.__SCENE_RESOLVE_COPY =
+  // true forces the stock copy path (same pattern as window.__AO_EMA_OFF);
+  // dataset.sceneResolveCopy publishes the active mode for probes.
+  let directResolve = false;
+  const updateSceneResolveMode = () => {
+    const forcedStock = typeof window !== 'undefined'
+      && window.__SCENE_RESOLVE_COPY === true;
+    const want = sceneResolveCopyEliminated(msaaSamples, forcedStock);
+    if (want === directResolve) return;
+    directResolve = want;
+    sceneAA.directResolve = want;
+    lateFx.skipSceneTargetWarmup = want;
+    setComposerDepthAttachments([composer.renderTarget1, composer.renderTarget2], want);
+    renderer.domElement.dataset.sceneResolveCopy = want ? 'eliminated' : 'copy';
+  };
+  sceneAA.onSceneRendered = (depthTex) => {
+    for (let i = 0; i < sceneDepthRepointers.length; i++) sceneDepthRepointers[i](depthTex);
+  };
+  updateSceneResolveMode();
 
   // --- Quality-aware sizing --------------------------------------------------
   // The composer's pixel ratio is the renderer's, CAPPED by the preset
@@ -2232,6 +2367,9 @@ export function createPost(renderer, scene, camera) {
     msaaSamples = samplesForPreset(preset);
     sceneAA.setSamples(msaaSamples);
     publishAAState();
+    // wa8: a preset crossing the MSAA 0 <-> N boundary flips the scene pass
+    // between direct raster and the stock resolve copy.
+    updateSceneResolveMode();
     // perf-governor r1: a preset switch is a new baseline — release every
     // session trim (the new tier's own levers take over) and recompute AO.
     perfTrim = 0;
@@ -2253,6 +2391,10 @@ export function createPost(renderer, scene, camera) {
      * @returns {void}
      */
     render(dt) {
+      // wa8: evaluate the resolve-copy guard before the chain runs so preset
+      // switches and the __SCENE_RESOLVE_COPY bisect hook land between
+      // frames, never mid-chain.
+      updateSceneResolveMode();
       // dynamic resolution governor (see the DYN_* block above): may step the
       // composer's internal pixel ratio and resize the chain — run it FIRST
       // so a resize never lands between the passes below and their uniforms.
