@@ -169,6 +169,15 @@ export const PRESETS = {
     bloomScale: 1.0,
     shadowMapSizes: [4096, 4096, 4096, 2048],
     shadowMaxFar: 700,
+    // campaign-2026-08-21 wave-2 levers (consumed by vegetation.js,
+    // lighting.js/shadowRefresh.js, terrain.js stream scheduler). Desktop
+    // values equal the shipped constants, so these rows are reference data
+    // until a tier is retuned.
+    grassMidFadeEnd: 180,
+    grassTaperEnd: 155,
+    shadowCasterMinTexels: 0.75,
+    shadowFarInstanceBudget: 4096,
+    terrainStreamBudgetMs: 2.0,
   },
   // High now starts at the full 1.5 ratio on Retina panels. Fine geometry
   // reaches SMAA before the smaller native-canvas upscale instead of being
@@ -196,6 +205,13 @@ export const PRESETS = {
     // shadow raster, while lighting.js preserves physical penumbra width.
     shadowMapSizes: [4096, 2048, 2048, 1024],
     shadowMaxFar: 700,
+    // campaign-2026-08-21 wave-2 levers — High keeps the shipped constants
+    // (the screenshot contract and perf budget are calibrated on them).
+    grassMidFadeEnd: 180,
+    grassTaperEnd: 155,
+    shadowCasterMinTexels: 0.75,
+    shadowFarInstanceBudget: 4096,
+    terrainStreamBudgetMs: 1.25,
   },
   medium: {
     label: 'Medium',
@@ -209,6 +225,11 @@ export const PRESETS = {
     bloomScale: 0.5,
     shadowMapSizes: [2048, 2048, 1024, 1024],
     shadowMaxFar: 520,
+    grassMidFadeEnd: 180,
+    grassTaperEnd: 155,
+    shadowCasterMinTexels: 0.9,
+    shadowFarInstanceBudget: 3072,
+    terrainStreamBudgetMs: 1.0,
   },
   low: {
     label: 'Low',
@@ -219,6 +240,11 @@ export const PRESETS = {
     bloomScale: 0.5,
     shadowMapSizes: [2048, 2048, 1024, 1024],
     shadowMaxFar: 380,
+    grassMidFadeEnd: 180,
+    grassTaperEnd: 155,
+    shadowCasterMinTexels: 1.0,
+    shadowFarInstanceBudget: 2048,
+    terrainStreamBudgetMs: 0.75,
   },
   // Mobile quick-switch levels keep the constrained texture budget fixed —
   // live switching cannot (and should not) rebuild the world's texture
@@ -237,6 +263,11 @@ export const PRESETS = {
     textureScale: 0.5,
     textureCap: 2048,
     dynMin: 0.55,
+    grassMidFadeEnd: 132,
+    grassTaperEnd: 112,
+    shadowCasterMinTexels: 1.25,
+    shadowFarInstanceBudget: 1024,
+    terrainStreamBudgetMs: 0.5,
   },
   // MOBILE r1: the DEVICE tier for phones/tablets — never offered by the
   // settings picker (PRESET_ORDER below is unchanged) and never resolved on a
@@ -267,6 +298,11 @@ export const PRESETS = {
     textureScale: 0.5,
     textureCap: 2048,
     dynMin: 0.6,
+    grassMidFadeEnd: 132,
+    grassTaperEnd: 112,
+    shadowCasterMinTexels: 1.25,
+    shadowFarInstanceBudget: 1536,
+    terrainStreamBudgetMs: 0.75,
   },
   'mobile-high': {
     label: 'Quality',
@@ -280,6 +316,11 @@ export const PRESETS = {
     textureScale: 0.5,
     textureCap: 2048,
     dynMin: 0.65,
+    grassMidFadeEnd: 132,
+    grassTaperEnd: 112,
+    shadowCasterMinTexels: 1.0,
+    shadowFarInstanceBudget: 2048,
+    terrainStreamBudgetMs: 1.0,
   },
 };
 
