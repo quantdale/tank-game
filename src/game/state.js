@@ -1355,7 +1355,13 @@ function announceDestroyed(game, bus, ent, killerId, cause) {
   ent._destroyedAnnounced = true;
   // turret toss is RESERVED for ammo-rack detonations (WoT spectacle);
   // plain HP kills / burn-outs keep the turret seated (gun droop + smoke)
-  ent.visual.setDestroyed({ pop: cause === 'ammorack' });
+  // Deferred-visual hardening (matchLifecycle r1): a roster entry whose
+  // visual is still streaming in can resolve a lethal hit in probe/fast-path
+  // entries — mirror debugSlayEnemies' guard so the authoritative kill
+  // pipeline (bus event + verdict) never depends on presentation existing.
+  if (ent.visual && ent.visual.setDestroyed) {
+    ent.visual.setDestroyed({ pop: cause === 'ammorack' });
+  }
   bus.emit('tank:destroyed', {
     id: ent.id,
     specId: ent.specId,

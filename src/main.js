@@ -1323,7 +1323,14 @@ async function ensureWorld(mapId, onProgress = null, opts = null) {
   // links in a single slice (3 s under heavy host load). Render the world in
   // SUBSETS instead (terrain -> +vegetation -> +props): each slice submits
   // and resolves roughly a third, with linker breathing between.
-  if (opts?.precompile !== false) {
+  // SA-11 (Campaign 3): this warm now runs on EVERY path, including the fast
+  // battle entry (precompile:false). Measured at ff4708af on the Windows cert
+  // host, skipping it moved the whole link storm into activateWorld's minimap
+  // capture — __WORLD_LOAD.activate read 15.1-25.7 s as the FIRST world render
+  // bound every color+depth+instanced variant in one task behind the loading
+  // screen. The cohort loop costs ~2-4 s when cold and ~0.3 s when everything
+  // is already linked (breathing exits immediately with no pending programs).
+  {
     const kids = next.group.children.slice();
     const cohorts = Math.min(3, Math.max(1, kids.length));
     for (let sub = 0; sub < cohorts; sub++) {
@@ -2051,6 +2058,7 @@ const debugFlags = { forceFire: false }; // headless-test hook (window.__DEBUG.f
 let wheelStep = 0;
 const _mouse = { x: 0, y: 0 };
 const _touchMove = { x: 0, y: 0 };
+const _padDrive = { throttle: 0, steer: 0 }; // analog left-stick drive (consumePadDrive)
 
 const input = createInput({ lockElement: renderer.domElement });
 const settings = createSettings({
@@ -2418,6 +2426,10 @@ async function startBattleLoading(specId, mapId = null) {
     prebakeMs: 0,
   };
   recordVisualTiming(playerVisualTiming);
+  // SA-11 split: 'roster' used to fuse startBattle/setup + the player reveal,
+  // so a slow atom inside either read as the other (ff4708af: reveal 22-31 s
+  // vs setup ~1 s on the cert host). Two marks keep __BATTLE_LOAD honest.
+  bltStage('setup');
   const playerUploadStartedAt = performance.now();
   // setupBattle must construct the player synchronously so simulation and HUD
   // state are valid, but it does not have to upload every map in the same
@@ -2427,7 +2439,7 @@ async function startBattleLoading(specId, mapId = null) {
   await stageBattleVisualReveal(game.player, loadYield);
   playerVisualTiming.uploadMs = Math.round(performance.now() - playerUploadStartedAt);
   playerVisualTiming.totalMs = Math.round(performance.now() - playerVisualStartedAt);
-  bltStage('roster');
+  bltStage('reveal');
   battleLoad.rosters(rosterRows('player'), rosterRows('enemy'));
   // PERF (perf-r2): bake the shot-card schematics for this exact roster now,
   // behind the loading screen — the first hit on each enemy type used to pay
@@ -3405,6 +3417,15 @@ function startBattle(specId, mapId = null, opts = {}) {
 
 /** Hand the screen to the battle in an immediately readable chase pose. */
 function openBattle() {
+  // LIFECYCLE GUARD: openBattle is the tail of an async entry pipeline. A
+  // leave (settings -> Leave Battle / ui:battleAgain) can land in the garage
+  // while startBattleLoading is still between startBattle() and its final
+  // openBattle() — without this check the stale tail would snap the camera
+  // onto the empty battlefield pose, arm the countdown hold, and turn battle
+  // ambience on inside the garage (a hybrid state the next BATTLE click had
+  // to clean up). Every legitimate caller runs with phase 'battle' already
+  // set by startBattle().
+  if (game.phase !== 'battle') return;
   // Re-snap here because the loading screen may have covered several warm-up
   // frames. Starting aligned behind the hull avoids the old front/side flyby
   // that made the selected tank appear to face the wrong direction, and it
@@ -4285,9 +4306,16 @@ function tick(nowMs) {
     const st = input.getState();
     const inp = game.player.input;
     const touchDriving = input.getVirtualMove(_touchMove);
+    // ANALOG GAMEPAD DRIVE (SA-02): the left stick drives proportionally
+    // (stick up = +throttle, right = −steer — same sign contract as the key
+    // routing below) whenever it clears the move threshold. Stick idle ⇒ the
+    // digital keys rule unchanged; touch keeps its existing override order.
+    const padDriving = !touchDriving && input.consumePadDrive(_padDrive);
     inp.throttle = touchDriving
       ? _touchMove.y
-      : (st.forward ? 1 : 0) - (st.back ? 1 : 0);
+      : padDriving
+        ? _padDrive.throttle
+        : (st.forward ? 1 : 0) - (st.back ? 1 : 0);
     // CONTROLS-SIGN FIX (input routing only — 1 line): TankInput.steer is
     // POSITIVE = increasing hull yaw (movement.js "Steering sign" note; the
     // AI's `steer = wrapAngle(bearing - yaw) * k` depends on it). Increasing
@@ -4298,7 +4326,9 @@ function tick(nowMs) {
     // fix — tools/controls-probe.mjs now asserts the screen direction).
     inp.steer = touchDriving
       ? -_touchMove.x
-      : (st.left ? 1 : 0) - (st.right ? 1 : 0);
+      : padDriving
+        ? _padDrive.steer
+        : (st.left ? 1 : 0) - (st.right ? 1 : 0);
     inp.brake = st.handbrake;
     const haveAmmo = !shellCards.length || ((shellCards[inp.shellSlot | 0] || {}).count | 0) > 0;
     // Fire gate: pointer lock held, a recently-active gamepad, or CURSOR-AIM
@@ -4367,7 +4397,10 @@ function tick(nowMs) {
     if (networkMatch) {
       // The server/host owns both the countdown and every simulation step.
       // `game.preBattleS` is presentation copied from snapshot metadata.
-      hud.preBattleCountdown(game.preBattleS);
+      // resetNetworkBattleState arms Infinity until the first snapshot — the
+      // same "still covered" sentinel the solo branch skips; rendering it
+      // flashed a literal "Infinity" in the release box for those frames.
+      if (Number.isFinite(game.preBattleS)) hud.preBattleCountdown(game.preBattleS);
       simAcc = 0;
     } else if (game.preBattleS > 0) {
       if (game.preBattleS !== Infinity) { // Infinity = still under the loading screen
@@ -5416,8 +5449,16 @@ await bootStage('post', async () => {
   try { renderer.compile(scene, camera, scene); } catch (_) { /* first render is fallback */ }
   BOOT_TIMINGS.postCompile = Math.round(performance.now() - t0);
   await nextFrame();
+  // SA-11 attribution marks: at ff4708af this stage read ~27 s on the Windows
+  // cert host while postCompile was only ~0.14 s — split the remainder so
+  // __BOOT_TIMINGS names whether the cascade pre-render or the first composer
+  // render owns the cost (both resolve first-use depth/post program links).
+  const tLighting = performance.now();
   lighting.update(true); // boot: render every cascade before first present
+  BOOT_TIMINGS.postLightingUpdate = Math.round(performance.now() - tLighting);
+  const tFirstRender = performance.now();
   post.render(SIM_DT);
+  BOOT_TIMINGS.postFirstRender = Math.round(performance.now() - tFirstRender);
 });
 // PERF (performance_budget r1): the combat-pipeline warms below are needed
 // before FIRST COMBAT, not before readiness — they used to run synchronously
@@ -5752,6 +5793,7 @@ function* warmCombatPipelineSteps() {
       }
       fx.propCrush(wp, _v3, 7);
       yield;
+      markWarmStage('fxFamilies'); // SA-11: attribute inside 'effects'
       // perf-r2e: one scar stamp per fielded visual — the impact-decal
       // system bakes its shared scar canvases (heightToNormal/roughness
       // getImageData work) per FAMILY on the first stamp, which used to be
@@ -5765,6 +5807,7 @@ function* warmCombatPipelineSteps() {
         try { fx.armorScar(e.visual, _v1, _v2, 100); } catch (_) { /* warm only */ }
         yield; // r11: one family's scar-canvas bake per slice
       }
+      markWarmStage('armorScars');
       // perf-r5c (owner: first shot still blips): the volley used to be
       // cleared WITHOUT ever rendering a frame — the fx materials' pipelines
       // (blending/depth state against the live targets) still bound for the
@@ -5784,6 +5827,7 @@ function* warmCombatPipelineSteps() {
       } finally {
         camera.layers.mask = warmLayerMask;
       }
+      markWarmStage('forwardWarm');
     } catch (err) {
       console.warn('[warm] fx volley failed (continuing):', err);
     }

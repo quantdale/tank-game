@@ -17,8 +17,9 @@
 // press edge (one shot), and HOLDING the control is full-auto — the gun
 // refires whenever the reload completes (see FIRE_PRESS_BUFFER_MS).
 //
-// Gamepad model (standard mapping): left stick drives (throttle/steer are
-// synthesized as held forward/back/left/right actions past a deadzone),
+// Gamepad model (standard mapping): left stick drives — analog throttle/steer
+// via consumePadDrive past the move threshold, with the held forward/back/
+// left/right action synthesis kept as the digital fallback for UI/menus —
 // right stick aims (merged into consumeMouseDelta with its own sensitivity
 // and a squared response curve), buttons map to the same action ids as keys.
 // The mobile HUD feeds the same layer through the virtual-control methods at
@@ -215,6 +216,33 @@ export function getStoredDifficulty() {
   return AI_DIFFICULTIES.includes(d) ? d : 'normal';
 }
 
+/**
+ * Sanitize one stored cot.settings.v1 record into the live-settings shape.
+ * Pure and Node-runnable: unknown keys are dropped, wrong types fall back to
+ * the shipped default, numerics clamp into range (JSON has no NaN literal but
+ * CAN carry ±Infinity via `1e999`, which clamp handles), enum fields must be
+ * exact whitelist members.
+ * @param {?object} stored raw JSON.parse result from localStorage
+ * @returns {object} a fresh fully-populated settings object
+ */
+export function sanitizeSettings(stored) {
+  const settings = { ...DEFAULT_SETTINGS };
+  if (!stored || typeof stored !== 'object') return settings;
+  if (typeof stored.sensitivity === 'number') settings.sensitivity = clamp(stored.sensitivity, 0.2, 3);
+  if (typeof stored.invertY === 'boolean') settings.invertY = stored.invertY;
+  if (typeof stored.sniperSensScale === 'number') settings.sniperSensScale = clamp(stored.sniperSensScale, 0.2, 3);
+  if (typeof stored.aimSmoothing === 'number') settings.aimSmoothing = clamp(stored.aimSmoothing, 0, 1);
+  if (typeof stored.padSensitivity === 'number') settings.padSensitivity = clamp(stored.padSensitivity, 0.2, 3);
+  if (AI_DIFFICULTIES.includes(stored.aiDifficulty)) settings.aiDifficulty = stored.aiDifficulty;
+  if (RMB_MODES.includes(stored.rmbMode)) settings.rmbMode = stored.rmbMode;
+  if (typeof stored.showPerfMeter === 'boolean') settings.showPerfMeter = stored.showPerfMeter;
+  if (typeof stored.alarmHeartbeat === 'boolean') settings.alarmHeartbeat = stored.alarmHeartbeat;
+  for (const k of VOLUME_KEYS) {
+    if (typeof stored[k] === 'number') settings[k] = clamp(stored[k], 0, 1);
+  }
+  return settings;
+}
+
 const LABEL_SPECIAL = {
   Space: 'SPACE', Escape: 'ESC', Tab: 'TAB', CapsLock: 'CAPS',
   Enter: 'ENTER', NumpadEnter: 'NUM ENTER', Backspace: 'BKSP',
@@ -272,6 +300,37 @@ function stickCurve(v) {
   if (m <= PAD_DEADZONE) return 0;
   const n = (m - PAD_DEADZONE) / (1 - PAD_DEADZONE);
   return Math.sign(v) * n * n;
+}
+
+/**
+ * Curved analog drive axes from a standard-mapping gamepad's LEFT STICK,
+ * expressed in TankInput conventions (pure — node-testable).
+ *
+ * SIGN CONTRACT (mirrors main.js's key routing — do not flip one side only):
+ *   out.throttle  stick UP (ly < 0)  => POSITIVE forward throttle. This matches
+ *     the digital synthesis (`ly < -PAD_MOVE_THRESHOLD` holds 'forward') and
+ *     movement.js's positive-speed = forwardAxis convention.
+ *   out.steer     stick RIGHT (lx > 0) => NEGATIVE steer. main.js maps the D
+ *     key / 'right' action to negative steer because positive steer RAISES
+ *     hull yaw, which turns the hull toward the player's screen-LEFT
+ *     (movement.js "STEERING SIGN" note). A stick pushed right must turn the
+ *     tank screen-right like D does.
+ * Ownership gate: the stick only claims driving past PAD_MOVE_THRESHOLD on
+ * either raw axis (the same bar the digital actions use) — a thumb resting
+ * inside the deadzone band between DEADZONE and MOVE_THRESHOLD must never
+ * override held keyboard keys with a sliver of throttle.
+ *
+ * @param {number} lx raw horizontal stick axis (-1..1, +right)
+ * @param {number} ly raw vertical stick axis (-1..1, +down)
+ * @param {{throttle:number, steer:number}} out reused output
+ * @returns {boolean} true when the stick owns driving this frame
+ */
+export function padDriveAxes(lx, ly, out) {
+  const x = stickCurve(lx);
+  const y = stickCurve(ly);
+  out.throttle = -y;
+  out.steer = -x;
+  return Math.abs(lx) > PAD_MOVE_THRESHOLD || Math.abs(ly) > PAD_MOVE_THRESHOLD;
 }
 
 /**
@@ -371,7 +430,10 @@ export function createInput(opts = {}) {
   if (storedPad && typeof storedPad === 'object') {
     for (const def of ACTION_DEFS) {
       const v = storedPad[def.id];
-      if (typeof v === 'number' && v >= 0 && v < PAD_MAX_BUTTONS) padBindings[def.id] = v;
+      // SA-12: integers only — a fractional stored index (e.g. 3.7) can never
+      // match a real GamepadEvent button and used to survive sanitization as
+      // a permanently dead binding.
+      if (Number.isInteger(v) && v >= 0 && v < PAD_MAX_BUTTONS) padBindings[def.id] = v;
       else if (v === null && Object.prototype.hasOwnProperty.call(storedPad, def.id)) padBindings[def.id] = null;
     }
   }
@@ -412,22 +474,10 @@ export function createInput(opts = {}) {
   }
 
   // --- gameplay settings -------------------------------------------------------
-  const settings = { ...DEFAULT_SETTINGS };
-  const storedSettings = loadJson(SETTINGS_KEY);
-  if (storedSettings && typeof storedSettings === 'object') {
-    if (typeof storedSettings.sensitivity === 'number') settings.sensitivity = clamp(storedSettings.sensitivity, 0.2, 3);
-    if (typeof storedSettings.invertY === 'boolean') settings.invertY = storedSettings.invertY;
-    if (typeof storedSettings.sniperSensScale === 'number') settings.sniperSensScale = clamp(storedSettings.sniperSensScale, 0.2, 3);
-    if (typeof storedSettings.aimSmoothing === 'number') settings.aimSmoothing = clamp(storedSettings.aimSmoothing, 0, 1);
-    if (typeof storedSettings.padSensitivity === 'number') settings.padSensitivity = clamp(storedSettings.padSensitivity, 0.2, 3);
-    if (AI_DIFFICULTIES.includes(storedSettings.aiDifficulty)) settings.aiDifficulty = storedSettings.aiDifficulty;
-    if (RMB_MODES.includes(storedSettings.rmbMode)) settings.rmbMode = storedSettings.rmbMode;
-    if (typeof storedSettings.showPerfMeter === 'boolean') settings.showPerfMeter = storedSettings.showPerfMeter;
-    if (typeof storedSettings.alarmHeartbeat === 'boolean') settings.alarmHeartbeat = storedSettings.alarmHeartbeat;
-    for (const k of VOLUME_KEYS) {
-      if (typeof storedSettings[k] === 'number') settings[k] = clamp(storedSettings[k], 0, 1);
-    }
-  }
+  // SA-12 hardening: the stored record is folded through the same exported,
+  // selftest-covered sanitizer every reader uses — corrupt/legacy shapes can
+  // only ever produce in-range, known-key settings.
+  const settings = sanitizeSettings(loadJson(SETTINGS_KEY));
 
   // --- live state ----------------------------------------------------------------
   const down = new Set(); // active codes — Set semantics kill key-ghosting
@@ -585,6 +635,7 @@ export function createInput(opts = {}) {
   const padPrevPressed = new Array(PAD_MAX_BUTTONS).fill(false);
   const padAim = { x: 0, y: 0 }; // curved right-stick deflection (-1..1)
   const padMove = { x: 0, y: 0 }; // curved left-stick deflection (-1..1)
+  const padMoveRaw = { x: 0, y: 0 }; // raw left-stick axes (ownership gate input)
   let padConnected = false;
   let padLastActiveMs = -Infinity;
   let padLastPollMs = -1;
@@ -615,6 +666,8 @@ export function createInput(opts = {}) {
     }
     if (!pad) {
       padPrevPressed.fill(false);
+      padMoveRaw.x = 0;
+      padMoveRaw.y = 0;
       return;
     }
     padConnected = true;
@@ -626,6 +679,8 @@ export function createInput(opts = {}) {
     const ry = ax.length > 3 ? ax[3] : 0;
     padMove.x = stickCurve(lx);
     padMove.y = stickCurve(ly);
+    padMoveRaw.x = lx;
+    padMoveRaw.y = ly;
     padAim.x = stickCurve(rx);
     padAim.y = stickCurve(ry);
 
@@ -887,6 +942,21 @@ export function createInput(opts = {}) {
       return out;
     },
 
+    /**
+     * Analog left-stick DRIVE axes in TankInput conventions (stick up =
+     * +throttle, stick right = −steer — see padDriveAxes). Returns whether the
+     * stick owns driving this frame; main.js lets it override the digital keys
+     * only while true, so keyboard and stick coexist (stick idle ⇒ keys rule).
+     * The layer stays gated (`enabled` false = menus own input).
+     * @param {{throttle:number,steer:number}} out
+     * @returns {boolean}
+     */
+    consumePadDrive(out) {
+      pollPad();
+      if (!enabled) return false;
+      return padDriveAxes(padMoveRaw.x, padMoveRaw.y, out);
+    },
+
     /** Set the mobile driving stick. x is screen-right; y is forward. */
     setVirtualMove(x, y) {
       virtualMove.x = clamp(Number(x) || 0, -1, 1);
@@ -974,6 +1044,14 @@ export function createInput(opts = {}) {
       else if (key === 'aiDifficulty') settings.aiDifficulty = AI_DIFFICULTIES.includes(value) ? value : settings.aiDifficulty;
       else if (key === 'rmbMode') settings.rmbMode = RMB_MODES.includes(value) ? value : settings.rmbMode;
       else if (VOLUME_KEYS.includes(key)) settings[key] = num(0, 0, 1);
+      saveJson(SETTINGS_KEY, settings);
+    },
+
+    /** SA-12: restore every gameplay/sound setting to its shipped default and
+     *  persist — the GAMEPLAY tab's "Reset to defaults" button. Bindings are
+     *  owned by resetBindings(), graphics presets by setPresetName('auto'). */
+    resetSettings() {
+      for (const k of Object.keys(DEFAULT_SETTINGS)) settings[k] = DEFAULT_SETTINGS[k];
       saveJson(SETTINGS_KEY, settings);
     },
 

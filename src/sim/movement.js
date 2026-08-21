@@ -109,6 +109,13 @@ const DOWNHILL_BONUS_CAP = 0.25; // up to +25% v_target downhill
 // far above it).
 const CLIMB_CREEP_MPS2 = 0.25;   // min net accel toward an open-throttle target
 const OVERSPEED_CAP = 1.2;       // absolute speed ceiling: 1.2 × transmission limit
+// SA-06 map-escape guard: the heightfield keeps answering past the rendered
+// ±512 m mesh edge, and nothing in the integration loop bounded hulls, so a
+// determined player could drive off the visible battlefield onto invisible
+// clamped-edge ground (bots were only bounded because their WAYPOINTS clamp
+// to ±460 — see state.js _clampW / ai.js). Hard-clamp to the same ±460 m
+// playable square every spawn/AI/prop constant already assumes.
+const PLAY_BOUND_M = 460;
 const YAW_SPOOL_S = 0.15;        // track spool-up time toward target yaw rate
 const NEUTRAL_TURN_MULT = 0.95;  // Pc term of the wiki traverse formula
 const PIVOT_OFFSET_M = 1.2;      // locked-track orbit offset for 'pivot' style turns
@@ -451,6 +458,74 @@ function chaseAngle(cur, target, maxDelta) {
   return wrapAngle(target);
 }
 
+// ---------------------------------------------------------------------------
+// SA-02 stuck-state hardening: one non-finite scalar anywhere upstream (a
+// headless/authoritative heightfield that returns NaN off-map, a corrupted
+// snapshot or teleport payload, an aimPoint carrying NaN into the turret
+// chase) used to brick a tank PERMANENTLY — every integrated field went NaN,
+// never recovered, and took AI pathing plus the authoritative snapshots down
+// with it. Re-seat deterministically instead: kinematics zeroed, visual
+// oscillators cleared, caches invalidated so the next tick re-grounds from
+// whatever terrain samples are still finite. Allocation-free, no RNG, no
+// wall clock; healthy states never enter this path (one fused finiteness sum
+// guards each end of updateTank).
+function reseatPoisonedTankState(state, hAt) {
+  const sup = state._sup || (state._sup = {});
+  const x = Number.isFinite(state.pos.x) ? state.pos.x
+    : Number.isFinite(sup.x) ? sup.x : 0;
+  const z = Number.isFinite(state.pos.z) ? state.pos.z
+    : Number.isFinite(sup.z) ? sup.z : 0;
+  let y = Number.isFinite(state.pos.y) ? state.pos.y : NaN;
+  if (!Number.isFinite(y)) y = Number.isFinite(sup.y) ? sup.y : NaN;
+  if (!Number.isFinite(y)) {
+    const h = hAt ? hAt(x, z) : NaN;
+    y = Number.isFinite(h) ? h : 0;
+  }
+  state.pos.set(x, y, z);
+  state.yaw = Number.isFinite(state.yaw) ? state.yaw : 0;
+  state.speed = Number.isFinite(state.speed) ? state.speed : 0;
+  state.verticalSpeed = 0;
+  state.grounded = true;
+  state.landingImpactMps = 0;
+  state.impactMps = 0;
+  state.slopeBlocked = false;
+  state.yawRate = 0;
+  state.visualPitch = Number.isFinite(state.visualPitch) ? state.visualPitch : 0;
+  state.visualRoll = Number.isFinite(state.visualRoll) ? state.visualRoll : 0;
+  state.turretYaw = Number.isFinite(state.turretYaw) ? state.turretYaw : 0;
+  state.gunPitch = Number.isFinite(state.gunPitch) ? state.gunPitch : 0;
+  state.turretYawRate = 0;
+  state.bloomF = Number.isFinite(state.bloomF) && state.bloomF >= 1 ? state.bloomF : 1;
+  state.atGunLimit = false;
+  state.gunLimitSpec = false;
+  state.suspensionAimPitch = Number.isFinite(state.suspensionAimPitch)
+    ? state.suspensionAimPitch : 0;
+  const spr = state._spring;
+  if (spr) {
+    spr.pitch = state.visualPitch;
+    spr.roll = state.visualRoll;
+    spr.pitchV = 0; spr.rollV = 0; spr.recoilVX = 0; spr.recoilVZ = 0;
+  }
+  const susp = state._susp;
+  if (susp) { susp.p = 0; susp.r = 0; susp.pv = 0; susp.rv = 0; }
+  const fl = state._flinch;
+  if (fl) { fl.p = 0; fl.r = 0; fl.pv = 0; fl.rv = 0; }
+  state._swayEst = 0;
+  state._spool = 0;
+  state._perch = 0;
+  state._fanYield = 0;
+  state._gunLimitHoldS = 0;
+  state._prevSpeed = state.speed;
+  const terr = state._terr;
+  if (terr) { terr.pitch = 0; terr.roll = 0; }
+  const ride = state._ride;
+  if (ride) {
+    ride.y = y; ride.v = 0; ride.supportY = NaN; ride.groundV = 0;
+    ride.grounded = true; ride.airTime = 0;
+  }
+  sup.x = NaN; // force the support solve to resample on the next tick
+}
+
 /** Capability-derived climb penalty / downhill bonus for v_target. */
 function slopeSpeedFactor(spec, groundType, pitchAlongRad, powerMult, accelMult) {
   const pitchDeg = pitchAlongRad * RAD2DEG;
@@ -680,6 +755,13 @@ export function updateTank(entity, heightField, dt, collide = null) {
   const spec = entity.spec;
   const state = entity.state;
   const input = entity.input;
+  // Entry containment (SA-02, see reseatPoisonedTankState): a poisoned field
+  // from a previous tick / teleport payload is repaired before anything
+  // integrates it further. Two fused adds + one isFinite per tank per tick.
+  if (!Number.isFinite(state.pos.x + state.pos.y + state.pos.z + state.speed +
+      state.yaw + state.yawRate + state.verticalSpeed)) {
+    reseatPoisonedTankState(state, hAt);
+  }
   const debuff = readDebuffs(entity.combat, state._debuff || (state._debuff = {}));
   const groundedAtStart = state.grounded !== false;
   state.slopeBlocked = false;
@@ -936,6 +1018,23 @@ export function updateTank(entity, heightField, dt, collide = null) {
   const spr = state._spring;
   state.pos.x += (fx * state.speed + spr.recoilVX) * dt;
   state.pos.z += (fz * state.speed + spr.recoilVZ) * dt;
+  // SA-06 map-escape guard: clamp to the playable square and bleed the
+  // blocked fraction of speed exactly like a static wall contact, so a hull
+  // grinding the rim loses its outward drive instead of running in place.
+  {
+    const preX = state.pos.x, preZ = state.pos.z;
+    if (preX < -PLAY_BOUND_M) state.pos.x = -PLAY_BOUND_M;
+    else if (preX > PLAY_BOUND_M) state.pos.x = PLAY_BOUND_M;
+    if (preZ < -PLAY_BOUND_M) state.pos.z = -PLAY_BOUND_M;
+    else if (preZ > PLAY_BOUND_M) state.pos.z = PLAY_BOUND_M;
+    if (state.pos.x !== preX || state.pos.z !== preZ) {
+      const backFwd = -((state.pos.x - preX) * fx + (state.pos.z - preZ) * fz);
+      const travel = Math.abs(state.speed) * dt;
+      if (travel > 1e-9 && backFwd > 0) {
+        state.speed *= 1 - Math.min(1, backFwd / travel);
+      }
+    }
+  }
   const recoilDecay = Math.exp(-dt / RECOIL_DECAY_TAU);
   spr.recoilVX *= recoilDecay;
   spr.recoilVZ *= recoilDecay;
@@ -1735,6 +1834,15 @@ export function updateTank(entity, heightField, dt, collide = null) {
     state.bloomF = GUN_YELLOW_BLOOM_FLOOR;
   }
   if (state.bloomF < 1) state.bloomF = 1;
+  // Exit containment (SA-02): THIS tick may itself have sampled non-finite
+  // terrain in the support solve or chased a NaN aimPoint through the exact
+  // hull-frame gun solve — leave the published state finite regardless, so
+  // presentation interpolation, snapshots and AI never see poison.
+  if (!Number.isFinite(state.pos.x + state.pos.y + state.pos.z + state.speed +
+      state.yaw + state.yawRate + state.turretYaw + state.gunPitch +
+      state.visualPitch + state.visualRoll + state.bloomF)) {
+    reseatPoisonedTankState(state, hAt);
+  }
 }
 
 /** Shared selector for sim, tank visual and camera presentation recoil. */
