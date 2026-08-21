@@ -686,6 +686,10 @@ function buildJagdtiger(P) {
 // ---------------------------------------------------------------------------
 function buildJPzE100(P) {
   const { cylY, cylZ, liftEye, towCable } = KIT;
+  // Fixed-mount rig contract (t95 §5.313 precedent): the casemate cannon is
+  // hull-bucketed and movement yaws only a virtual arc — without this flag
+  // the muzzle/turret-top anchors orbit off-hull inside that arc.
+  P.fixedMount = true;
 
   // LOWER hull: tub + nose/tail wedges (side-bot silhouette forward/aft of
   // the tracks; belly clearance 0.45 between them)
@@ -958,6 +962,9 @@ function buildJPzE100(P) {
 // ---------------------------------------------------------------------------
 function buildSturmtiger(P) {
   const { cylY, cylZ, liftEye, towCable, shovelTool, periscope } = KIT;
+  // Fixed-mount rig contract (t95 §5.313 precedent): hull-bucketed mortar,
+  // virtual-arc yaw — anchors must ride the hull, not the empty rig.
+  P.fixedMount = true;
 
   // LOWER hull (belt 1.30) + nose/tail; raised rear idler tail line
   loftCorridor(P, [
@@ -1658,6 +1665,10 @@ function buildT95(P) {
 // ---------------------------------------------------------------------------
 function isuCommon(P, o) {
   const { cylY, cylZ, liftEye, towCable } = KIT;
+  // Fixed-mount rig contract (t95 §5.313 precedent): the ML-20S/122S tube is
+  // hull-bucketed and the virtual rig carries only hidden collars — anchors
+  // must ride the hull through the casemate traverse arc.
+  P.fixedMount = true;
   // public-build rig contract: the virtual turret/cannon groups carry small
   // visible collars INSIDE the hull-side ball-mount silhouette (yaw/pitch
   // invariant footprint — the gate masks and floater poses never see them).
