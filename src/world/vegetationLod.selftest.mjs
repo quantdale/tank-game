@@ -14,6 +14,15 @@
 //   4. seeded determinism: two builds driven through identical camera
 //      scripts produce byte-identical instance buffers; a different seed
 //      does not.
+// WA3 additions:
+//   5. world-cell gating: sub-throttle jitter without class flips performs no
+//      repartition scan; a focus-driven class flip triggers one with zero
+//      camera drift (the cell path, not the drift net).
+//   6. wind clock gate: the phase advances while sway-capable vegetation
+//      renders, parks on vegetation-free stretches, and setWindTime still
+//      pins absolutely (screenshot freeze contract).
+//   7. preset levers: grassMidFadeEnd/grassTaperEnd override the hardcoded
+//      desktop bands when present on the live preset; absence falls back.
 
 import assert from 'node:assert/strict';
 
@@ -38,6 +47,7 @@ globalThis.document = {
 };
 
 const { createVegetation, midfieldGrassFraction } = await import('./vegetation.js');
+const { getPreset } = await import('../engine/quality.js');
 
 // Desktop constants replicated from vegetation.js (the selftest deliberately
 // pins them; Node resolves the 'desktop' device tier).
@@ -254,7 +264,110 @@ driveScript(vegC);
 assert.notEqual(hashVegetation(vegA), hashVegetation(vegC),
   'different seed produces different placement (hash is not degenerate)');
 
+// --- 5. world-cell gating ----------------------------------------------------
+{
+  const tel = () => veg._telemetry();
+  assert.ok(veg._cells && typeof veg._cells.version === 'number',
+    'internal cell tracker exposed with a version counter');
+  moveTo(-420, 380); // settle at a far station (two updates + drained fades)
+  veg.update(0.016, v3(-420, 0, 380), v3(0, 0, 1), null); // settle focus-off
+  const s0 = tel().scans;
+  const v0 = veg._cells.version;
+  // +-3 m jitter around the station: every step stays below the classifier's
+  // 4 m movement throttle or reclassifies without any band flip (the station
+  // sits deep inside stable ACTIVE cells), and total displacement never
+  // reaches the 24 m drift net -> no repartition work at all.
+  for (let i = 0; i < 12; i++) {
+    veg.update(0.016, v3(-420 + (i % 2 ? 3 : 0), 0, 380 + (i % 2 ? 0 : 3)),
+      v3(0, 0, 1), null);
+  }
+  assert.equal(tel().scans, s0,
+    'sub-throttle jitter without class flips performs no repartition scan');
+  assert.equal(veg._cells.version, v0, 'no cell reclassified during jitter');
+  // A chase-focus popping up hundreds of meters out flips its surrounding
+  // cells DORMANT/DISTANT -> ACTIVE (dual-observer interest metric). That
+  // must trigger a scan with ZERO camera drift — proving the cell path (not
+  // the drift net) fired.
+  veg.update(0.016, v3(-420, 0, 380), v3(0, 0, 1), v3(-100, 0, 80));
+  assert.ok(tel().scans > s0,
+    'focus-driven cell class flips trigger a repartition scan');
+  assert.ok(veg._cells.version > v0, 'lifecycle version advanced across the flip');
+  veg.update(0.016, v3(-420, 0, 380), v3(0, 0, 1), null); // focus off again
+}
+
+// --- 6. wind clock gate ------------------------------------------------------
+{
+  const tel = () => veg._telemetry();
+  // Default verdant build: midfield chunks render inside the shader sway
+  // radius from any position, so dt > 0 frames must keep advancing the phase.
+  const t0 = tel().windTime;
+  veg.update(0.05, v3(-420, 0, 380), v3(0, 0, 1), null);
+  assert.ok(tel().windTime > t0,
+    'wind clock advances while sway-capable vegetation renders');
+  // Vegetation-free config: no trees, no bushes, no chunk tufts, empty
+  // carpet -> nothing on screen can show sway, so the clock must park even
+  // while frames advance and the camera drives.
+  const bareVeg = createVegetation(flatHeightField(), engineCtx, 2001,
+    { vegetation: { clusterCount: 0, loneCount: 0, rimCount: 0, bushCount: 0,
+      grassDensity: 0 } });
+  bareVeg.update(0.016, v3(0, 0, 0), v3(0, 0, 1), null);
+  assert.equal(bareVeg._telemetry().windLive, false,
+    'bare map reports no sway sources after classification');
+  const w0 = bareVeg._telemetry().windTime;
+  bareVeg.update(0.05, v3(40, 0, 0), v3(0, 0, 1), null);
+  bareVeg.update(0.05, v3(80, 0, 0), v3(0, 0, 1), null);
+  assert.equal(bareVeg._telemetry().windTime, w0,
+    'wind clock parks on vegetation-free stretches');
+  bareVeg.setWindTime(123.5); // screenshot freeze contract is untouched
+  assert.equal(bareVeg._telemetry().windTime, 123.5,
+    'setWindTime still pins the phase absolutely');
+}
+
+// --- 7. preset grass-range levers --------------------------------------------
+{
+  const preset = getPreset();
+  const prevFade = preset.grassMidFadeEnd;
+  const prevTaper = preset.grassTaperEnd;
+  try {
+    // Fallback first: without the keys, Node's desktop resolution must land
+    // exactly on the hardcoded bands.
+    assert.equal(veg._telemetry().grassFadeEnd, GRASS_FADE_END,
+      'missing preset keys fall back to the desktop fade end');
+    assert.equal(veg._telemetry().grassTaperEnd, GRASS_TAPER_END,
+      'missing preset keys fall back to the desktop taper end');
+    // With keys present, both the reported range and the visible chunk band
+    // follow the preset: a chunk whose edge distance sits between the two
+    // fade ends must drop out entirely under the shorter range.
+    preset.grassMidFadeEnd = 90;
+    preset.grassTaperEnd = 70;
+    const vegP = createVegetation(flatHeightField(), engineCtx, 2001, null);
+    assert.equal(vegP._telemetry().grassFadeEnd, 90, 'preset grassMidFadeEnd consumed');
+    assert.equal(vegP._telemetry().grassTaperEnd, 70, 'preset grassTaperEnd consumed');
+    // Both builds face the probe chunk from the origin so visibility reflects
+    // density alone (the behind-camera cull must not confound the probe).
+    veg.update(0.016, v3(0, 0, 0), v3(0, 0, 1), null);
+    vegP.update(0.016, v3(0, 0, 0), v3(0, 0, 1), null);
+    const probe = grass.find((m) =>
+      m.userData.grassChunkCx === 192 && m.userData.grassChunkCz === 64);
+    assert.ok(probe, 'probe chunk exists'); // edge distance ~111 m from origin
+    const probeP = classify(vegP).grass.find((m) =>
+      m.userData.grassChunkCx === 192 && m.userData.grassChunkCz === 64);
+    assert.ok(probe.visible, 'probe chunk visible under the default 180 m band');
+    assert.equal(midfieldGrassFraction(
+      Math.hypot(192 - 0, 64 - 0) - CHUNK_EDGE_R, 90, 70), 0,
+      'probe chunk density is zero under the 90 m preset band');
+    assert.ok(!probeP.visible, 'probe chunk hidden under the shorter preset band');
+  } finally {
+    // Restore the shared preset object exactly as found.
+    if (prevFade === undefined) delete preset.grassMidFadeEnd;
+    else preset.grassMidFadeEnd = prevFade;
+    if (prevTaper === undefined) delete preset.grassTaperEnd;
+    else preset.grassTaperEnd = prevTaper;
+  }
+}
+
 function v3(x, y, z) { return { x, y, z }; }
 
 console.log('vegetationLod.selftest: density curve, behind-camera cull,'
-  + ' tree partition conservation/snap, and seeded determinism passed');
+  + ' tree partition conservation/snap, seeded determinism,'
+  + ' world-cell repartition/wind gating, and preset grass-range levers passed');

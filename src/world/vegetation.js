@@ -11,7 +11,10 @@ import { sampleSplatNoise, applyTone } from './terrain.js';
 import { setToppleAxis, settledToppleAngle } from './topple.js';
 import { setCircleShape } from './collision.js';
 // MOBILE r1: central tier texture scale (desktop returns sizes unchanged)
-import { getDeviceTier, texSize } from '../engine/quality.js';
+import { getDeviceTier, texSize, getPreset } from '../engine/quality.js';
+// WA3: per-cell lifecycle consumer (pure/Node-safe; same 8x8 x 128 m grid as
+// the grass chunks — see the tracker setup next to _partitionBuilt below).
+import { createCellLifecycle, CELL_STATES } from './cellLifecycle.js';
 
 export function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
   t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
@@ -1510,8 +1513,15 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
   // vertices. Hand off earlier to the terrain meadow and the opaque far-tree
   // silhouettes. Both transitions already use continuous density/LOD fades,
   // so this removes sub-pixel noise without introducing a distance pop.
-  const grassFadeEnd = mobileTier ? 132 : GRASS_FADE_END;
-  const grassTaperEnd = mobileTier ? 112 : 155;
+  // WA3 preset lever: the grass range bands read the quality preset when the
+  // data lands (grassMidFadeEnd / grassTaperEnd on each PRESETS entry);
+  // until then these fall back to the shipped desktop/mobile bands, so
+  // behavior is byte-identical to the hardcoded constants. Captured at build
+  // time — live preset switches never rebuild a battle's vegetation (same
+  // contract as textureScale and every other bake-time lever).
+  const _preset = getPreset();
+  const grassFadeEnd = _preset?.grassMidFadeEnd ?? (mobileTier ? 132 : GRASS_FADE_END);
+  const grassTaperEnd = _preset?.grassTaperEnd ?? (mobileTier ? 112 : 155);
   const treeNearIn = mobileTier ? 200 : TREE_NEAR_IN;
   const treeNearOut = mobileTier ? 225 : TREE_NEAR_OUT;
   const veg = {
@@ -3116,6 +3126,37 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
 
   const _lastCam = new THREE.Vector3(1e9, 0, 0);
   let _partitionBuilt = false;
+  // WA3 world-cell consumption (cellLifecycle.js): map.js owns the shared
+  // world.cells facade instance and cannot pass it through the fixed
+  // vegetation.update() signature, so vegetation drives its own tracker over
+  // the SAME 8x8 x 128 m grid from the same dual observers (render camera +
+  // chase focus) — identical pure classification, so states track the facade.
+  // The tracker self-throttles (~4 m of observer movement or 64 updates) and
+  // is allocation-free per frame. Tree/bush positions are bucketed once (via
+  // indexAt) for the wind-gate's per-cell sway-source probe below.
+  const vegCells = createCellLifecycle();
+  // Per-cell sway-source presence (trees + bushes — both share wind-hooked
+  // materials), probed only when a cell flips class.
+  const vegCellLive = new Uint8Array(vegCells.count);
+  for (const t of trees) {
+    const ci = vegCells.indexAt(t.x, t.z);
+    if (ci >= 0) vegCellLive[ci] = 1;
+  }
+  for (const b of bushFadeReg) {
+    const ci = vegCells.indexAt(b.x, b.z);
+    if (ci >= 0) vegCellLive[ci] = 1;
+  }
+  // Wind-clock gate state: does any rendered vegetation still show sway?
+  // Shaders already freeze sway past ~110 m (grass) / ~220 m (trees)
+  // (ao-boil r4), so a tree-bearing cell only keeps the clock live while its
+  // state is ACTIVE/VISIBLE/SHADOW_ONLY (DISTANT cells hold trees >=~520 m
+  // out). Grass side is refreshed every frame from the chunk visibility loop;
+  // defaults true so the clock runs until proven idle (safe direction).
+  let treeWindLive = true;
+  let grassWindLive = true;
+  // WA3 repartition gate constants + telemetry (see update()).
+  const REPARTITION_DRIFT_SQ = 24 * 24; // worst-case staleness net (< 30 m band)
+  let _repartitionScans = 0;
   // hud_ui r6 (MAJOR): while scoped at high zoom, far-LOD billboard trees
   // inside the AIM CORRIDOR promote to full meshes — the x8 sight picture
   // magnified the cross-quad impostors on the target ridge into obvious
@@ -3399,7 +3440,33 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
   }
 
   function update(dt, camPos, camFwd = null, focusPos = null) {
-    uWindTime.value += dt;
+    // WA3: classify cells first (self-throttled no-op most frames). A class
+    // change anywhere on the grid gates both the wind clock below and the
+    // tree repartition scan near the end of update().
+    const cellsChanged = vegCells.update(camPos.x, camPos.z,
+      focusPos ? focusPos.x : null, focusPos ? focusPos.z : null);
+    if (cellsChanged) { // recompute vegetation-side sway visibility on flips
+      const st = vegCells.states;
+      let live = false;
+      for (let i = 0; i < st.length; i++) {
+        if (vegCellLive[i] && st[i] <= CELL_STATES.SHADOW_ONLY) { live = true; break; }
+      }
+      treeWindLive = live;
+    }
+    // WA3 WIND CLOCK GATE: uWindTime only matters while some rendered
+    // vegetation can still show sway. When every tree-bearing cell sits at
+    // DISTANT/DORMANT, no grass chunk renders inside the shader sway radius,
+    // and the near carpet is empty, advancing the phase changes nothing
+    // visible — park it (skips the per-program uniform upload three.js would
+    // otherwise re-issue, and stops wind-driven vertex churn of the depth
+    // input on vegetation-free stretches). Any live source keeps it running,
+    // so near-field sway is untouched by construction; the phase resumes from
+    // where it paused, so there is no pop in either direction.
+    if (treeWindLive || grassWindLive ||
+        carpetSets[0].meshes[carpetSets[0].active].count > 0 ||
+        carpetSets[1].meshes[carpetSets[1].active].count > 0) {
+      uWindTime.value += dt;
+    }
     if (treeCrushAnims.length) updateTreeCrush(dt); // gameplay_feel r6 topples
     uCamPos.value.copy(camPos);
     if (camFwd) uCamFwd.value.copy(camFwd);
@@ -3453,6 +3520,7 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
         cullFx = camFwd.x / fl; cullFz = camFwd.z / fl;
       }
     }
+    grassWindLive = false; // WA3 wind gate: re-proved by this pass or parks
     for (const gc of grassChunks) {
       if (!gc.built) continue;
       const d = gc.cameraDist;
@@ -3497,7 +3565,11 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
       for (const cm of gc.meshes) {
         const count = Math.floor(cm.total * frac);
         cm.mesh.visible = count > 0 && !behind;
-        if (count > 0) cm.mesh.count = count;
+        if (count > 0) {
+          cm.mesh.count = count;
+          // WA3 wind gate: instances actually render inside the sway radius.
+          if (!behind) grassWindLive = true;
+        }
         const g = gc.lod ? cm.geoFar : cm.geoNear;
         if (cm.mesh.geometry !== g) cm.mesh.geometry = g;
       }
@@ -3516,11 +3588,22 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
       rebuildCarpet(camPos);
       uploadedThisFrame = true;
     }
-    if (!uploadedThisFrame &&
-        (_lastCam.distanceToSquared(camPos) > 36 || scopeRepartitionPending)) {
+    // WA3: the repartition scan is gated by world-cell class turnover. A
+    // cell flipping state is what makes near/far decisions stale (the 290 m
+    // tree band IS the VISIBLE/SHADOW_ONLY edge), so it is the primary
+    // trigger; scope promotion stays unconditional. The drift net only bounds
+    // the worst case where a tree crosses its private 260/290 m threshold
+    // between flips: 24 m stays inside the 30 m hysteresis band, so a late-
+    // detected crossing can never oscillate, and a delayed OUT-cross keeps
+    // the richer near representation (quality-safe direction). Parked or
+    // orbiting cameras no longer accumulate scans; driving through stable
+    // bands rescans at most once per 24 m instead of every 6 m.
+    if (!uploadedThisFrame && (cellsChanged || scopeRepartitionPending ||
+        _lastCam.distanceToSquared(camPos) > REPARTITION_DRIFT_SQ)) {
       scopeRepartitionPending = false;
       _lastCam.copy(camPos);
       repartitionTrees(camPos);
+      _repartitionScans++;
     }
     tickLodTransitions(dt); // aa-r1: advance LOD cross-fades (dt 0 snaps)
     updateOcclusionFade(dt, camPos, focusPos);
@@ -3569,5 +3652,15 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
         for (const a of farSlots[sp]) far += a.length;
       }
       return { near, far, transitioning: lodTransitions.length, nearFingerprint: fp };
-    } };
+    },
+    // WA3 diagnostics: the internal cell tracker (states/version — read-only
+    // by convention), gate telemetry, and the live grass range for probes
+    // and the LOD selftest.
+    _cells: vegCells,
+    _telemetry: () => ({
+      scans: _repartitionScans,
+      windTime: uWindTime.value,
+      windLive: treeWindLive || grassWindLive,
+      grassFadeEnd, grassTaperEnd,
+    }) };
 }
