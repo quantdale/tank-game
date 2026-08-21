@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import * as THREE from 'three';
 import { createDevTraceCore } from './perfTrace.js';
 
 let clock = 1000;
@@ -75,5 +76,59 @@ assert.deepEqual(snapshot.frameSchema.slice(0, 5), ['tMs', 'gapMs', 'dtMs', 'sim
 assert.equal(snapshot.frames[0][0], 16, 'clear resets the trace-relative clock');
 assert.equal(snapshot.frames[0].length, snapshot.frameSchema.length);
 assert.equal(JSON.parse(trace.exportJson()).version, 1);
+
+// --- campaign W1: whole-frame draw accumulation + render-attribution probes --
+// A composer frame runs several renderer.render() passes; three resets info at
+// the START of each, so the recorder must sum per-pass deltas itself.
+const passRenderer = {
+  info: {
+    memory: { geometries: 5, textures: 6 },
+    programs: [{}],
+    render: { frame: 1, calls: 0, triangles: 0 },
+  },
+  render() {
+    // Mimic three: reset-then-draw leaves ONLY this pass's numbers in info.
+    this.info.render.calls = this.nextCalls;
+    this.info.render.triangles = this.nextTris;
+  },
+};
+passRenderer.nextCalls = 0;
+passRenderer.nextTris = 0;
+
+const scene = new THREE.Scene();
+const vegGroup = new THREE.Group();
+vegGroup.name = 'vegetation';
+const grassMesh = new THREE.InstancedMesh(
+  new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial(), 40);
+vegGroup.add(grassMesh);
+scene.add(vegGroup);
+const terrainGroup = new THREE.Group();
+terrainGroup.userData.updateLOD = () => {};
+terrainGroup.add(new THREE.Mesh(new THREE.PlaneGeometry(1, 1, 96, 96)));
+scene.add(terrainGroup);
+
+const w1trace = createDevTraceCore({ enabled: true, now: () => clock });
+w1trace.clear();
+w1trace.configure({ game, renderer: passRenderer, scene });
+
+passRenderer.nextCalls = 5; passRenderer.nextTris = 100;
+passRenderer.render(); // shadow pass
+passRenderer.nextCalls = 7; passRenderer.nextTris = 200;
+passRenderer.render(); // main pass
+clock += 16;
+w1trace.frame(16);
+
+const schema = w1trace.snapshot().frameSchema;
+assert.equal(schema.length, 22, 'W1 attribution columns appended');
+assert.deepEqual(schema.slice(15), ['geoMem', 'texMem', 'rtCount', 'texMB', 'casters', 'vegInst', 'chunks']);
+const row = w1trace.snapshot().frames.at(-1);
+assert.equal(row[8], 12, 'calls summed across both passes');
+assert.equal(row[9], 300, 'triangles summed across both passes');
+assert.equal(row[15], 5, 'geoMem from renderer.info.memory');
+assert.equal(row[16], 6, 'texMem from renderer.info.memory');
+assert.equal(row[20], 40, 'visible vegetation instances via auto-probes');
+assert.equal(row[21], 1, 'visible terrain chunks via auto-probes');
+assert.ok(w1trace.tail(50, 'trace').some((r) => r.name === 'renderSample'),
+  'rich probe sample rides the event ring');
 
 console.log('perfTrace selftest: pass');

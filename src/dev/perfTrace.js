@@ -3,6 +3,17 @@
 // Event objects are bounded and frames use typed columns so the profiler does
 // not manufacture the GC stalls it is meant to find. Production builds get an
 // inert API and install no observers/listeners.
+//
+// campaign W1 measurement upgrade: `calls`/`triangles` now capture WHOLE
+// frames. three resets renderer.info at the START of every renderer.render(),
+// so with the multi-pass composer the raw counters only ever described the
+// final pass. In dev the recorder wraps renderer.render (restored never
+// needed — the wrapper lives exactly as long as this trace) and accumulates
+// each pass's delta. New tail columns carry render-attribution probes
+// (src/dev/renderProbes.js): GPU memory object counts, estimated texture
+// footprint, shadow casters, vegetation instances, visible terrain chunks.
+
+import { createRenderProbes } from './renderProbes.js';
 
 const VITE_DEV = !!import.meta.env?.DEV;
 export const DEV_TRACE_ACTIVE = typeof window !== 'undefined' && VITE_DEV;
@@ -13,6 +24,10 @@ const FRAME_SCHEMA = [
   'tMs', 'gapMs', 'dtMs', 'simS', 'preBattleS', 'phase', 'flags',
   'renderFrame', 'calls', 'triangles', 'programs', 'heapMB',
   'throttle', 'steer', 'fire',
+  // campaign W1: render-attribution tail. calls/triangles above are
+  // whole-frame; the columns below come from renderer.info.memory and the
+  // renderProbes snapshot (zeros while no probes ref is configured).
+  'geoMem', 'texMem', 'rtCount', 'texMB', 'casters', 'vegInst', 'chunks',
 ];
 const FLAGS = {
   hidden: 1 << 0, unfocused: 1 << 1, paused: 1 << 2, countdown: 1 << 3,
@@ -109,12 +124,20 @@ export function createDevTraceCore(options = {}) {
     calls: new Uint32Array(frameCap), tris: new Uint32Array(frameCap), programs: new Uint16Array(frameCap),
     heap: new Float32Array(frameCap), throttle: new Float32Array(frameCap),
     steer: new Float32Array(frameCap), fire: new Uint8Array(frameCap),
+    geoMem: new Uint16Array(frameCap), texMem: new Uint16Array(frameCap),
+    rtCount: new Uint8Array(frameCap), texMB: new Float32Array(frameCap),
+    casters: new Uint16Array(frameCap), vegInst: new Uint32Array(frameCap),
+    chunks: new Uint16Array(frameCap),
   };
   const startedPerf = now(), startedWall = Date.now();
   let traceZero = startedPerf;
   const sessionId = `${startedWall.toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
   const counts = Object.create(null);
   let refs = options.renderer ? { renderer: options.renderer } : {};
+  // Whole-frame draw accumulator (see header comment). The wrapper sums each
+  // renderer.render() pass's info delta; frame() consumes and zeroes it.
+  let accCalls = 0, accTris = 0, accActive = false;
+  let lastProbeEventAt = -Infinity;
   let active = true, consoleAll = false, inputBound = false;
   let seq = 0, eventNext = 0, lastEventName = '';
   let gpuCaptured = false, cachedGpu = null;
@@ -146,6 +169,25 @@ export function createDevTraceCore(options = {}) {
     try { return refs.getContext?.() || {}; }
     catch (e) { return { contextError: e?.message || String(e) }; }
   }
+  // Dev-only whole-frame draw accumulator: three resets renderer.info at the
+  // START of every renderer.render(), so with the multi-pass composer the raw
+  // counters describe only the final pass. Wrapping render lets each pass's
+  // delta be summed before the next reset. Stub renderers without a callable
+  // render (node selftests) skip the wrap and keep reading raw info.
+  function installRenderAccumulator() {
+    const r = refs.renderer;
+    if (!r || typeof r.render !== 'function' || accActive) return;
+    const orig = r.render;
+    r.render = function (...args) {
+      try { return orig.apply(this, args); }
+      finally {
+        const info = r.info?.render;
+        accCalls += info?.calls || 0;
+        accTris += info?.triangles || 0;
+      }
+    };
+    accActive = true;
+  }
   function flagBits(game, ctx) {
     let bits = 0;
     if (typeof document !== 'undefined' && document.hidden) bits |= FLAGS.hidden;
@@ -173,11 +215,30 @@ export function createDevTraceCore(options = {}) {
     const i = frameNext;
     f.t[i] = rel(at); f.gap[i] = gap; f.dt[i] = dtMs; f.sim[i] = sim; f.pre[i] = pre;
     f.phase[i] = PHASE_CODE.get(phase) ?? 0; f.flags[i] = bits; f.renderFrame[i] = rf;
-    f.calls[i] = info?.render?.calls || 0; f.tris[i] = info?.render?.triangles || 0;
+    f.throttle[i] = Number(inp?.throttle) || 0; f.steer[i] = Number(inp?.steer) || 0; f.fire[i] = inp?.fire ? 1 : 0;
+    if (accActive) {
+      f.calls[i] = accCalls; f.tris[i] = accTris;
+      accCalls = 0; accTris = 0;
+    } else {
+      f.calls[i] = info?.render?.calls || 0; f.tris[i] = info?.render?.triangles || 0;
+    }
     f.programs[i] = Math.min((info?.programs || []).length, 65535);
     f.heap[i] = typeof performance !== 'undefined' && performance.memory
       ? performance.memory.usedJSHeapSize / 1048576 : -1;
-    f.throttle[i] = Number(inp?.throttle) || 0; f.steer[i] = Number(inp?.steer) || 0; f.fire[i] = inp?.fire ? 1 : 0;
+    // Render-attribution probes (src/dev/renderProbes.js): cheap cached
+    // numbers per frame; a rich sample rides the event ring at ~0.5 Hz.
+    let pr = null;
+    if (typeof refs.probes === 'function') {
+      try { pr = refs.probes(); } catch (_) { pr = null; }
+    }
+    f.geoMem[i] = pr ? pr.geoMem : 0; f.texMem[i] = pr ? pr.texMem : 0;
+    f.rtCount[i] = pr ? pr.shadowRTCount : 0; f.texMB[i] = pr ? pr.texMB : 0;
+    f.casters[i] = pr ? pr.casters : 0; f.vegInst[i] = pr ? pr.vegInstances : 0;
+    f.chunks[i] = pr ? pr.chunksVisible : 0;
+    if (pr && at - lastProbeEventAt >= 2000) {
+      lastProbeEventAt = at;
+      push('trace', 'renderSample', pr, at);
+    }
     if (frameSize === frameCap) frameDropped++; else frameSize++;
     frameNext = (frameNext + 1) % frameCap;
 
@@ -216,6 +277,8 @@ export function createDevTraceCore(options = {}) {
         +f.pre[i].toFixed(3), PHASES[f.phase[i]], f.flags[i], f.renderFrame[i], f.calls[i],
         f.tris[i], f.programs[i], +f.heap[i].toFixed(2), +f.throttle[i].toFixed(3),
         +f.steer[i].toFixed(3), f.fire[i],
+        f.geoMem[i], f.texMem[i], f.rtCount[i], +f.texMB[i].toFixed(2),
+        f.casters[i], f.vegInst[i], f.chunks[i],
       ];
     }
     return out;
@@ -262,6 +325,7 @@ export function createDevTraceCore(options = {}) {
     for (const v of Object.values(f)) v.fill(0);
     for (const key of Object.keys(counts)) delete counts[key];
     seq = eventNext = 0; lastEventName = ''; lastFrameAt = maxGap = spikes = freezes = 0;
+    accCalls = accTris = 0; lastProbeEventAt = -Infinity;
     longTasks = longTaskMs = 0; lastPhase = 'unknown'; lastSim = NaN;
     lastSimAt = simFrozenAt = 0; lastRender = -1; lastRenderAt = renderFrozenAt = 0;
   }
@@ -277,6 +341,24 @@ export function createDevTraceCore(options = {}) {
         inputBound = true;
         for (const def of refs.input.actionDefs || []) refs.input.onAction(def.id, (code) => api.action(def.id, { code }));
       }
+      // campaign W1: once a scene (or world group) is known, auto-wire the
+      // render-attribution probes (main.js passes scene/world/lighting in DEV
+      // builds only). An explicit refs.probes function always wins;
+      // options.autoProbes=false disables the implicit construction. The
+      // probes rebuild when their traversal root identity changes (world
+      // arrives after boot configure).
+      const probeRoot = refs.world || refs.scene;
+      if (probeRoot && refs.renderer && options.autoProbes !== false
+        && refs.probesBuiltFor !== probeRoot) {
+        try {
+          refs.probes = createRenderProbes({
+            scene: refs.scene, renderer: refs.renderer,
+            lighting: refs.lighting, world: refs.world,
+          }).sample;
+          refs.probesBuiltFor = probeRoot;
+        } catch (_) { /* attribution columns stay zero */ }
+      }
+      installRenderAccumulator();
       // GPU driver queries can serialize with software rasterizers. Keep them
       // out of startup and sample once, lazily, when a snapshot is exported.
       push('trace', 'configured', { refs: Object.keys(next), environment: environment(false) });
@@ -334,6 +416,7 @@ export function createDevTraceCore(options = {}) {
     canvas?.addEventListener('webglcontextrestored', () => push('lifecycle', 'webglcontextrestored', {}));
     window.__DEV_TRACE = api;
   }
+  installRenderAccumulator();
   push('trace', 'created', { sessionId, eventCap, frameCap });
   return api;
 }
