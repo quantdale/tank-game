@@ -1225,6 +1225,31 @@ export function createParticleSystem(engineCtx, { seed = 5000 } = {}) {
   let lateFxUntil = -Infinity;
   let frozen = false;
 
+  // W14 load-aware admission input: measured per-pool occupancy, refreshed at
+  // most every 0.5 s of shared-clock time (a full life-array scan across all
+  // pools is ~5.7k float reads — negligible at 2 Hz). The snapshot object is
+  // reused in place; consumers read numbers only, never retain it.
+  const OCC_REFRESH_S = 0.5;
+  let occAtS = -Infinity;
+  const occupancy = {};
+  for (const key of Object.keys(POOL_SIZES)) {
+    occupancy[key] = { alive: 0, cap: POOL_SIZES[key], frac: 0 };
+  }
+  function measureOccupancy() {
+    for (const key of Object.keys(pools)) {
+      const pool = pools[key];
+      const arr = pool.attrs[pool.lifeAttr].array;
+      const k = pool.lifeComp;
+      let alive = 0;
+      for (let i = 0; i < pool.capacity; i++) {
+        if (arr[i * 4 + k] > 0) alive++;
+      }
+      const o = occupancy[key];
+      o.alive = alive;
+      o.frac = pool.capacity > 0 ? alive / pool.capacity : 0;
+    }
+  }
+
   // post.js owns the copied depth texture and updates these shared uniforms
   // before drawing layer 30. Keeping one uniform object across every puff
   // material avoids per-pool state churn and gives the post pass a tiny,
@@ -1624,11 +1649,24 @@ export function createParticleSystem(engineCtx, { seed = 5000 } = {}) {
     getTime() { return uTime.value; },
 
     /**
+     * Measured per-pool occupancy snapshot (REUSED object — read, don't keep).
+     * Refreshed lazily inside update(); fields: {alive, cap, frac} per pool.
+     * This is the load signal fx admission policy throttles continuous
+     * emitters against, before the ring buffers start overwriting live puffs.
+     * @returns {Record<string,{alive:number,cap:number,frac:number}>}
+     */
+    poolOccupancy() { return occupancy; },
+
+    /**
      * Advance the shared particle clock (no-op while frozen).
      * @param {number} dt seconds
      */
     update(dt) {
       if (!frozen) uTime.value += dt;
+      if (uTime.value - occAtS >= OCC_REFRESH_S) {
+        occAtS = uTime.value;
+        measureOccupancy();
+      }
       const liveSun = engineCtx?.scene?.userData?.sunDirWorld;
       if (liveSun && liveSun.lengthSq() > 1e-8) sunDirW.copy(liveSun).normalize();
       for (const pool of poolList) pool.flush();
@@ -1685,6 +1723,14 @@ export function createParticleSystem(engineCtx, { seed = 5000 } = {}) {
     resetAll() {
       for (const pool of poolList) pool.killAll();
       lateFxUntil = -Infinity;
+      // fresh battle: drop stale pressure so admission never throttles the
+      // opening seconds off a previous match's occupancy
+      for (const key of Object.keys(occupancy)) {
+        const o = occupancy[key];
+        o.alive = 0;
+        o.frac = 0;
+      }
+      occAtS = uTime.value;
     },
   };
 }
