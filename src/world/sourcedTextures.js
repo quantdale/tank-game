@@ -29,6 +29,11 @@ const acg = (dir, base) => ({
   normal: `${dir}/${base}_1K-JPG_NormalGL.jpg`,
   rough: `${dir}/${base}_1K-JPG_Roughness.jpg`,
   ao: `${dir}/${base}_1K-JPG_AmbientOcclusion.jpg`,
+  // SA-05 packed ORM consolidation (tools/campaign-pack-orm.mjs): R=AO,
+  // G=Roughness baked into one texture so a set loads 1 mask file instead of
+  // 2 and composites with one canvas readback instead of two. Missing files
+  // fall back to the separate maps below.
+  orm: `${dir}/${base}_1K-JPG_ORM.jpg`,
 });
 // Poly Haven 1K JPG naming
 const ph = (dir, base) => ({
@@ -36,6 +41,7 @@ const ph = (dir, base) => ({
   normal: `${dir}/${base}_nor_gl_1k.jpg`,
   rough: `${dir}/${base}_rough_1k.jpg`,
   ao: `${dir}/${base}_ao_1k.jpg`,
+  orm: `${dir}/${base}_orm_1k.jpg`,
 });
 
 const SETS = {
@@ -272,6 +278,42 @@ export function composeAlbedo(color, ao, rough, { roughInAlpha = false, roughMul
   return c;
 }
 
+/**
+ * SA-05: compose color * AO(R) with roughness(G) packed into alpha (terrain
+ * contract) or alpha=255 (props) from a single packed ORM image — one scratch
+ * readback instead of composeAlbedo's two. With a lossless ORM the output is
+ * byte-identical to composeAlbedo(color, ao, rough); the committed q90 JPEG
+ * ORM files carry only codec-level drift on the mask channels.
+ */
+export function composeAlbedoFromOrm(color, orm, { roughInAlpha = false, roughMul = 1, tint = null, desat = 0, lift = 0 } = {}) {
+  const s = Math.min(color.width, texSize(1024)); // MOBILE r1: tier-scaled compose
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(color, 0, 0, s, s);
+  const px = ctx.getImageData(0, 0, s, s);
+  const d = px.data;
+  const ormd = readScaledPixels(orm, s);
+  const tr = tint ? tint[0] : 1, tg = tint ? tint[1] : 1, tb = tint ? tint[2] : 1;
+  for (let i = 0; i < d.length; i += 4) {
+    const a = ormd ? ormd[i] / 255 : 1;
+    let r = d[i] * a * tr, g = d[i + 1] * a * tg, b = d[i + 2] * a * tb;
+    if (desat > 0) {
+      const lum = r * 0.299 + g * 0.587 + b * 0.114;
+      r += (lum - r) * desat; g += (lum - g) * desat; b += (lum - b) * desat;
+    }
+    if (lift > 0) { r += lift * 255; g += lift * 255; b += lift * 255; }
+    d[i] = Math.min(255, r);
+    d[i + 1] = Math.min(255, g);
+    d[i + 2] = Math.min(255, b);
+    d[i + 3] = roughInAlpha
+      ? Math.max(8, Math.min(255, (ormd ? ormd[i + 1] : 230) * roughMul))
+      : 255;
+  }
+  ctx.putImageData(px, 0, 0);
+  return c;
+}
+
 function normalCanvas(img) {
   const s = Math.min(img.width, texSize(1024)); // MOBILE r1: tier-scaled compose
   const c = document.createElement('canvas');
@@ -297,21 +339,31 @@ function swapTexture(tex, canvas) {
 
 async function applySet(setKey, layer, opts) {
   const set = SETS[setKey];
-  const [color, normal, rough, ao] = await Promise.all([
-    loadImage(set.color), loadImage(set.normal),
-    set.rough ? loadImage(set.rough).catch(() => null) : null,
-    set.ao ? loadImage(set.ao).catch(() => null) : null,
+  // SA-05: prefer the packed ORM texture (one mask file, one scratch readback
+  // via composeAlbedoFromOrm); fall back to the separate AO/Roughness maps
+  // when the ORM file is missing or fails to decode. All requests still fire
+  // in parallel — only the unneeded mask path is dropped.
+  const [color, normal, ormImg, rough, ao] = await Promise.all([
+    loadImage(set.color),
+    loadImage(set.normal),
+    set.orm ? loadImage(set.orm).catch(() => null) : null,
+    set.orm ? null : (set.rough ? loadImage(set.rough).catch(() => null) : null),
+    set.orm ? null : (set.ao ? loadImage(set.ao).catch(() => null) : null),
   ]);
   const s = Math.min(color.width, texSize(1024));
   // Short-circuit recomposition: the same (set, opts) pair recurs on every
-  // revisit of a map and across rematches — reuse the finished canvas.
-  const key = compositeKey(setKey, opts);
+  // revisit of a map and across rematches — reuse the finished canvas. The
+  // key carries the mask-source path so an ORM/legacy flip can never reuse
+  // composites composed from different pixels.
+  const key = (ormImg ? 'orm|' : 'sep|') + compositeKey(setKey, opts);
   let hit = _compositeCache.get(key);
   if (hit && hit.s === s) {
     _compositeCache.delete(key); // LRU refresh
     _compositeCache.set(key, hit);
   } else {
-    hit = { s, canvas: composeAlbedo(color, ao, rough, opts) };
+    hit = { s, canvas: ormImg
+      ? composeAlbedoFromOrm(color, ormImg, opts)
+      : composeAlbedo(color, ao, rough, opts) };
     _compositeCache.set(key, hit);
     while (_compositeCache.size > _COMPOSITE_CACHE_MAX) {
       _compositeCache.delete(_compositeCache.keys().next().value);

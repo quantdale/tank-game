@@ -239,8 +239,11 @@ from `public/textures/terrain/` (splat layers, wired via
 `public/textures/buildings/` (village materials via `src/world/props.js`).
 The procedural painters remain the synchronous fallback behind the
 `USE_SOURCED_*` flags in `src/world/sourcedTextures.js`. Only the 1K
-Color/NormalGL/Roughness/AmbientOcclusion maps are kept; preview PNGs and the
-losing candidates were deleted.
+Color/NormalGL maps are kept per set; the separate Roughness/AmbientOcclusion
+maps were consolidated into single packed ORM textures
+(`*_ORM.jpg` / `*_orm_1k.jpg`, R=AO G=Roughness) by
+`tools/campaign-pack-orm.mjs` on 2026-08-21 and the originals deleted;
+preview PNGs and the losing candidates were deleted earlier.
 
 - ambientCG asset pages each state: "Creative Commons CC0 license, making
   them free to use without attribution - even in commercial circumstances."

@@ -125,7 +125,7 @@ globalThis.document = {
 };
 globalThis.Image = FakeImage;
 
-const { composeAlbedo, applySourcedTerrain, applySourcedBuildings } =
+const { composeAlbedo, composeAlbedoFromOrm, applySourcedTerrain, applySourcedBuildings } =
   await import('./sourcedTextures.js');
 
 // ---------------------------------------------------------------------------
@@ -191,12 +191,14 @@ const acg = (dir, base) => ({
   normal: `${dir}/${base}_1K-JPG_NormalGL.jpg`,
   rough: `${dir}/${base}_1K-JPG_Roughness.jpg`,
   ao: `${dir}/${base}_1K-JPG_AmbientOcclusion.jpg`,
+  orm: `${dir}/${base}_1K-JPG_ORM.jpg`,
 });
 const ph = (dir, base) => ({
   color: `${dir}/${base}_diff_1k.jpg`,
   normal: `${dir}/${base}_nor_gl_1k.jpg`,
   rough: `${dir}/${base}_rough_1k.jpg`,
   ao: `${dir}/${base}_ao_1k.jpg`,
+  orm: `${dir}/${base}_orm_1k.jpg`,
 });
 const SETS = {
   grass: acg(TT, 'Grass004'),
@@ -217,6 +219,27 @@ for (const set of Object.values(SETS)) {
     const kind = slot === 'color' || slot === 'ao' || slot === 'rough' ? slot : 'normal';
     IMAGE_SOURCES.set(url, patternCanvas(kind, fnv(url)));
   }
+}
+// SA-05: register the packed ORM canvas per set as the TRUE pack of its
+// ao/rough patterns (R=AO byte, G=Roughness byte), so the ORM compose path is
+// exercised end-to-end AND stays byte-identical to the legacy two-readback
+// path on lossless input.
+for (const set of Object.values(SETS)) {
+  const aoC = IMAGE_SOURCES.get(set.ao);
+  const roughC = IMAGE_SOURCES.get(set.rough);
+  const ormC = new RasterCanvas();
+  ormC.width = ormC.height = SET_SIZE;
+  const d = new Uint8ClampedArray(SET_SIZE * SET_SIZE * 4);
+  const ab = aoC.getContext('2d').buf;
+  const rb = roughC.getContext('2d').buf;
+  for (let i = 0; i < SET_SIZE * SET_SIZE; i++) {
+    d[i * 4] = ab[i * 4];
+    d[i * 4 + 1] = rb[i * 4];
+    d[i * 4 + 2] = 0;
+    d[i * 4 + 3] = 255;
+  }
+  ormC.getContext('2d').putImageData({ data: d, width: SET_SIZE, height: SET_SIZE }, 0, 0);
+  IMAGE_SOURCES.set(set.orm, ormC);
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +340,32 @@ for (const [label, cc, ca, cr, opts] of CASES) {
   assertBytesEqual(canvasBytes(a), canvasBytes(b), 'compose determinism');
 }
 console.log(`[wa6] golden matrix: ${CASES.length} option paths byte-identical to reference`);
+
+// ---------------------------------------------------------------------------
+// 1b. SA-05 ORM composer — byte-identical to the legacy two-readback composer
+//     on lossless packed input (R=AO, G=Roughness), at half the readbacks.
+// ---------------------------------------------------------------------------
+const gOrm = IMAGE_SOURCES.get(SETS.grass.orm);
+const ORM_CASES = [
+  ['orm terrain plain', { roughInAlpha: true }],
+  ['orm terrain roughMul', { roughInAlpha: true, roughMul: 1.25 }],
+  ['orm props defaults', {}],
+  ['orm full entry', { roughInAlpha: true, roughMul: 1.3, tint: [0.74, 0.73, 0.72], desat: 0.2, lift: 0.05 }],
+];
+for (const [label, opts] of ORM_CASES) {
+  const got = composeAlbedoFromOrm(gColor, gOrm, { ...opts });
+  const want = refComposeAlbedo(gColor, gAo, gRough, opts);
+  assertBytesEqual(canvasBytes(got), canvasBytes(want), `golden ${label}`);
+}
+console.log(`[wa6] orm matrix: ${ORM_CASES.length} option paths byte-identical to legacy composer`);
+
+// readback contract: the ORM compose performs exactly one color readback plus
+// one shared-scratch readback (legacy compose needed three of each)
+resetOps();
+composeAlbedoFromOrm(gColor, gOrm, { roughInAlpha: true, roughMul: 1.25 });
+assert.deepEqual({ ...OPS }, { drawImage: 2, getImageData: 2, putImageData: 1 },
+  'ORM compose halves canvas readbacks vs legacy');
+console.log('[wa6] orm compose surface ops: drawImage=2 getImageData=2 putImageData=1 (legacy: 3/3/1)');
 
 // ---------------------------------------------------------------------------
 // E2E harness — drive the public swap hooks over all sixteen battlefields.
@@ -510,6 +559,29 @@ try {
   // ------------------------------------------------------------------
   const flagged = CONTEXTS.filter((c) => c.attrs && c.attrs.willReadFrequently);
   assert.equal(flagged.length, 1, 'exactly one readback-optimized context (shared scratch)');
+
+  // ------------------------------------------------------------------
+  // 6b. SA-05 routing probe — a FRESH module instance (query-specifier
+  //     import => empty image/composite caches, own scratch context) loads
+  //     badlands cold: G(sand), D(sand, different tint) + plaster/wood/
+  //     stone(->brick) = 5 composites, each via the single-readback ORM path
+  //     (color + ORM scratch = exactly 2 getImageData; a legacy fallback
+  //     would need 3+). Runs after section 6 so the one-scratch-context
+  //     assertion above sees only the primary instance's contexts.
+  // ------------------------------------------------------------------
+  {
+    const probe = await import('./sourcedTextures.js?orm-routing-probe');
+    resetOps();
+    const pLayers = terrainLayers();
+    const pSets = buildingSets();
+    probe.applySourcedTerrain('badlands', pLayers, {});
+    probe.applySourcedBuildings(pSets, 'badlands');
+    await drain();
+    assert.equal(OPS.getImageData, 10,
+      `cold badlands load composites 5 sets via the ORM path (got ${OPS.getImageData} readbacks, want 10)`);
+    checkSwaps('badlands', pLayers, pSets);
+    console.log('[wa6] orm routing: fresh-instance badlands load = 5 composites x 2 readbacks confirmed');
+  }
 
   // ------------------------------------------------------------------
   // Measurement summary (putImageData === composite count: exactly one
