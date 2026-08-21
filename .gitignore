@@ -18,3 +18,9 @@ __pycache__/
 .vercel/
 .env.local
 public/models/tanks/**/*.glb
+
+# Machine-local QA/perf diagnostics from campaign verification runs
+# (traces, headed/headless capture JSON, boot failure diagnostics).
+# Intentionally untracked; preserved locally for future A/B work.
+.qa-campaign/
+.qa-dev/
