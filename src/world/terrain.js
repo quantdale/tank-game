@@ -7,12 +7,15 @@ import {
   initialTerrainLods,
   terrainLodForDistance,
 } from './terrainLodPolicy.js';
-import { createTerrainStreamScheduler } from './terrainStreamScheduler.js';
+import {
+  createTerrainStreamScheduler,
+  estimateCameraMotion,
+} from './terrainStreamScheduler.js';
 import { SimplexNoise } from '../engine/simplexFast.js';
 import { applySourcedTerrain } from './sourcedTextures.js';
 import { buildHorizonRing } from './maps/horizon.js';
 // MOBILE r1: central tier texture scale (desktop returns sizes unchanged)
-import { texSize } from '../engine/quality.js';
+import { getPreset, texSize } from '../engine/quality.js';
 
 export function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
   t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
@@ -2700,6 +2703,56 @@ export function buildChunkGeometry(hf, cx0, cz0, segs, fine) {
 // banding/treeline) target the styled builder.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// WA5 motion prefetch feed — render-side camera tracking for the stream
+// scheduler. Pure and node-runnable (like buildFineGrid/buildChunkGeometry
+// above): updateLOD feeds one sample per rendered frame and hands the reused
+// {vx, vz} to stream.update, whose chooser projects its prefetch band along
+// the camera's heading. Ranking input only — nothing here reaches the sim.
+// ---------------------------------------------------------------------------
+
+// A stall (loading veil, tab restore, debugger pause) must not read as a huge
+// velocity: cap the wall-gap dt behind the finite difference.
+const CAMERA_MOTION_MAX_DT_S = 0.25;
+
+/**
+ * Create the reusable state one terrain group's updateLOD feeds. Allocated
+ * once per world build; {@link feedCameraMotion} never allocates per frame.
+ * @returns {{prevX:number, prevZ:number, prevMs:number, motion:{vx:number, vz:number}}}
+ */
+export function createCameraMotionFeed() {
+  return { prevX: NaN, prevZ: NaN, prevMs: 0, motion: { vx: 0, vz: 0 } };
+}
+
+/**
+ * Finite-difference the camera pose against the previous feed and return the
+ * reused motion vector for stream.update. The first call (no previous pose)
+ * and same-ms double fires report a stopped camera; long gaps clamp so a
+ * stall cannot fling the prefetch band.
+ * @param {{prevX:number, prevZ:number, prevMs:number, motion:{vx:number, vz:number}}} feed
+ * @param {number} x camera world x
+ * @param {number} z camera world z
+ * @param {number} nowMs monotonic wall ms (performance.now / Date.now)
+ * @returns {{vx:number, vz:number}} velocity m/s (reused object)
+ */
+export function feedCameraMotion(feed, x, z, nowMs) {
+  const dtS = Number.isFinite(feed.prevX)
+    ? Math.min((nowMs - feed.prevMs) * 0.001, CAMERA_MOTION_MAX_DT_S)
+    : 0;
+  if (dtS > 1e-4) {
+    estimateCameraMotion(feed.prevX, feed.prevZ, x, z, dtS, feed.motion);
+  } else {
+    // First feed (no previous pose) or a sub-0.1 ms double fire: report a
+    // stopped camera — NaN/0-dt arithmetic would otherwise poison velocity.
+    feed.motion.vx = 0;
+    feed.motion.vz = 0;
+  }
+  feed.prevX = x;
+  feed.prevZ = z;
+  feed.prevMs = nowMs;
+  return feed.motion;
+}
+
 /**
  * Build the chunked-LOD terrain mesh group with the splat-blended PBR material.
  * The returned group exposes `group.userData.updateLOD(camPos)` for map.js.
@@ -2796,9 +2849,17 @@ function* terrainBuildSteps(heightField, engineCtx, cfg, streamOpts = null) {
   const stream = streamFarLods ? createTerrainStreamScheduler({
     chunks,
     heightField,
+    // WA5 preset lever: per-tier background streaming budget (quality.js
+    // data; 'high' keeps the benchmark-calibrated 1.25 ms default). Read at
+    // map build — a mid-battle preset switch retunes on the next world.
+    budgetMs: getPreset()?.terrainStreamBudgetMs ?? 1.25,
     statsTarget: streamStats,
     onDispose: (_chunk, _level, geometry) => geometry.dispose?.(),
   }) : null;
+  // WA5 motion prefetch: feed the scheduler the render camera's velocity so
+  // its lookahead band leads the drive instead of trailing it. Render-side
+  // only — the motion ranks background prefetch jobs, never sim state.
+  const motionFeed = createCameraMotionFeed();
   group.userData.updateLOD = (camPos) => {
     for (const c of chunks) {
       const d = Math.hypot(camPos.x - c.cx, camPos.z - c.cz);
@@ -2808,7 +2869,12 @@ function* terrainBuildSteps(heightField, engineCtx, cfg, streamOpts = null) {
         c.mesh.geometry = c.lods[want];
       }
     }
-    if (stream) stream.update(camPos.x, camPos.z);
+    if (stream) {
+      const nowMs = typeof performance !== 'undefined' && performance.now
+        ? performance.now() : Date.now();
+      stream.update(camPos.x, camPos.z,
+        feedCameraMotion(motionFeed, camPos.x, camPos.z, nowMs));
+    }
   };
   group.userData.streamingStats = streamStats;
   return group;
