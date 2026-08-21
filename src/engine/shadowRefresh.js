@@ -41,6 +41,36 @@ export function mergeRequiredShadowWork(scheduledMask, requiredIndex,
 }
 
 /**
+ * Per-cascade instanced-caster budget (W4 shadow-proxy pass).
+ *
+ * The near pair is the hero/contact quality contract: never budgeted. Each
+ * rate-capped far cascade accepts at most this many surviving instances per
+ * refresh, bounding the worst-case broad-phase vertex load no matter how the
+ * vegetation/prop density levers are tuned. Callers rank candidates
+ * largest-silhouette-first, so a binding budget sheds the smallest — least
+ * resolvable — distant casters, never a hero-sized one, and because the
+ * ranking and radii are snapshot-static the SAME instances are shed every
+ * refresh (no refresh-to-refresh popping).
+ */
+export const SHADOW_FAR_INSTANCE_BUDGET = 4096;
+
+/**
+ * Instance budget for one cascade draw.
+ * @param {number} cascadeIndex cascade being rendered
+ * @param {number} [nearCount] continuous (hero/contact) cascade count
+ * @param {number} [farBudget] ceiling for rate-capped cascades
+ * @returns {number} max surviving instances (`Infinity` = unbounded)
+ */
+export function shadowInstanceBudget(cascadeIndex, nearCount = 2,
+  farBudget = SHADOW_FAR_INSTANCE_BUDGET) {
+  if (isContinuousShadowCascade(cascadeIndex, nearCount)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (farBudget === Number.POSITIVE_INFINITY) return farBudget;
+  return Math.max(0, Math.floor(farBudget));
+}
+
+/**
  * @param {number} cascadeCount
  * @param {{nearCount?:number, intervalS?:number}} [opts]
  */

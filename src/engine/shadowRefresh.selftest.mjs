@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import {
+  SHADOW_FAR_INSTANCE_BUDGET,
   SHADOW_REFRESH_INTERVAL_S,
   createShadowRefreshScheduler,
   isContinuousShadowCascade,
   mergeRequiredShadowWork,
+  shadowInstanceBudget,
 } from './shadowRefresh.js';
 
 assert.equal(isContinuousShadowCascade(0), true, 'hero cascade refreshes every presented frame');
@@ -110,6 +112,37 @@ function sample(hz, seconds = 2, cascades = 4) {
   assert.ok((first & 0b0011) === 0, 'post-force far update owns its frame');
   const second = scheduler.step(SHADOW_REFRESH_INTERVAL_S / 2);
   assert.equal(second, 0b0011, 'post-force near pair owns the next frame');
+}
+
+// --- W4 per-cascade instanced-caster budgets --------------------------------
+// The hero/contact near pair is never budgeted; each rate-capped far cascade
+// accepts a bounded survivor count so density levers cannot blow up the far
+// shadow refresh that runs round-robin every other frame.
+{
+  assert.equal(shadowInstanceBudget(0), Number.POSITIVE_INFINITY,
+    'hero cascade is never budgeted');
+  assert.equal(shadowInstanceBudget(1), Number.POSITIVE_INFINITY,
+    'contact cascade is never budgeted');
+  assert.equal(shadowInstanceBudget(2), SHADOW_FAR_INSTANCE_BUDGET,
+    'far cascade uses the default budget');
+  assert.equal(shadowInstanceBudget(3), SHADOW_FAR_INSTANCE_BUDGET,
+    'second far cascade uses the default budget');
+  // Mobile builds run three cascades with the same near pair split.
+  assert.equal(shadowInstanceBudget(2, 2), SHADOW_FAR_INSTANCE_BUDGET,
+    'mobile single far cascade uses the default budget');
+  // A custom near split reclassifies consistently with isContinuousShadowCascade.
+  assert.equal(shadowInstanceBudget(1, 1), SHADOW_FAR_INSTANCE_BUDGET,
+    'custom nearCount reclassifies cascade 1 as budgeted');
+  assert.equal(shadowInstanceBudget(0, 1), Number.POSITIVE_INFINITY,
+    'custom nearCount keeps cascade 0 unbounded');
+  // Explicit budgets: honored, pass-through Infinity, floored/clamped safely.
+  assert.equal(shadowInstanceBudget(2, 2, 512), 512, 'explicit far budget is honored');
+  assert.equal(shadowInstanceBudget(2, 2, Number.POSITIVE_INFINITY), Number.POSITIVE_INFINITY,
+    'unbounded far budget passes through');
+  assert.equal(shadowInstanceBudget(2, 2, 0), 0, 'zero budget sheds every instance');
+  assert.equal(shadowInstanceBudget(2, 2, -5), 0, 'negative budgets clamp to zero');
+  assert.equal(shadowInstanceBudget(2, 2, 100.9), 100,
+    'fractional budgets floor to whole instances');
 }
 
 console.log('shadowRefresh.selftest: 60/120/144 Hz cadence and phase spreading passed');

@@ -15,8 +15,9 @@ import {
   createShadowRefreshScheduler,
   isContinuousShadowCascade,
   mergeRequiredShadowWork,
+  shadowInstanceBudget,
 } from './shadowRefresh.js';
-import { snapShadowCoordinate } from './shadowStability.js';
+import { snapShadowCoordinate, subtexelCullRadius } from './shadowStability.js';
 
 const CASCADES = 4;
 // Battlefield establishing shots read objects out to ~500 m; with the clearer
@@ -415,6 +416,23 @@ function buildCoverageMipmaps(tex, cutoff) {
 // via addUpdateRange (worst case ~0.5 MB/frame of bufferSubData, vs the 4096²
 // shadow map's 64 MB/frame of raster writes this deletes). Allocation-free
 // after snapshot build (module-scope scratch only) per the hot-loop rule.
+//
+// W4 SHADOW-PROXY PASS (per-cascade caster budgets) extends the same hook:
+//  - SUB-TEXEL SKIP: each cascade draw also drops instances whose true
+//    silhouette (geoRadii — the bounding radius without the cull margin) is
+//    below subtexelCullRadius(cascade texel). An orthographic map projects an
+//    occluder's cross-section 1:1, so such a caster cannot darken more than
+//    ~one texel before the >=1.25-texel PCF disk dilutes it under perceivable
+//    contrast — "tiny props = no distant shadow" for free. The floor scales
+//    with each cascade's texel, so near/contact cascades (2 cm texels at
+//    4096) keep every caster while far cascades shed pebbles/small debris;
+//    mobile presets (512px far maps) shed proportionally more.
+//  - FAR-CASCADE INSTANCE BUDGET: rate-capped cascades accept at most
+//    shadowInstanceBudget() survivors per refresh, drawn largest-first so a
+//    binding budget sheds the smallest distant casters deterministically.
+//    The near pair is never budgeted and penumbra-width compensation
+//    (SHADOW_RADII/SHADOW_RADII_REF_SIZES) is untouched — hero/contact
+//    quality is preserved by construction.
 const SHADOW_CULL_MIN_TRIS = 24000; // instances*trisPerInstance below this: not worth the hook
 const SHADOW_CULL_MARGIN = 4.0; // meters: wind sway + far-cascade rr staleness
 const _cullState = new WeakMap(); // InstancedMesh -> rec | {pending} | null(never)
@@ -424,6 +442,13 @@ const _cullProj = new THREE.Matrix4();
 const _cullSphere = new THREE.Sphere();
 const _cullVec = new THREE.Vector3();
 const _cullMat = new THREE.Matrix4();
+// W4 per-cascade caster budget: CSM shadow cameras register here at
+// construction so the shared prototype hook can tell a game cascade (texel
+// size + budget policy apply) from a foreign shadow light (garage rig —
+// behavior stays exactly the r7 frustum culling).
+const _cascadeShadows = new WeakMap(); // shadowCamera -> { shadow, index }
+let _cullTexel = 0; // world units per texel of the cascade being drawn (0 = unknown)
+let _cullBudget = Number.POSITIVE_INFINITY; // instance budget of the cascade being drawn
 let _cullFrusCam = null;
 let _cullFrusStamp = -1;
 let _cullTick = 0; // bumped once per lighting.update() — invalidates the frustum memo
@@ -473,6 +498,10 @@ function buildCullRec(mesh) {
   // per-instance world bounding spheres (static — guaranteed by the gate)
   const centers = new Float32Array(n * 3);
   const radii = new Float32Array(n);
+  // W4: the same radius WITHOUT the cull margin — the caster's true
+  // silhouette scale, used by the per-cascade sub-texel skip (a margin-padded
+  // radius would read every instance as "big enough" and disable the cut).
+  const geoRadii = new Float32Array(n);
   const snapMat = attrs[0].snap;
   for (let i = 0; i < n; i++) {
     _cullMat.fromArray(snapMat, i * 16).premultiply(mesh.matrixWorld);
@@ -480,9 +509,23 @@ function buildCullRec(mesh) {
     centers[i * 3] = _cullVec.x;
     centers[i * 3 + 1] = _cullVec.y;
     centers[i * 3 + 2] = _cullVec.z;
-    radii[i] = bs.radius * _cullMat.getMaxScaleOnAxis() + SHADOW_CULL_MARGIN;
+    const scaled = bs.radius * _cullMat.getMaxScaleOnAxis();
+    geoRadii[i] = scaled;
+    radii[i] = scaled + SHADOW_CULL_MARGIN;
   }
-  const rec = { pending: false, n, attrs, centers, radii, k: 0, compacted: false };
+  // Largest-silhouette-first draw order. With no budget binding this changes
+  // nothing (every survivor is kept either way); when a far-cascade budget
+  // binds, the shed tail is exactly the smallest — least resolvable —
+  // distant casters, and being snapshot-static it is the SAME set every
+  // refresh, so far shadows thin deterministically instead of popping.
+  const order = new Uint32Array(n);
+  for (let i = 0; i < n; i++) order[i] = i;
+  order.sort((a, b) => geoRadii[b] - geoRadii[a]);
+  // Deferred-compaction scratch: survivor slots are recorded here first so a
+  // nothing-culled frame can early-out BEFORE any buffer byte is touched
+  // (copying during the scan would silently permute the owner's arrays).
+  const survivors = new Uint32Array(n);
+  const rec = { pending: false, n, attrs, centers, radii, geoRadii, order, survivors, k: 0, compacted: false };
   _cullState.set(mesh, rec);
   return rec;
 }
@@ -532,29 +575,55 @@ function shadowCullBefore(object, shadowCamera) {
   if (_cullFrusCam !== shadowCamera || _cullFrusStamp !== _cullTick) {
     _cullProj.multiplyMatrices(shadowCamera.projectionMatrix, shadowCamera.matrixWorldInverse);
     _cullFrustum.setFromProjectionMatrix(_cullProj);
+    // W4 per-cascade budget inputs (registered CSM cascades only): the
+    // cascade's actual texel edge — read live so preset switches and refits
+    // are honored — and its instance budget (near pair unbounded).
+    const reg = _cascadeShadows.get(shadowCamera);
+    _cullTexel = reg
+      ? (shadowCamera.right - shadowCamera.left) / Math.max(1, reg.shadow.mapSize.x)
+      : 0;
+    _cullBudget = reg ? shadowInstanceBudget(reg.index, FAR_CASCADE_START) : Number.POSITIVE_INFINITY;
     _cullFrusCam = shadowCamera;
     _cullFrusStamp = _cullTick;
   }
-  const { centers, radii, attrs, n } = rec;
+  const { centers, radii, geoRadii, order, survivors, attrs, n } = rec;
+  // W4: skip casters whose whole silhouette is below this cascade's
+  // resolvability floor (subtexelCullRadius → 0 when the texel is unknown,
+  // disabling the cut for foreign shadow lights). Orthographic projection
+  // maps an occluder's cross-section 1:1 onto the map plane, so a sub-floor
+  // caster darkens less than one texel before the >=1.25-texel PCF disk
+  // spreads it under perceivable contrast — pure wasted vertex work.
+  const minRadius = subtexelCullRadius(_cullTexel);
+  const budget = _cullBudget;
   let k = 0;
-  for (let i = 0; i < n; i++) {
+  let dropped = 0;
+  // Pass 1 — classify only: record survivor slots in draw order; no buffer
+  // writes, so the nothing-culled early-out below stays byte-exact (copying
+  // during the scan would silently permute the owner's arrays).
+  for (let j = 0; j < n; j++) {
+    const i = order[j];
+    if (geoRadii[i] < minRadius) { dropped++; continue; }
     _cullSphere.center.set(centers[i * 3], centers[i * 3 + 1], centers[i * 3 + 2]);
     _cullSphere.radius = radii[i];
-    if (!_cullFrustum.intersectsSphere(_cullSphere)) continue;
-    if (k !== i) {
-      for (let a = 0; a < attrs.length; a++) {
-        const e = attrs[a];
-        const size = e.size;
-        const arr = e.attr.array;
-        const snap = e.snap;
-        const so = i * size;
-        const doff = k * size;
-        for (let j = 0; j < size; j++) arr[doff + j] = snap[so + j];
-      }
-    }
-    k++;
+    if (!_cullFrustum.intersectsSphere(_cullSphere)) { dropped++; continue; }
+    if (k >= budget) { dropped += n - j; break; } // largest-first: the tail is all smaller
+    survivors[k++] = i;
   }
-  if (k === n) return; // nothing culled — buffers untouched, draw as-is
+  if (dropped === 0) return; // nothing culled — buffers untouched, draw as-is
+  // Pass 2 — compact the prefix from the snapshot (never from live arrays).
+  for (let s = 0; s < k; s++) {
+    const i = survivors[s];
+    if (i === s) continue;
+    for (let a = 0; a < attrs.length; a++) {
+      const e = attrs[a];
+      const size = e.size;
+      const arr = e.attr.array;
+      const snap = e.snap;
+      const so = i * size;
+      const doff = s * size;
+      for (let j2 = 0; j2 < size; j2++) arr[doff + j2] = snap[so + j2];
+    }
+  }
   object.count = k;
   rec.k = k;
   rec.compacted = true;
@@ -754,6 +823,15 @@ export function createLighting(scene, camera, sunDir) {
   });
   csm.fade = true;
   csm.updateFrustums(); // required after changing fade
+
+  // W4 per-cascade caster budget: register every cascade's shadow camera so
+  // the shared onBeforeShadow hook knows each draw's texel size and budget
+  // class (near pair = hero/contact, unbounded; far pair = capped). Foreign
+  // shadow lights (garage rig) never register and keep plain r7 behavior.
+  for (let i = 0; i < csm.lights.length; i++) {
+    _cascadeShadows.set(csm.lights[i].shadow.camera,
+      { shadow: csm.lights[i].shadow, index: i });
+  }
 
   // --- r3 SHADOW DENSITY chunk patch (see SHADOW_AMBIENT_DIM above) --------
   // CSM's constructor just replaced ShaderChunk.lights_fragment_begin with
