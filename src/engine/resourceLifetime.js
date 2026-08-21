@@ -36,16 +36,25 @@ function collectMaterialTextures(material, out) {
 
 function collectTreeResources(root, bag) {
   if (!root?.traverse) return;
-  root.traverse((object) => {
-    if (object.geometry) bag.geometries.add(object.geometry);
-    const materials = Array.isArray(object.material)
-      ? object.material : (object.material ? [object.material] : []);
-    for (const material of materials) {
-      bag.materials.add(material);
-      collectMaterialTextures(material, bag.textures);
-    }
-    if (object.skeleton?.boneTexture) bag.textures.add(object.skeleton.boneTexture);
-  });
+  root.traverse((object) => collectObjectResources(object, bag));
+}
+
+function collectObjectResources(object, bag) {
+  if (object.geometry) bag.geometries.add(object.geometry);
+  const materials = Array.isArray(object.material)
+    ? object.material : (object.material ? [object.material] : []);
+  for (const material of materials) {
+    bag.materials.add(material);
+    collectMaterialTextures(material, bag.textures);
+  }
+  if (object.skeleton?.boneTexture) bag.textures.add(object.skeleton.boneTexture);
+  // Shadow maps are GPU render targets hung OFF the light, not children — a
+  // traverse alone never sees them, so an evicted subtree's light would keep
+  // its depth/VSM target resident until the context dies.
+  if (object.isLight && object.shadow) {
+    if (object.shadow.map) bag.textures.add(object.shadow.map);
+    if (object.shadow.mapPass) bag.textures.add(object.shadow.mapPass);
+  }
 }
 
 /**
@@ -67,14 +76,7 @@ export function disposeObject3DResources(root, { preserveRoots = [] } = {}) {
   if (root?.traverse) {
     root.traverse((object) => {
       objects += 1;
-      if (object.geometry) owned.geometries.add(object.geometry);
-      const materials = Array.isArray(object.material)
-        ? object.material : (object.material ? [object.material] : []);
-      for (const material of materials) {
-        owned.materials.add(material);
-        collectMaterialTextures(material, owned.textures);
-      }
-      if (object.skeleton?.boneTexture) owned.textures.add(object.skeleton.boneTexture);
+      collectObjectResources(object, owned);
       // Batched/instanced meshes may own private GPU textures that are not
       // reachable through `material` (matrices, visibility, morph data).
       if ((object.isBatchedMesh || object.isInstancedMesh) && typeof object.dispose === 'function') {

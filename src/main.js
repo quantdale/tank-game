@@ -41,7 +41,8 @@ import { createSky } from './engine/sky.js';
 import { createLighting } from './engine/lighting.js';
 import { createPost } from './engine/post.js';
 import { createCameraRig, createShowroomOrbit } from './engine/cameraRig.js';
-import { createMap, createMapAsync } from './world/map.js';
+// BOOT GRAPH r16: ./world/map.js (terrain + vegetation + props assembly) is
+// loaded lazily below — see worldBuilderReady.
 // DESTRUCTIBLES r1: prop-destruction bus seam (audio subscribes to the event)
 import { setDestroyedEventSink } from './world/destructibles.js';
 import { MAP_IDS, getMapConfig, resolveMapId } from './world/maps/index.js';
@@ -107,6 +108,22 @@ import {
 import { createBootScreen } from './ui/bootScreen.js';
 import { createBattleLoadScreen, tierNumeral } from './ui/battleLoad.js';
 import { createTransition } from './ui/transition.js';
+// BOOT GRAPH r16: the battlefield builder (terrain + vegetation + props +
+// collision assembly) is no longer part of the static boot graph — nothing
+// before the first battle entry can build a world, so its fetch/eval now
+// overlaps the staged boot instead of serializing ahead of this module body
+// (BOOT_TIMINGS.imports). The import starts immediately; beginWorldBuild
+// awaits it, and every synchronous caller (switchMap / __SHOTS / debug
+// entries) only runs after __GAME_READY, by which point the bindings are live.
+let createMap = null;
+let createMapAsync = null;
+const worldBuilderReady = import('./world/map.js').then((m) => {
+  createMap = m.createMap;
+  createMapAsync = m.createMapAsync;
+}).catch((error) => {
+  console.error('[boot] battlefield builder failed to load', error);
+  throw error;
+});
 // Direct /studio navigation is a distinct boot target, not "boot the garage,
 // reveal it, then start a second load".  The intent is captured before any
 // staged work so the inline boot screen can report Studio-specific progress
@@ -394,7 +411,7 @@ function beginWorldBuild(mapId, onProgress = null, { background = false } = {}) 
     // load sheds the scheduling tax.
     const yieldForeground = createFrameBudgetYielder(32);
     const yieldBackground = createFrameBudgetYielder(4);
-    rec.promise = createMapAsync(engineCtx, { mapId: id, seed: 1337 },
+    rec.promise = worldBuilderReady.then(() => createMapAsync(engineCtx, { mapId: id, seed: 1337 },
       async (label, f) => {
         if (rec.cancelled) {
           worldPrefetchStats.cancelled++;
@@ -443,7 +460,7 @@ function beginWorldBuild(mapId, onProgress = null, { background = false } = {}) 
       .finally(() => {
         if (worldBuilds.get(id) === rec) worldBuilds.delete(id);
         if (worldPrefetchStats.active === id) worldPrefetchStats.active = null;
-      });
+      }));
     worldBuilds.set(id, rec);
   }
   if (onProgress && rec.listeners) {
@@ -489,10 +506,19 @@ function worldRaycast(o, d, m) { return world ? world.raycast(o, d, m) : null; }
 const devTrace = import.meta.env.DEV
   ? (await import('./dev/perfTrace.js')).createDevTrace({ renderer })
   : null;
+// DEV-only per-pass GPU timing (EXT_disjoint_timer_query_webgl2), strictly
+// opt-in via ?gputrace=1 — window.__GPU_TIMER.results() after a run.
+if (devTrace && new URLSearchParams(location.search).get('gputrace') === '1') {
+  const { createGpuPassTimer } = await import('./dev/gpuTimer.js');
+  window.__GPU_TIMER = createGpuPassTimer(renderer);
+  window.__GPU_TIMER.enable();
+}
 const bus = createBus(devTrace ? (ev, payload) => devTrace.event(ev, payload) : null);
 installBattleRecords(bus);
 const game = createGameState();
-devTrace?.configure({ game });
+// DEV render attribution: scene/lighting let perfTrace attach whole-frame
+// draw/triangle probes and shadow/texture telemetry (see src/dev/renderProbes.js).
+devTrace?.configure({ game, scene, lighting });
 spawnTanks(game, engineCtx);
 // The staged default battle (screenshot contract + first BATTLE press) needs a
 // world for its spawn points, so it is staged by ensureWorld() rather than
@@ -507,6 +533,14 @@ let battleStaged = false;
 let camoSweepP = Promise.resolve();
 let battleWarmPending = false;
 let battleWarmGeneration = 0;
+// Diagnostic rows accumulate per streamed visual; cap the ring so a long
+// multi-battle session cannot grow it without limit.
+function recordVisualTiming(row) {
+  if (typeof window === 'undefined') return;
+  const rows = (window.__VISUAL_LOAD_TIMINGS ||= []);
+  rows.push(row);
+  if (rows.length > 256) rows.splice(0, rows.length - 256);
+}
 
 async function streamBattleVisuals(predicate, yieldForBudget, onProgress = null) {
   const total = game.tanks.filter((ent) =>
@@ -520,9 +554,7 @@ async function streamBattleVisuals(predicate, yieldForBudget, onProgress = null)
       quality: next.quality,
       startedAt: Math.round(performance.now()),
     };
-    const visualTimings = typeof window !== 'undefined'
-      ? (window.__VISUAL_LOAD_TIMINGS ||= []) : null;
-    visualTimings?.push(visualTiming);
+    recordVisualTiming(visualTiming);
     let visualMark = performance.now();
     try {
       await prebakeSharedTextures(getSpec(next.ent.specId),
@@ -1165,6 +1197,8 @@ function prepareWorldServices(next = world) {
 function activateWorld(next, { services = true } = {}) {
   if (world && world !== next) world.group.visible = false;
   world = next;
+  // DEV probes re-root onto the live battlefield (chunks/vegetation/props).
+  devTrace?.configure({ world });
   worldDormant = false;
   world.group.visible = true;
   // LOADING PERF (boot r9): the cloud-deck sprites bake lazily (see sky.js) —
@@ -1207,6 +1241,10 @@ function switchMap(mapId) {
   if (world && world.mapId === mapId) return world;
   let next = worldCache.get(mapId);
   if (!next) {
+    // Screenshot-contract/debug callers run only after __GAME_READY, when
+    // the deferred builder is long resident; this guard names a genuinely
+    // premature call instead of failing on a null function.
+    if (!createMap) throw new Error(`Battlefield builder not resident yet for "${mapId}"`);
     next = createMap(engineCtx, { mapId, seed: 1337 });
     worldCache.set(mapId, next);
   }
@@ -1911,7 +1949,13 @@ sky.applyFog(scene);
 // High-zoom de-fog (WoT sniper behavior): remember the base density so the
 // render loop can scale it by FOV without mutating the sky's baseline.
 let baseFogDensity = scene.fog.density; // updated on map switch (sky preset)
-const post = createPost(renderer, scene, camera);
+// BOOT r16: composer construction (three full-drawing-buffer HDR targets +
+// depth textures + the pass graph) moved INTO the 'post' boot stage below.
+// It used to run right here as an un-attributed stall between staged work;
+// now it reports under 'post' and the loading screen paints before it. The
+// few earlier consumers (context recovery, resize seam) tolerate the null
+// window with `post?.`.
+let post = null;
 // WebGL context restoration is recoverable in place. Three rebuilds its GL
 // state first; we then step mobile down to the safe preset, trim optional
 // residents, resize the post targets and redraw the shadow set. The sim stays
@@ -1920,7 +1964,7 @@ const post = createPost(renderer, scene, camera);
 renderer.userData.contextRecovery = {
   onLost() {
     graphicsContextLost = true;
-    post.setAdaptiveSuspended(true);
+    post?.setAdaptiveSuspended(true);
   },
   async onRestored() {
     if (getDeviceTier() === 'mobile') {
@@ -1930,21 +1974,21 @@ renderer.userData.contextRecovery = {
     }
     await nextFrame();
     applyViewportSize();
-    post.resetAdaptiveResolution();
+    post?.resetAdaptiveResolution();
     lighting.update(true);
     graphicsContextLost = false;
-    post.setAdaptiveSuspended(false);
+    post?.setAdaptiveSuspended(false);
     return true;
   },
 };
 // Pixel-density state is workload-local. A pressured battle must never carry
 // a reduced render scale back into the garage, and a fresh battle gets a new
 // measured baseline instead of inheriting showroom cadence.
-bus.on('phase:change', () => post.resetAdaptiveResolution());
+bus.on('phase:change', () => post?.resetAdaptiveResolution());
 // Map construction, roster painting and shader compilation intentionally
 // create long frames behind an opaque screen. They are loading throughput,
 // not gameplay performance, so exclude them from the live quality governor.
-bus.on('ui:battleStart', () => post.setAdaptiveSuspended(true));
+bus.on('ui:battleStart', () => post?.setAdaptiveSuspended(true));
 
 // ---------------------------------------------------------------------------
 // End-of-battle overlay (integration-owned DOM)
@@ -2373,9 +2417,7 @@ async function startBattleLoading(specId, mapId = null) {
     buildMs: Math.round(performance.now() - playerVisualStartedAt),
     prebakeMs: 0,
   };
-  if (typeof window !== 'undefined') {
-    (window.__VISUAL_LOAD_TIMINGS ||= []).push(playerVisualTiming);
-  }
+  recordVisualTiming(playerVisualTiming);
   const playerUploadStartedAt = performance.now();
   // setupBattle must construct the player synchronously so simulation and HUD
   // state are valid, but it does not have to upload every map in the same
@@ -4437,7 +4479,7 @@ function tick(nowMs) {
 
 function applyViewportSize() {
   onResize(renderer, camera);
-  post.setSize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
+  post?.setSize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
   lighting.updateFrustums();
 }
 window.addEventListener('resize', applyViewportSize);
@@ -5205,6 +5247,11 @@ if (world) {
   updateDustAndSync();
 }
 await bootStage('post', async () => {
+  // BOOT r16: build the composer here (see the declaration above) so its
+  // render-target allocations are staged, reported work instead of an
+  // invisible gap between stages. Studio boots need it too — its covered
+  // entry renders through the same chain.
+  post = createPost(renderer, scene, camera);
   // Direct Studio boot has no garage hero or dressing to present. Its own
   // covered entry renders the real world/camera before the boot veil lifts.
   if (STUDIO_BOOT_INTENT) return;
