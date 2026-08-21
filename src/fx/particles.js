@@ -1123,6 +1123,17 @@ class Pool {
     this.mesh.matrixAutoUpdate = false;
     this.mesh.castShadow = false;
     this.mesh.receiveShadow = false;
+    // WA2 warm-cost: an empty pool still cost a full draw submission every
+    // rendered frame (setProgram + ~14 WebGLUniforms uploads + sampler bind)
+    // for zero rasterized pixels — nine pools' worth in every garage/boot
+    // frame before any battle exists. Start hidden; claim() shows the mesh,
+    // killAll() hides it again. Warm coverage is unaffected: every warm route
+    // (combat volley / warmOpeningEffects + destruction) fills ALL nine pools
+    // BEFORE initializeForwardProgramsSteps()/warmRender run, and
+    // renderer.compile() traverses visible objects only — non-empty pools are
+    // visible exactly then. Programs/textures persist across the toggle, so
+    // the first live emit of a fresh battle is a cache hit, never a link.
+    this.mesh.visible = false;
   }
 
   /** Claim the next ring slot; returns the instance index. */
@@ -1131,6 +1142,7 @@ class Pool {
     this.cursor = (this.cursor + 1) % this.capacity;
     this.highWater = Math.max(this.highWater, i + 1);
     this.geometry.instanceCount = this.highWater;
+    this.mesh.visible = true;
     return i;
   }
 
@@ -1198,6 +1210,7 @@ class Pool {
     this.cursor = 0;
     this.highWater = 0;
     this.geometry.instanceCount = 0;
+    this.mesh.visible = false;
   }
 }
 
@@ -1333,6 +1346,10 @@ export function createParticleSystem(engineCtx, { seed = 5000 } = {}) {
       textureAssetPromise = Promise.all(Object.entries(PARTICLE_TEXTURE_ASSETS).map(
         async ([name, src]) => [name, await loadTextureImage(src)],
       )).then((entries) => {
+        // WA2 warm-cost: if the synchronous canvas bake finished first (battle
+        // open cannot wait for a slow decode), drop this decode on the floor
+        // instead of retaining ~9 MB of RGBA bitmaps for the whole session.
+        if (texturesBaked) return true;
         textureAssetImages = Object.fromEntries(entries);
         return true;
       }).catch(() => false);
@@ -1348,6 +1365,12 @@ export function createParticleSystem(engineCtx, { seed = 5000 } = {}) {
     installTextureImage(dustTex, textureAssetImages.dust);
     installTextureImage(flashTex, textureAssetImages.flash);
     installTextureImage(jetTex, textureAssetImages.jet);
+    // WA2 warm-cost: the atlases are GPU-resident now — release the decoded
+    // CPU copies (~8.8 MB heap: 512²+1024²+768²+512²+128²+256×96 RGBA) so
+    // battle-open never carries both forms. preloadTextures()' guard checks
+    // texturesBaked first, so nothing re-reads the dropped map.
+    textureAssetImages = null;
+    textureAssetPromise = null;
     texturesBaked = true;
     return true;
   }
@@ -1379,6 +1402,10 @@ export function createParticleSystem(engineCtx, { seed = 5000 } = {}) {
     if (textureBakeGen !== g) return;
     textureBakeGen = null;
     texturesBaked = true;
+    // The bake path won (or raced) the async decode — release whichever
+    // decoded atlases already landed so they are not retained for the session.
+    textureAssetImages = null;
+    textureAssetPromise = null;
   }
 
   function warmTextures() {

@@ -25,4 +25,22 @@ for (const [name, [width, height, sha256]] of Object.entries(expected)) {
     `${name}: committed atlas matches the seeded first-party bake`);
 }
 
+// WA2 warm-cost drift guard: particles.js preloadTextures() downloads exactly
+// this committed set (PARTICLE_TEXTURE_ASSETS). A loader entry that misses a
+// committed atlas silently falls back to the ~200 ms synchronous canvas bake
+// on battle open; an extra loader entry 404s into the same fallback. Pin the
+// map to the committed files so both sides move together.
+const particlesSrc = await readFile(new URL('./particles.js', import.meta.url), 'utf8');
+const mapMatch = particlesSrc.match(/const PARTICLE_TEXTURE_ASSETS = Object\.freeze\(\{([\s\S]*?)\}\);/);
+assert.ok(mapMatch, 'PARTICLE_TEXTURE_ASSETS map exists in particles.js');
+const loaderNames = [...mapMatch[1].matchAll(/(\w+):\s*'\/fx\/particles-(\w+)\.png'/g)];
+assert.equal(loaderNames.length, Object.keys(expected).length,
+  'loader map references exactly the committed atlas count');
+for (const [, key, file] of loaderNames) {
+  assert.equal(key, file, `loader key '${key}' matches its atlas file name`);
+  assert.ok(key in expected, `loader entry '${key}' has a committed atlas`);
+}
+assert.deepEqual(loaderNames.map(([, key]) => key).sort(), Object.keys(expected).sort(),
+  'loader map covers exactly the six committed atlases');
+
 console.log('particleTextureAssets.selftest: six deterministic prebuilt atlases passed');

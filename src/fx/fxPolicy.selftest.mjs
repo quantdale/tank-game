@@ -7,6 +7,7 @@ import {
   FX_HEAVY_CREDITS_PER_TICK,
   FX_TRACER_MIN_HALF_PX,
   FX_TRACER_MAX_HALF_M,
+  FX_PARTICLE_PROGRAM_GROUPS,
   fxLodLevel,
   fxColumnPuffsPerTick,
   fxDustAdmitted,
@@ -78,5 +79,47 @@ assert.ok(/fxColumnPuffsPerTick\(/.test(effectsSrc), 'column pressure policy is 
 assert.ok(/fxDustAdmitted\(/.test(effectsSrc), 'dust admission policy is wired');
 assert.ok(/admitHeavy\(\)/.test(effectsSrc), 'heavy-beat admission is wired');
 assert.ok(/poolOccupancy\(\)/.test(effectsSrc), 'occupancy signal is consumed');
+
+// --- WA2 particle program census (battle-open warm cost) ----------------------
+// The warm stage's shader-first-use storm scales with unique programs. The
+// census table in fxPolicy.js documents the real grouping; these assertions
+// pin it to the particles.js source so a new pool or fragment variant must
+// update the table (and the warm bill) deliberately.
+const particlesSrc = await readFile(new URL('./particles.js', import.meta.url), 'utf8');
+const censusFamilies = Object.values(FX_PARTICLE_PROGRAM_GROUPS).flat();
+assert.equal(censusFamilies.length, 9, 'census covers all nine pooled families');
+assert.equal(new Set(censusFamilies).size, 9, 'census families are distinct');
+for (const family of censusFamilies) {
+  const count = particlesSrc.split(`new Pool('${family}'`).length - 1;
+  assert.equal(count, 1, `pool '${family}' is constructed exactly once and registered`);
+}
+// Shared-program pairs: smoke/dust and fire/flash must keep IDENTICAL shader
+// sources — they differ only by uniforms/texture, which three's program cache
+// ignores. A per-pool fragment override for these four would silently add two
+// program links back to the battle-open warm.
+assert.ok(/fragmentShader: additive \? PUFF_FRAG_ADDITIVE : PUFF_FRAG_NORMAL/.test(particlesSrc),
+  'puff fragment selection stays the shared two-variant ternary');
+for (const marker of [
+  "m.fragmentShader = PUFF_FRAG_BILLOW;",   // billow only
+  "m.fragmentShader = PUFF_FRAG_PROP;",     // psmoke only
+]) {
+  assert.equal(particlesSrc.split(marker).length - 1, 1,
+    `fragment override '${marker.trim()}' remains single-use`);
+}
+// Idle-draw gating: empty pools must not submit draws (setProgram + uniform
+// upload) every rendered frame. Hidden at construction and after killAll(),
+// shown by the first claim(); warm routes fill every pool before their
+// compile/render windows, so coverage is preserved.
+assert.ok(/this\.mesh\.visible = false;\s*\n\s*\}\s*\n\s*\/\*\* Claim the next ring slot/.test(particlesSrc),
+  'pools start hidden (no idle draw submissions)');
+assert.ok(/claim\(\) \{[\s\S]*?this\.mesh\.visible = true;/m.test(particlesSrc),
+  'first claim() shows the pool mesh');
+assert.ok(/killAll\(\) \{[\s\S]*?this\.mesh\.visible = false;/m.test(particlesSrc),
+  'killAll() hides the pool mesh again');
+// Decoded prebuilt atlases are released once GPU-resident — never retained
+// alongside the bake for the whole session.
+assert.ok(/textureAssetImages = null;/.test(particlesSrc) &&
+  /textureAssetPromise = null;/.test(particlesSrc),
+  'decoded atlas heap is released after install/bake');
 
 console.log('fxPolicy.selftest: LOD bands, admission budget, pressure response, tracer floor passed');

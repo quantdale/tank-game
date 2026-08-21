@@ -43,6 +43,26 @@ export function fxLodLevel(distM) {
 // existing clock-driven timer queue, preserving chronology and outcome.
 export const FX_HEAVY_CREDITS_PER_TICK = 2;
 
+// --- Particle program census (WA2 battle-open warm cost) ----------------------
+// The pooled particle system creates one material per pool, but three r185
+// caches WebGLPrograms by SHADER SOURCE + parameter class — never by uniform
+// values or texture bindings — so families grouped below link exactly ONE
+// program regardless of how many materials reference it. This is the audit
+// table for the warm-stage shader-first-use storm: 9 pool materials collapse
+// to 7 unique programs, and pairs that differ only by uniforms (smoke/dust,
+// fire/flash) already share for free. Guarded by fxPolicy.selftest.mjs so a
+// future pool or fragment variant must land here deliberately instead of
+// silently growing the battle-open link bill.
+export const FX_PARTICLE_PROGRAM_GROUPS = Object.freeze({
+  puff_normal:   Object.freeze(['smoke', 'dust']),   // PUFF_VERT + PUFF_FRAG_NORMAL
+  puff_additive: Object.freeze(['fire', 'flash']),   // PUFF_VERT + PUFF_FRAG_ADDITIVE
+  puff_billow:   Object.freeze(['billow']),          // PUFF_VERT + PUFF_FRAG_BILLOW
+  puff_prop:     Object.freeze(['psmoke']),          // PUFF_VERT + PUFF_FRAG_PROP
+  jet:           Object.freeze(['jet']),             // JET_VERT + JET_FRAG
+  streak:        Object.freeze(['sparks']),          // STREAK_VERT + STREAK_FRAG
+  debris:        Object.freeze(['debris']),          // DEBRIS_VERT + DEBRIS_FRAG
+});
+
 // --- Pool-pressure response ---------------------------------------------------
 // Measured occupancy fractions (see particles.js poolOccupancy) throttle the
 // continuous emitters BEFORE the ring buffer starts overwriting live puffs.

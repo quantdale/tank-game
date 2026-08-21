@@ -586,6 +586,10 @@ export function createFx(engineCtx, heightField, { seed = 5000 } = {}) {
   atgmBodies.renderOrder = 25;
   atgmBodies.layers.set(LATE_FX_LAYER);
   atgmBodies.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  // WA2 warm-cost: a count-0 InstancedMesh still costs a draw submission
+  // (setProgram + uniform upload) every rendered frame; stay hidden until a
+  // guided shell flies (update()) and after resetAll().
+  atgmBodies.visible = false;
   const atgmFlareGeo = new THREE.SphereGeometry(0.25, 8, 6);
   const atgmFlareMat = new THREE.MeshBasicMaterial({
     color: 0xffd21f,
@@ -600,6 +604,7 @@ export function createFx(engineCtx, heightField, { seed = 5000 } = {}) {
   atgmFlares.renderOrder = 26;
   atgmFlares.layers.set(LATE_FX_LAYER);
   atgmFlares.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  atgmFlares.visible = false; // WA2 warm-cost: see atgmBodies note
   group.add(atgmBodies, atgmFlares);
 
   // Static tracers (screenshot composers) survive per-frame rebuilds:
@@ -3084,6 +3089,10 @@ export function createFx(engineCtx, heightField, { seed = 5000 } = {}) {
       atgmBodies.count = atgmCount;
       atgmFlares.count = atgmCount;
       renderedAtgmBodies = atgmCount;
+      // WA2 warm-cost: skip the draw submission entirely on missile-free
+      // frames (the common case — see the atgmBodies construction note).
+      atgmBodies.visible = atgmCount > 0;
+      atgmFlares.visible = atgmCount > 0;
       if (atgmCount > 0 || atgmBodies.userData.lastCount > 0) {
         atgmBodies.instanceMatrix.needsUpdate = true;
         atgmFlares.instanceMatrix.needsUpdate = true;
@@ -4289,6 +4298,9 @@ export function createFx(engineCtx, heightField, { seed = 5000 } = {}) {
       tracerGeo.instanceCount = 0;
       atgmBodies.count = 0;
       atgmFlares.count = 0;
+      // WA2 warm-cost: no guided shells in flight — stop submitting their draws
+      atgmBodies.visible = false;
+      atgmFlares.visible = false;
       renderedAtgmBodies = 0;
       renderedAtgmTrailSegments = 0;
       timers.length = 0;
