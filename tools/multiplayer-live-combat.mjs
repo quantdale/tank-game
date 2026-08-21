@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
 import { createServer as createViteServer } from 'vite';
 import { createSignalingServer } from '../server/signalingServer.js';
@@ -40,7 +41,7 @@ const lossPercent = numericArg('loss', 3);
 const inputLossPercent = numericArg('input-loss', 2);
 const timeoutMs = numericArg('timeout', 180_000);
 const artifactDir = resolve('.qa-dev/multiplayer-live-7v7');
-const root = new URL('..', import.meta.url).pathname;
+const root = fileURLToPath(new URL('..', import.meta.url));
 const browserErrors = [];
 
 const vite = await createViteServer({

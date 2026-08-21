@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
 import { createServer as createViteServer } from 'vite';
 import { createSignalingServer } from '../server/signalingServer.js';
 
-const root = new URL('..', import.meta.url).pathname;
+const root = fileURLToPath(new URL('..', import.meta.url));
 const errors = [];
 const signaling = createSignalingServer({ host: '127.0.0.1', port: 0 });
 let vite = null;

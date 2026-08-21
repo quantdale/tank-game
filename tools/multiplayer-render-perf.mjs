@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
 import { createServer as createViteServer } from 'vite';
 import { createSignalingServer } from '../server/signalingServer.js';
@@ -40,7 +41,7 @@ const roomMode = stringOption('room-mode', 'lan');
 if (!['lan', 'private'].includes(roomMode)) {
   throw new TypeError('room-mode must be lan or private');
 }
-const root = new URL('..', import.meta.url).pathname;
+const root = fileURLToPath(new URL('..', import.meta.url));
 const consoleErrors = [];
 let browser = null;
 

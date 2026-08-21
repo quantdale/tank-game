@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
 import { createServer as createViteServer } from 'vite';
 import { createSignalingServer } from '../server/signalingServer.js';
@@ -17,7 +18,7 @@ const latencyMs = numericArg('latency', 85);
 const jitterMs = numericArg('jitter', 35);
 const lossPercent = numericArg('loss', 12);
 const inputLossPercent = numericArg('input-loss', 0);
-const root = new URL('..', import.meta.url).pathname;
+const root = fileURLToPath(new URL('..', import.meta.url));
 const browserErrors = [];
 
 const vite = await createViteServer({

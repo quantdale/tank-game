@@ -191,8 +191,14 @@ export async function createDedicatedMatchServer({
   if (autoTick) {
     timer = setInterval(() => {
       const now = performance.now();
-      registry.advance(Math.max(0, now - lastTickMs));
-      matchmaker.reconcile();
+      try {
+        registry.advance(Math.max(0, now - lastTickMs));
+        matchmaker.reconcile();
+      } catch (error) {
+        // A live service must survive an unexpected per-tick fault; it is
+        // logged and the next tick proceeds with the full elapsed budget.
+        console.error('[match] advance failed', error);
+      }
       lastTickMs = now;
     }, 8);
     if (typeof timer.unref === 'function') timer.unref();

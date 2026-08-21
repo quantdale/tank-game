@@ -11,6 +11,7 @@ import {
   normalizeRoomChatText,
   validateEnvelope,
 } from './protocol.js';
+import { TransportClosedError } from './loopbackTransport.js';
 import { SnapshotAssembler, SnapshotBuffer, createSnapshotDelta } from './snapshot.js';
 
 function validateRate(tickHz, snapshotHz) {
@@ -224,10 +225,20 @@ export class AuthoritativeMatchRuntime {
       tick: this.tick,
     });
     peer.sendSeq = nextSequence(peer.sendSeq);
-    const accepted = type === MESSAGE_TYPES.SNAPSHOT &&
-      typeof peer.transport.sendState === 'function'
-      ? peer.transport.sendState(envelope)
-      : peer.transport.send(envelope);
+    let accepted;
+    try {
+      accepted = type === MESSAGE_TYPES.SNAPSHOT &&
+        typeof peer.transport.sendState === 'function'
+        ? peer.transport.sendState(envelope)
+        : peer.transport.send(envelope);
+    } catch (error) {
+      // A channel can sit in a closing state between the last tick and the
+      // close event; treat the vanished transport as a disconnect instead of
+      // letting one dead socket terminate the authoritative match loop.
+      if (!(error instanceof TransportClosedError)) throw error;
+      this.detachPeer(peer.id, 'transport_closed');
+      return false;
+    }
     if (!accepted && typeof peer.transport.close === 'function') {
       peer.transport.close('backpressure_limit');
       this.detachPeer(peer.id, 'backpressure_limit');

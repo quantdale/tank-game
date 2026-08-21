@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
 import { createServer as createViteServer } from 'vite';
 import { createSignalingServer } from '../server/signalingServer.js';
@@ -32,7 +33,7 @@ const jitterMs = numericArg('jitter', 15);
 const lossPercent = numericArg('loss', 5);
 const inputLossPercent = numericArg('input-loss', 3);
 const rosterTimeoutMs = 20_000 + playerCount * 2_000;
-const root = new URL('..', import.meta.url).pathname;
+const root = fileURLToPath(new URL('..', import.meta.url));
 const browserErrors = [];
 
 const vite = await createViteServer({
