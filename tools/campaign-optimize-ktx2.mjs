@@ -156,8 +156,14 @@ export function classifyTexture(filePath) {
     };
   }
 
-  // 3. Particle atlases (VFX)
-  if (/^particles-.*\.png$/i.test(lower) || /_atlas\./i.test(lower) || /fx[\\/]/i.test(filePath)) {
+  // 3. Particle atlases (VFX). SA-10 r1: the fx-directory term must match a
+  // WHOLE path segment (`public/fx/…`), not any "fx" followed by a separator —
+  // the substring form classified sources under arbitrary ancestors whose
+  // name merely ENDS in "fx" (observed live: %TEMP%\cot-ktx2-jpeg-<rnd>fx\
+  // where mkdtempSync's random suffix supplied the tail, flipping albedo
+  // JPEGs to particle atlases and flaking section 9 of the selftest).
+  if (/^particles-.*\.png$/i.test(lower) || /_atlas\./i.test(lower)
+    || /(?:^|[\\/])fx[\\/]/i.test(filePath)) {
     return {
       profile: TEXTURE_PROFILES.PARTICLE_ATLAS,
       colorSpace: 'srgb',

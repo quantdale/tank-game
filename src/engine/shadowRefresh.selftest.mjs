@@ -202,4 +202,24 @@ function sample(hz, seconds = 2, cascades = 4) {
   );
 }
 
+// --- SA-10 r1: the high-refresh step path must stay allocation-free ---------
+// The 120+ Hz branch runs on EVERY presented frame; it previously allocated
+// a collect array + sort closure per frame. The selection now scans in place
+// via the named dueNearBefore comparator — pin both facts so neither can
+// quietly regress.
+{
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('./shadowRefresh.js', import.meta.url), 'utf8');
+  const stepStart = src.indexOf('function step(dtS)');
+  const stepEnd = src.indexOf('lastMask = mask;', stepStart);
+  assert.ok(stepStart > 0 && stepEnd > stepStart, 'step() body located in source');
+  const stepSrc = src.slice(stepStart, stepEnd);
+  assert.ok(!/=\s*\[\s*\]/.test(stepSrc),
+    'step() must not allocate array literals per frame');
+  assert.ok(!/\.sort\(/.test(stepSrc) && !/\.push\(/.test(stepSrc),
+    'step() must not allocate sort comparators / collector arrays per frame');
+  assert.ok(/function dueNearBefore\(/.test(src),
+    'named top-2 comparator exists (no per-frame closures)');
+}
+
 console.log('shadowRefresh.selftest: 60/120/144 Hz cadence and phase spreading passed');

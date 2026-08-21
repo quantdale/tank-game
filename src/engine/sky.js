@@ -50,9 +50,10 @@ const SKY_RADIANCE_SCALE = 0.38;
 // r8 ("horizon haze blows out to clipped white: milky white-out quarter around
 // the sun azimuth, winter sky a flat white disc — haze + bloom stack with no
 // rolloff"): knee 1.2 → 1.0 and range 0.5 → 0.45 put the dome's ASYMPTOTE at
-// 1.45, safely under post.js's 1.55 bloom threshold — atmospheric scattering
-// can no longer feed the bloom pass at all (the "haze band + bloom" white-out
-// mechanism). Falloff 0.125 → 0.06 compresses the wide Mie halo (lum 2-6)
+// 1.45, safely under post.js's bloom threshold (1.55 at the time of this r8;
+// later raised to 1.78 — BLOOM_THRESHOLD in post.js — so the margin only
+// widened) — atmospheric scattering can no longer feed the bloom pass at
+// all (the "haze band + bloom" white-out mechanism). Falloff 0.125 → 0.06 compresses the wide Mie halo (lum 2-6)
 // much harder — it lands at 1.03-1.12 instead of 1.25-1.35 — while the true
 // sun disc (lum >> 100) still reaches ~1.44 and keeps reading as the hottest
 // point in the sky.
@@ -100,7 +101,8 @@ const SKY_KNEE_FALLOFF = 0.11; // 1/e width of the shoulder in luminance units
 // with 18% of texels over 235. 0.50 lands it ~205-215 with the directional
 // warm/cool hue unmistakably legible. Paired with HORIZON_LUM_CAP 0.55 →
 // 0.48 (fog + scatter-in + cloud haze pole inherit that sample) and post.js
-// AERIAL_HAZE_LUM_CAP 0.50 → 0.44.
+// AERIAL_HAZE_LUM_CAP 0.50 → 0.44. (Both companions have since moved again:
+// HORIZON_LUM_CAP is now 0.45 and AERIAL_HAZE_LUM_CAP 0.385.)
 const HAZE_MAX_LUM = 0.50; // linear pre-ACES luminance ceiling in the band
 const HAZE_COMPRESS = 0.18; // slope retained above the ceiling
 const HAZE_BAND_TOP = 0.24; // direction.y where the haze treatment fades out
@@ -121,7 +123,11 @@ const HAZE_TINT_MIX = 0.63;
 // display-space IGN dither at the end of post.js's grade pass.
 const SKY_DITHER = 0.008; // linear-space dither amplitude ~2 display LSB
 const SKY_FRAG_ANCHOR = 'gl_FragColor = vec4( texColor, 1.0 );';
-const SKY_DOME_SCALE = 10000; // must stay inside camera.far
+// The dome is NOT depth-bounded by camera.far (4000): three's Sky shader
+// forces gl_Position.z = w, so it always rasterizes exactly on the far plane
+// at any scale. 10000 keeps the dome shell comfortably outside the cloud
+// decks (3400/3600) so deck fragments always win the depth test against it.
+const SKY_DOME_SCALE = 10000;
 const ENV_SKY_SCALE = 50; // PMREMGenerator.fromScene far plane = 100
 // IBL is fill, not key: at 1.1 it buried the sun's shadows in a flat milky
 // wash, and even 0.45 diluted open-ground shadows to a ~1.3:1 luma ratio.
@@ -752,7 +758,8 @@ function sampleHorizonColor(renderer, sunDir, preset = DEFAULT_PRESET) {
 // that still reads as atmosphere, never as blown white.
 // r3: 0.48 → 0.45 — paired with post.js AERIAL_HAZE_LUM_CAP 0.44 → 0.41 so
 // the desert mesa band and urban far field keep silhouette value against the
-// haze (the "mesas ~90% swallowed by a pink haze band" read).
+// haze (the "mesas ~90% swallowed by a pink haze band" read). (post.js has
+// since tightened its cap further to 0.385; this side is unchanged.)
 const HORIZON_LUM_CAP = 0.45;
 
 /** Scale a linear color down so its Rec709 luminance is <= maxLum (hue kept).

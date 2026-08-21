@@ -114,6 +114,18 @@ export function createShadowRefreshScheduler(cascadeCount, opts = {}) {
   let highRefreshMode = false;
   let lastMask = 0;
 
+  /**
+   * Total order over due near cascades, mirroring the historical collect +
+   * sort: most-overdue accumulator first, then circular distance from the
+   * tie cursor. Kept as a named closure so the per-frame step below allocates
+   * neither an array nor a fresh comparator (SA-10 r1 hot-loop hygiene).
+   */
+  function dueNearBefore(a, b) {
+    return nearAcc[b] - nearAcc[a]
+      || ((a - nearTieCursor + nearCount) % nearCount)
+        - ((b - nearTieCursor + nearCount) % nearCount);
+  }
+
   function reset(resetCadence = false) {
     nearAcc.fill(0);
     // Keep the near pair phase-aligned and offset the alternating far stream.
@@ -175,17 +187,25 @@ export function createShadowRefreshScheduler(cascadeCount, opts = {}) {
       // separate frame. At the 120 Hz target this preserves exact 60/60/30/30
       // cadence. If throughput falls below 120, far cadence yields before we
       // recombine broad + near caster sets and amplify the overload.
-      const dueNear = [];
+      // SA-10 r1: select the top-2 overdue near cascades with an in-place
+      // linear scan over dueNearBefore — the previous collect-into-array +
+      // sort allocated a fresh array AND comparator closure on every
+      // presented frame of this mode.
+      let bestA = -1;
+      let bestB = -1;
       for (let i = 0; i < nearCount; i++) {
-        if (nearAcc[i] + epsilonS >= intervalS) dueNear.push(i);
+        if (nearAcc[i] + epsilonS < intervalS) continue;
+        if (bestA < 0 || dueNearBefore(i, bestA)) {
+          bestB = bestA;
+          bestA = i;
+        } else if (bestB < 0 || dueNearBefore(i, bestB)) {
+          bestB = i;
+        }
       }
-      dueNear.sort((a, b) => nearAcc[b] - nearAcc[a]
-        || ((a - nearTieCursor + nearCount) % nearCount)
-          - ((b - nearTieCursor + nearCount) % nearCount));
       const farDue = farCount > 0 && farAcc + epsilonS >= intervalS;
-      if (dueNear.length >= 2) {
+      if (bestB >= 0) {
         for (let job = 0; job < 2; job++) {
-          const i = dueNear[job];
+          const i = job === 0 ? bestA : bestB;
           mask |= 1 << i;
           nearAcc[i] = Math.max(0, nearAcc[i] - intervalS);
           nearTieCursor = (i + 1) % nearCount;
@@ -194,21 +214,19 @@ export function createShadowRefreshScheduler(cascadeCount, opts = {}) {
         // When one near stream alone is late (normally only after a hitch),
         // service whichever class is more overdue, still as a one-class
         // frame. The other catches up next frame without a workload burst.
-        const near = dueNear[0];
-        if (near === undefined || farAcc >= nearAcc[near]) {
+        if (bestA < 0 || farAcc >= nearAcc[bestA]) {
           farCursor = (farCursor + 1) % farCount;
           mask |= 1 << (nearCount + farCursor);
           farAcc = Math.max(0, farAcc - intervalS);
         } else {
-          mask |= 1 << near;
-          nearAcc[near] = Math.max(0, nearAcc[near] - intervalS);
-          nearTieCursor = (near + 1) % nearCount;
+          mask |= 1 << bestA;
+          nearAcc[bestA] = Math.max(0, nearAcc[bestA] - intervalS);
+          nearTieCursor = (bestA + 1) % nearCount;
         }
-      } else if (dueNear.length) {
-        const i = dueNear[0];
-        mask |= 1 << i;
-        nearAcc[i] = Math.max(0, nearAcc[i] - intervalS);
-        nearTieCursor = (i + 1) % nearCount;
+      } else if (bestA >= 0) {
+        mask |= 1 << bestA;
+        nearAcc[bestA] = Math.max(0, nearAcc[bestA] - intervalS);
+        nearTieCursor = (bestA + 1) % nearCount;
       }
     } else {
       // 60–80 Hz: preserve the established every-frame near pair exactly.

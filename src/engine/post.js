@@ -51,7 +51,7 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
-import { getPreset, onPresetChange, reportSustainedOverload } from './quality.js';
+import { getPreset, onPresetChange, reportSustainedOverload, taaRequested } from './quality.js';
 import {
   aoSampleCount,
   baseDynamicScale,
@@ -887,10 +887,10 @@ const AerialShader = {
 // AAA tank games ship a strong LUT: warm highlights, cooled shadows, punchy
 // contrast, subtle vignette"): contrast 1.30 → 1.36 around the same measured
 // 0.33 pivot, saturation 1.06 → 1.09, vignette 0.24 → 0.26, and the split-
-// tone poles pushed ~20% further apart (below). Paired with renderer.js
-// exposure 1.16 → 1.20 so the midtone band holds its WoT-reference level
-// while lit-vs-shadow separation deepens (contrast alone would drag the
-// sub-pivot playfield darker — the r7 failure mode).
+// tone poles pushed ~20% further apart (below). The companion exposure lift
+// landed as 1.08 → 1.16 in renderer.js (r7) — the stronger 1.20 probe was
+// A/B'd and REJECTED there (it blew out high-albedo desert sand / winter
+// snow), so the grade pivot carries the midtone band instead.
 // r5 ("verdant gameplay cameras are oversaturated acid green-yellow — neon
 // mobile-game; real WoT ground is desaturated multi-hue"): global saturation
 // 1.09 → 1.045 (~-4% overall, and the aerial chroma octave now supplies hue
@@ -1450,6 +1450,12 @@ export class TAAPass extends Pass {
         uTexel: { value: new THREE.Vector2(1, 1) },
         uBlendK: { value: this.blendK },
         uSeed: { value: 1.0 },
+        // Phase-C seam (temporal/FEASIBILITY.md §3.4/§6): per-frame k
+        // elevation for velocity-gated responsiveness (sniper transition,
+        // fast movers). Deliberately INERT until Phase B browser A/B evidence
+        // lands — max(uBlendK, 0) ≡ uBlendK today. History invalidation on
+        // size changes does NOT route through this uniform: setSize() seeds
+        // via lastMs (k=1 verbatim frame), matching the ao-boil r3 policy.
         uResponsiveMask: { value: 0.0 },
       },
       vertexShader: CopyShader.vertexShader,
@@ -1775,7 +1781,9 @@ export function createPost(renderer, scene, camera) {
 
   const taaPass = new TAAPass(camera);
   sceneDepthRepointers.push((d) => { taaPass.sceneDepthTexture = d; });
-  let taaEnabled = Boolean(preset.taa || (typeof window !== 'undefined' && window.__TAA_ENABLED === true));
+  // SA-12: TAA is the experimental W13 lever — quality.taaRequested keeps it
+  // unreachable from persisted state (see that gate's contract note).
+  let taaEnabled = taaRequested(preset);
   sceneAA.taaEnabled = taaEnabled;
   taaPass.enabled = taaEnabled;
 
@@ -2577,7 +2585,7 @@ export function createPost(renderer, scene, camera) {
     applyAoSampling(preset);
     msaaSamples = samplesForPreset(preset);
     sceneAA.setSamples(msaaSamples);
-    taaEnabled = Boolean(preset.taa || (typeof window !== 'undefined' && window.__TAA_ENABLED === true));
+    taaEnabled = taaRequested(preset); // SA-12: experimental lever, see gate contract
     sceneAA.taaEnabled = taaEnabled;
     taaPass.enabled = taaEnabled;
     publishAAState();

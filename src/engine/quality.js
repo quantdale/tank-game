@@ -526,7 +526,30 @@ export function setMobilePresetName(name) {
 
 /** @returns {typeof PRESETS[keyof typeof PRESETS]} the active preset object */
 export function getPreset() {
-  return PRESETS[resolvePresetName()];
+  // Belt-and-suspenders: resolvePresetName only ever returns validated names,
+  // so this fallback should be unreachable — a corrupt future resolver must
+  // degrade to the tuned default, never to `undefined` consumers.
+  return PRESETS[resolvePresetName()] || PRESETS.high;
+}
+
+/**
+ * SA-12 persistence gate for the EXPERIMENTAL W13 temporal-AA lever
+ * (src/engine/temporal/). TAA is opt-in ONLY:
+ *   - via an exact own `taa === true` on a shipped preset object — and NO
+ *     shipped preset defines it, so it is structurally unreachable from
+ *     stored state: persisted graphics state is a whitelist-validated preset
+ *     NAME string (cot.gfxPreset / cot.gfxMobilePreset), never an object;
+ *   - or the dev-console-only window.__TAA_ENABLED global (never persisted).
+ * Strict `=== true` on purpose: truthy junk inherited onto a preset object
+ * must not flip the pass on.
+ * @param {?object} [preset] candidate preset object (defaults to none)
+ * @returns {boolean}
+ */
+export function taaRequested(preset) {
+  if (preset && typeof preset === 'object' && preset.taa === true) return true;
+  try {
+    return typeof window !== 'undefined' && window.__TAA_ENABLED === true;
+  } catch (_) { return false; }
 }
 
 /**

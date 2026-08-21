@@ -68,6 +68,20 @@ console.log('--- Running campaign-optimize-ktx2.selftest.mjs ---');
   assert.equal(vfx.colorSpace, 'srgb');
   assert.equal(vfx.hasAlpha, true);
 
+  // SA-10 r1 regression pin: the fx-directory heuristic matches whole path
+  // SEGMENTS only. An ancestor whose name merely ends in "fx" (Windows
+  // %TEMP% mkdtemp suffixes, sibling project folders) must not flip an
+  // albedo source into a particle atlas — that exact shape flaked section 9
+  // mid-chain before the segment-anchor fix.
+  const tailFx = join(tmpdir(), 'cot-ktx2-jpeg-ABgfx', 'solid_Color.jpg');
+  assert.equal(classifyTexture(tailFx).profile, TEXTURE_PROFILES.ALBEDO,
+    'ancestor name ending in "fx" is not an fx directory');
+  const segPath = process.platform === 'win32'
+    ? 'D:\\proj\\public\\fx\\solid_Color.jpg'
+    : '/proj/public/fx/solid_Color.jpg';
+  assert.equal(classifyTexture(segPath).profile, TEXTURE_PROFILES.PARTICLE_ATLAS,
+    'a real fx path segment still classifies as particle atlas');
+
   console.log('[PASS] 1. Texture classification & color space routing');
 }
 
