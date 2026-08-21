@@ -17,7 +17,7 @@
 
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MARKER = '__STRIP_NC_REGISTRY__';
@@ -29,14 +29,16 @@ process.on('unhandledRejection', (e) => {
   console.error(`[registry-probe] tolerated rejection: ${e && e.message ? e.message : e}`);
 });
 
-const specs = await import(path.join(ROOT, 'src', 'vehicles', 'specs.js'));
+// pathToFileURL: a bare Windows absolute path (D:\...) parses as a URL with
+// scheme "d:" and throws under the ESM loader; file:// URLs work everywhere.
+const specs = await import(pathToFileURL(path.join(ROOT, 'src', 'vehicles', 'specs.js')).href);
 for (const mod of ['modern1.js', 'modern2.js', 'modern3.js',
   'variants.js', 'userdrops.js', 'userdrops2.js', 'userdrops3.js',
   'userdrops4.js', 'userdrops5.js', 'userdrops6.js', 'userdrops7.js']) {
   const p = path.join(ROOT, 'src', 'vehicles', mod);
   if (!existsSync(p)) continue;
   try {
-    await import(p);
+    await import(pathToFileURL(p).href);
   } catch (e) {
     console.error(`[registry-probe] note: ${mod} not importable outside the app (${e.message})`);
   }
