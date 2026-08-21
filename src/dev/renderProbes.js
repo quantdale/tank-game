@@ -1,15 +1,15 @@
 // Development-only render-attribution probes for the flight recorder
-// (campaign W1). Pure counters — no engine behavior change, no allocation in
+// (campaign W1/W2). Pure counters — no engine behavior change, no allocation in
 // the per-frame path: expensive scene traversals run on a wall-clock cadence
 // and their results are written into ONE reused snapshot object that
 // `sample()` keeps returning.
 //
 // Everything here reads state three.js already exposes (renderer.info.memory,
-// object flags, material maps) plus the lighting telemetry facade. Objects are
-// duck-typed (isMesh/isInstancedMesh/isGroup), so the module stays
-// Node-runnable without instantiating any WebGL object. Nothing imports or
-// patches engine modules, so production builds that never load src/dev stay
-// byte-for-byte untouched.
+// object flags, material maps) plus the lighting telemetry facade and world-cell
+// lifecycle tracker (cellLifecycle.js). Objects are duck-typed
+// (isMesh/isInstancedMesh/isGroup), so the module stays Node-runnable without
+// instantiating any WebGL object. Nothing imports or patches engine modules,
+// so production builds that never load src/dev stay byte-for-byte untouched.
 
 // RGBA8 + full mip chain factor used for the texture footprint ESTIMATE. The
 // game bakes 8-bit canvas/DataTextures almost exclusively, so 4 B/px is the
@@ -41,7 +41,8 @@ function findGroup(root, match) {
  * @param {object} [options.lighting] engine lighting facade (optional; its
  *   getShadowTelemetry() reports allocated cascade maps)
  * @param {object} [options.world] world facade (optional; group preferred as
- *   the shadow-count root, mirroring main.js shadowSceneCounts)
+ *   the shadow-count root, mirroring main.js shadowSceneCounts; cells facade)
+ * @param {object} [options.cells] explicit cell lifecycle tracker
  * @param {() => number} [options.now] injectable clock (node selftests)
  * @param {number} [options.traverseIntervalMs] minimum gap between full scene
  *   traversals (default 1000 ms; per-frame calls between traversals only copy
@@ -54,6 +55,7 @@ export function createRenderProbes(options = {}) {
   const renderer = options.renderer || null;
   const lighting = options.lighting || null;
   const world = options.world || null;
+  const explicitCells = options.cells || null;
   const now = options.now || (() => (typeof performance !== 'undefined' ? performance.now() : Date.now()));
   const intervalMs = options.traverseIntervalMs ?? 1000;
 
@@ -65,8 +67,11 @@ export function createRenderProbes(options = {}) {
     instancedMeshes: 0, instancedInstances: 0,
     vegMeshes: 0, vegInstances: 0,
     chunksVisible: 0, chunksLod0: 0, chunksLod1: 0, chunksLod2: 0,
+    cellsActive: 0, cellsVisible: 0, cellsShadowOnly: 0, cellsDistant: 0, cellsDormant: 0, cellsTotal: 0,
+    cellsVersion: 0,
     texMB: 0, texCount: 0, texUnsized: 0,
     shadowRTCount: 0, shadowRTMB: 0,
+    rtCount: 0, rtMB: 0,
   };
 
   let lastTraverseAt = -Infinity;
@@ -146,21 +151,55 @@ export function createRenderProbes(options = {}) {
     }
   }
 
+  function sampleCells() {
+    try {
+      const cells = explicitCells || world?.cells || world?._cells || options.vegetation?._cells;
+      if (cells && typeof cells.stats === 'function') {
+        const cs = cells.stats();
+        snap.cellsActive = cs.ACTIVE || 0;
+        snap.cellsVisible = cs.VISIBLE || 0;
+        snap.cellsShadowOnly = cs.SHADOW_ONLY || 0;
+        snap.cellsDistant = cs.DISTANT || 0;
+        snap.cellsDormant = cs.DORMANT || 0;
+        snap.cellsTotal = (cs.ACTIVE || 0) + (cs.VISIBLE || 0) + (cs.SHADOW_ONLY || 0) + (cs.DISTANT || 0) + (cs.DORMANT || 0);
+        snap.cellsVersion = cs.version || 0;
+      } else {
+        snap.cellsActive = snap.cellsVisible = snap.cellsShadowOnly = snap.cellsDistant = snap.cellsDormant = snap.cellsTotal = snap.cellsVersion = 0;
+      }
+    } catch (_) {
+      snap.cellsActive = snap.cellsVisible = snap.cellsShadowOnly = snap.cellsDistant = snap.cellsDormant = snap.cellsTotal = snap.cellsVersion = 0;
+    }
+  }
+
   function sampleShadowTelemetry() {
     try {
       const tele = lighting?.getShadowTelemetry?.();
-      if (!tele?.cascades) { snap.shadowRTCount = 0; snap.shadowRTMB = 0; return; }
-      let count = 0;
-      let bytes = 0;
-      for (const cascade of tele.cascades) {
-        if (!cascade.allocated || !cascade.allocatedSize) continue;
-        count++;
-        // Depth-only cascade target: 4 B/px is the conservative D32 case.
-        bytes += cascade.allocatedSize * cascade.allocatedSize * 4;
+      if (!tele?.cascades) { snap.shadowRTCount = 0; snap.shadowRTMB = 0; }
+      else {
+        let count = 0;
+        let bytes = 0;
+        for (const cascade of tele.cascades) {
+          if (!cascade.allocated || !cascade.allocatedSize) continue;
+          count++;
+          // Depth-only cascade target: 4 B/px is the conservative D32 case.
+          bytes += cascade.allocatedSize * cascade.allocatedSize * 4;
+        }
+        snap.shadowRTCount = count;
+        snap.shadowRTMB = bytes / 1048576;
       }
-      snap.shadowRTCount = count;
-      snap.shadowRTMB = bytes / 1048576;
     } catch (_) { snap.shadowRTCount = 0; snap.shadowRTMB = 0; }
+
+    snap.rtCount = snap.shadowRTCount;
+    snap.rtMB = snap.shadowRTMB;
+    try {
+      const post = options.post || options.composer;
+      if (post) {
+        const postCount = options.postRTCount || 4;
+        const postMB = options.postRTMB || 16;
+        snap.rtCount += postCount;
+        snap.rtMB += postMB;
+      }
+    } catch (_) {}
   }
 
   function sample() {
@@ -172,9 +211,11 @@ export function createRenderProbes(options = {}) {
       lastTraverseAt = at;
       try { traverseHeavy(); } catch (_) { /* keep last good counters */ }
       sampleShadowTelemetry();
+      sampleCells();
     }
     return snap;
   }
 
   return { sample };
 }
+

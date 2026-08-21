@@ -21,7 +21,7 @@ export function createOffscreenSceneWarmer(renderer, scene, camera, scale = 0.25
   const size = new THREE.Vector2();
   let target = null;
 
-  return function warmSceneOffscreen() {
+  function warmSceneOffscreen() {
     renderer.getDrawingBufferSize(size);
     const width = Math.max(8, Math.floor(size.x * scale));
     const height = Math.max(8, Math.floor(size.y * scale));
@@ -52,5 +52,18 @@ export function createOffscreenSceneWarmer(renderer, scene, camera, scale = 0.25
     } finally {
       renderer.setRenderTarget(priorTarget, priorFace, priorMip);
     }
+  }
+
+  warmSceneOffscreen.dispose = function dispose() {
+    if (target) {
+      target.dispose?.();
+      target = null;
+    }
   };
+
+  warmSceneOffscreen.getTarget = function getTarget() {
+    return target;
+  };
+
+  return warmSceneOffscreen;
 }

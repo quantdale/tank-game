@@ -119,8 +119,8 @@ clock += 16;
 w1trace.frame(16);
 
 const schema = w1trace.snapshot().frameSchema;
-assert.equal(schema.length, 22, 'W1 attribution columns appended');
-assert.deepEqual(schema.slice(15), ['geoMem', 'texMem', 'rtCount', 'texMB', 'casters', 'vegInst', 'chunks']);
+assert.equal(schema.length, 23, 'W1/W2 attribution columns appended');
+assert.deepEqual(schema.slice(15), ['geoMem', 'texMem', 'rtCount', 'texMB', 'casters', 'vegInst', 'chunks', 'cells']);
 const row = w1trace.snapshot().frames.at(-1);
 assert.equal(row[8], 12, 'calls summed across both passes');
 assert.equal(row[9], 300, 'triangles summed across both passes');
@@ -131,4 +131,17 @@ assert.equal(row[21], 1, 'visible terrain chunks via auto-probes');
 assert.ok(w1trace.tail(50, 'trace').some((r) => r.name === 'renderSample'),
   'rich probe sample rides the event ring');
 
+// Test GPU timer integration in snapshot
+const mockGpuTimer = {
+  results: () => [{ seq: 1, pass: 'opaque', gpuMs: 4.2 }],
+  breakdown: () => [{ pass: 'opaque', totalGpuMs: 4.2, p50GpuMs: 4.2 }],
+};
+w1trace.configure({ gpuTimer: mockGpuTimer });
+const snapWithGpu = w1trace.snapshot();
+assert.ok(Array.isArray(snapWithGpu.gpuTimer));
+assert.equal(snapWithGpu.gpuTimer[0].pass, 'opaque');
+assert.ok(Array.isArray(snapWithGpu.gpuBreakdown));
+assert.equal(snapWithGpu.gpuBreakdown[0].p50GpuMs, 4.2);
+
 console.log('perfTrace selftest: pass');
+

@@ -167,4 +167,128 @@ function makeRenderer(gl) {
   assert.equal(renderer.render.name, 'render', 'nothing wrapped on refusal');
 }
 
+// --- Pass attribution, per-pass breakdown, and percentile metrics -------------
+{
+  const gl = makeGl({});
+  let queryDurations = new Map();
+  gl.getQueryParameter = (q, pname) => {
+    if (pname === 'AVAILABLE') return gl._ended.has(q.id);
+    if (pname === 'RESULT') return queryDurations.get(q.id) ?? 2_000_000;
+    throw new Error('unstubbed query pname');
+  };
+
+  const renderer = makeRenderer(gl);
+  const timer = createGpuPassTimer(renderer);
+  timer.enable();
+
+  // Test various passes with explicit and inferred classification
+  const shadowTarget = { uuid: 'csm-0', name: 'shadowCascade0', width: 2048, height: 2048, isShadowMap: true };
+  const sceneTarget = { uuid: 'hdr-scene', name: 'sceneTarget', width: 1920, height: 1080 };
+  const gtaoTarget = { uuid: 'gtao-rt', name: 'GTAOPass.target', width: 960, height: 540 };
+  const bloomTarget = { uuid: 'bloom-mip0', name: 'UnrealBloomPass.down0', width: 960, height: 540 };
+  const lateFxTarget = { uuid: 'latefx-rt', name: 'LateFxPass.target', width: 1920, height: 1080 };
+  const gradeTarget = { uuid: 'grade-rt', name: 'OutputGradePass.target', width: 1920, height: 1080 };
+  const smaaTarget = { uuid: 'smaa-rt', name: 'SMAAPass.edges', width: 1920, height: 1080 };
+  const fsrTarget = { uuid: 'fsr-rt', name: 'FSR1Pass.easu', width: 1920, height: 1080 };
+
+  // Pass 1: Shadows
+  renderer.setRenderTarget(shadowTarget);
+  renderer.nextCalls = 45; renderer.nextTris = 120_000;
+  renderer.render();
+
+  // Pass 2: Main Opaque
+  renderer.setRenderTarget(sceneTarget);
+  renderer.nextCalls = 250; renderer.nextTris = 850_000;
+  renderer.render();
+
+  // Pass 3: GTAO (bracketed)
+  timer.bracketPass('gtao', () => {
+    renderer.setRenderTarget(gtaoTarget);
+    renderer.nextCalls = 4; renderer.nextTris = 8;
+    renderer.render();
+  });
+
+  // Pass 4: Late FX
+  timer.bracketPass('lateFx', () => {
+    renderer.setRenderTarget(lateFxTarget);
+    renderer.nextCalls = 18; renderer.nextTris = 4_000;
+    renderer.render();
+  });
+
+  // Pass 5: Bloom
+  renderer.setRenderTarget(bloomTarget);
+  renderer.nextCalls = 10; renderer.nextTris = 20;
+  renderer.render();
+
+  // Pass 6: Grade
+  renderer.setRenderTarget(gradeTarget);
+  renderer.nextCalls = 2; renderer.nextTris = 4;
+  renderer.render();
+
+  // Pass 7: SMAA
+  renderer.setRenderTarget(smaaTarget);
+  renderer.nextCalls = 6; renderer.nextTris = 12;
+  renderer.render();
+
+  // Pass 8: FSR / Resolve to screen
+  renderer.setRenderTarget(null);
+  renderer.nextCalls = 2; renderer.nextTris = 4;
+  renderer.render();
+
+  // Set query timings in nanoseconds
+  queryDurations.set(1, 1_800_000); // shadows: 1.8 ms
+  queryDurations.set(2, 5_200_000); // opaque: 5.2 ms
+  queryDurations.set(3, 1_400_000); // gtao: 1.4 ms
+  queryDurations.set(4, 800_000);   // lateFx: 0.8 ms
+  queryDurations.set(5, 1_100_000); // bloom: 1.1 ms
+  queryDurations.set(6, 400_000);   // grade: 0.4 ms
+  queryDurations.set(7, 900_000);   // smaa: 0.9 ms
+  queryDurations.set(8, 600_000);   // resolve: 0.6 ms
+  for (let id = 1; id <= 8; id++) gl._ended.set(id, true);
+
+  // Close the last segment by doing a rollover/poll
+  timer.poll();
+  const segs = timer.results();
+  assert.ok(segs.length >= 8, `expected >= 8 segments, got ${segs.length}`);
+  assert.equal(segs[0].pass, 'shadows');
+  assert.equal(segs[0].gpuMs, 1.8);
+  assert.equal(segs[1].pass, 'opaque');
+  assert.equal(segs[1].gpuMs, 5.2);
+  assert.equal(segs[2].pass, 'gtao');
+  assert.equal(segs[2].gpuMs, 1.4);
+  assert.equal(segs[3].pass, 'lateFx');
+  assert.equal(segs[3].gpuMs, 0.8);
+  assert.equal(segs[4].pass, 'bloom');
+  assert.equal(segs[4].gpuMs, 1.1);
+
+  const bd = timer.breakdown();
+  assert.ok(Array.isArray(bd));
+  assert.ok(bd.length >= 7);
+
+  const shadowEntry = bd.find((b) => b.pass === 'shadows');
+  assert.ok(shadowEntry);
+  assert.equal(shadowEntry.gpuSamples, 1);
+  assert.equal(shadowEntry.p50GpuMs, 1.8);
+  assert.equal(shadowEntry.maxGpuMs, 1.8);
+  assert.equal(shadowEntry.totalCalls, 45);
+  assert.equal(shadowEntry.totalTriangles, 120_000);
+  assert.ok(shadowEntry.gpuSharePct > 0);
+
+  const opaqueEntry = bd.find((b) => b.pass === 'opaque');
+  assert.ok(opaqueEntry);
+  assert.equal(opaqueEntry.p50GpuMs, 5.2);
+  assert.equal(opaqueEntry.totalCalls, 250);
+
+  const summ = timer.summary();
+  assert.equal(summ.enabled, true);
+  assert.equal(summ.supported, true);
+  assert.ok(summ.totalGpuMs > 0);
+  assert.ok(summ.passes.shadows);
+  assert.ok(summ.passes.opaque);
+  assert.ok(summ.passes.gtao);
+
+  timer.disable();
+}
+
 console.log('gpuTimer selftest: pass');
+

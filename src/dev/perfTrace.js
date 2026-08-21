@@ -24,10 +24,10 @@ const FRAME_SCHEMA = [
   'tMs', 'gapMs', 'dtMs', 'simS', 'preBattleS', 'phase', 'flags',
   'renderFrame', 'calls', 'triangles', 'programs', 'heapMB',
   'throttle', 'steer', 'fire',
-  // campaign W1: render-attribution tail. calls/triangles above are
+  // campaign W1/W2: render-attribution tail. calls/triangles above are
   // whole-frame; the columns below come from renderer.info.memory and the
   // renderProbes snapshot (zeros while no probes ref is configured).
-  'geoMem', 'texMem', 'rtCount', 'texMB', 'casters', 'vegInst', 'chunks',
+  'geoMem', 'texMem', 'rtCount', 'texMB', 'casters', 'vegInst', 'chunks', 'cells',
 ];
 const FLAGS = {
   hidden: 1 << 0, unfocused: 1 << 1, paused: 1 << 2, countdown: 1 << 3,
@@ -127,7 +127,7 @@ export function createDevTraceCore(options = {}) {
     geoMem: new Uint16Array(frameCap), texMem: new Uint16Array(frameCap),
     rtCount: new Uint8Array(frameCap), texMB: new Float32Array(frameCap),
     casters: new Uint16Array(frameCap), vegInst: new Uint32Array(frameCap),
-    chunks: new Uint16Array(frameCap),
+    chunks: new Uint16Array(frameCap), cells: new Uint16Array(frameCap),
   };
   const startedPerf = now(), startedWall = Date.now();
   let traceZero = startedPerf;
@@ -235,6 +235,7 @@ export function createDevTraceCore(options = {}) {
     f.rtCount[i] = pr ? pr.shadowRTCount : 0; f.texMB[i] = pr ? pr.texMB : 0;
     f.casters[i] = pr ? pr.casters : 0; f.vegInst[i] = pr ? pr.vegInstances : 0;
     f.chunks[i] = pr ? pr.chunksVisible : 0;
+    f.cells[i] = pr ? (pr.cellsActive || pr.cellsVisible || 0) : 0;
     if (pr && at - lastProbeEventAt >= 2000) {
       lastProbeEventAt = at;
       push('trace', 'renderSample', pr, at);
@@ -278,7 +279,7 @@ export function createDevTraceCore(options = {}) {
         f.tris[i], f.programs[i], +f.heap[i].toFixed(2), +f.throttle[i].toFixed(3),
         +f.steer[i].toFixed(3), f.fire[i],
         f.geoMem[i], f.texMem[i], f.rtCount[i], +f.texMB[i].toFixed(2),
-        f.casters[i], f.vegInst[i], f.chunks[i],
+        f.casters[i], f.vegInst[i], f.chunks[i], f.cells[i],
       ];
     }
     return out;
@@ -312,11 +313,26 @@ export function createDevTraceCore(options = {}) {
     };
   }
   function snapshot(options = {}) {
+    let gpuTimerData = null;
+    let gpuBreakdown = null;
+    if (refs.gpuTimer) {
+      try {
+        gpuTimerData = refs.gpuTimer.results?.() || null;
+        gpuBreakdown = refs.gpuTimer.breakdown?.() || null;
+      } catch (_) {}
+    } else if (typeof window !== 'undefined' && window.__GPU_TIMER) {
+      try {
+        gpuTimerData = window.__GPU_TIMER.results?.() || null;
+        gpuBreakdown = window.__GPU_TIMER.breakdown?.() || null;
+      } catch (_) {}
+    }
     return {
       version: 1, sessionId, startedAt: new Date(startedWall).toISOString(),
       timeOrigin: typeof performance !== 'undefined' ? performance.timeOrigin : null,
       environment: environment(options.gpu !== false), stats: stats(), frameSchema: FRAME_SCHEMA,
       frames: rows(), events: events.ordered(),
+      gpuTimer: gpuTimerData,
+      gpuBreakdown,
     };
   }
   function clear() {

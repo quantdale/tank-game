@@ -97,19 +97,33 @@ assert.equal(snap.vegInstances, 250, 'refreshed after the interval');
 // --- world.group takes precedence as the traversal root -----------------------
 const worldRoot = new THREE.Group();
 worldRoot.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1)));
+const mockCells = {
+  stats: () => ({ ACTIVE: 9, VISIBLE: 16, SHADOW_ONLY: 12, DISTANT: 15, DORMANT: 12, version: 3 }),
+};
 const worldProbes = createRenderProbes({
   scene, renderer, lighting, now,
-  world: { group: worldRoot },
+  world: { group: worldRoot, cells: mockCells },
 });
 clock += 2000;
 worldProbes.sample();
-assert.equal(worldProbes.sample().casters, 0, 'world root replaces the scene root');
-assert.equal(worldProbes.sample().geoMem, 12, 'renderer.info.memory still sampled');
+const wSnap = worldProbes.sample();
+assert.equal(wSnap.casters, 0, 'world root replaces the scene root');
+assert.equal(wSnap.geoMem, 12, 'renderer.info.memory still sampled');
+assert.equal(wSnap.cellsActive, 9, 'cellsActive sampled from world.cells');
+assert.equal(wSnap.cellsVisible, 16, 'cellsVisible sampled from world.cells');
+assert.equal(wSnap.cellsShadowOnly, 12, 'cellsShadowOnly sampled from world.cells');
+assert.equal(wSnap.cellsDistant, 15, 'cellsDistant sampled from world.cells');
+assert.equal(wSnap.cellsDormant, 12, 'cellsDormant sampled from world.cells');
+assert.equal(wSnap.cellsTotal, 64, 'cellsTotal sum of all grid cells');
+assert.equal(wSnap.cellsVersion, 3, 'cellsVersion sampled');
+assert.equal(wSnap.rtCount, 2, 'rtCount holds shadow cascades count');
 
 // --- degenerate inputs never throw --------------------------------------------
 const bare = createRenderProbes({ now });
 bare.sample();
 assert.equal(bare.sample().casters, 0);
+assert.equal(bare.sample().cellsActive, 0);
 createRenderProbes({ renderer: {}, lighting: {}, now }).sample();
 
 console.log('renderProbes selftest: pass');
+
