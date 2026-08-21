@@ -32,7 +32,7 @@ import { box, gablePrism, jitterUV, scaleUV, slabBox } from './propGeometry.js';
 import { bakeTankWreck, bakeWreckDebris, wreckPool } from './wrecks.js';
 // Build-time-baked licensed models (see tools/bake-props-models.mjs +
 // docs/ATTRIBUTION.md). Synchronous import keeps the __GAME_READY contract.
-import MODELS from './props-models.json';
+import MODELS from './props-models.json' with { type: 'json' };
 
 // Per-category switch: sourced model vs procedural, set from side-by-side
 // screenshot judging on 2026-07-27 (record in docs/ATTRIBUTION.md). Only the
@@ -3311,6 +3311,39 @@ ${snowCap ? `
         id.data[(y * s + x) * 4 + 3] *= aMul;
       }
       ctx.putImageData(id, 0, 0);
+      return c;
+    }
+    // perf-r1 (static batching): the five ground-decal families used to be
+    // five separate transparent meshes/materials — five draw calls and five
+    // texture binds for the same blend state. They now paint their canvases
+    // exactly as before, get composited 1:1 into ONE atlas texture, and ride
+    // a single merged mesh. UVs are remapped per family into its atlas cell
+    // (flipY-aware) so sampled texels are identical; cells keep native pixel
+    // sizes with transparent gutters so mip bleed stays an alpha fade.
+    const DECAL_ATLAS_S = 512;
+    const DECAL_CELLS = {
+      dirt: [8, 8, 128, 128],
+      apron: [144, 8, 128, 128],
+      crater: [280, 8, 128, 128],
+      scorch: [8, 144, 128, 128],
+      churn: [144, 144, 128, 256],
+    };
+    const decalCanvases = {};
+    function decalCanvas(kind) {
+      if (!decalCanvases[kind]) {
+        decalCanvases[kind] = kind === 'churn'
+          ? makeChurnTexture() : makeDecalTexture(kind);
+      }
+      return decalCanvases[kind];
+    }
+    function buildDecalAtlas() {
+      const c = document.createElement('canvas');
+      c.width = c.height = DECAL_ATLAS_S;
+      const ctx = c.getContext('2d');
+      for (const [kind, canvas] of Object.entries(decalCanvases)) {
+        const [x, y] = DECAL_CELLS[kind];
+        ctx.drawImage(canvas, x, y);
+      }
       const t = new THREE.CanvasTexture(c);
       t.colorSpace = THREE.SRGBColorSpace;
       t.anisotropy = aniso;
@@ -3359,10 +3392,7 @@ ${snowCap ? `
         id.data[(y * w + x) * 4 + 3] *= endFade * clamp(0.75 + nse * 0.5, 0, 1);
       }
       ctx.putImageData(id, 0, 0);
-      const t = new THREE.CanvasTexture(c);
-      t.colorSpace = THREE.SRGBColorSpace;
-      t.anisotropy = aniso;
-      return t;
+      return c;
     }
     // terrain-conformed rectangular strip (track tears): stations every ~2.4 m
     function conformedStrip(ax, az, bx, bz, wS) {
@@ -3458,20 +3488,23 @@ ${snowCap ? `
       geo.computeVertexNormals();
       return geo;
     }
-    function addDecalMesh(geos, tex) {
+    // perf-r1 (static batching): each family remaps its UVs into its atlas
+    // cell and joins ONE shared transparent mesh instead of five.
+    const decalGeos = [];
+    function addDecalMesh(geos, kind) {
       if (geos.length === 0) return;
-      const mat = new THREE.MeshStandardMaterial({
-        map: tex, transparent: true, depthWrite: false,
-        roughness: 0.97, metalness: 0,
-        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
-      });
-      engineCtx.setupShadowMaterial(mat);
-      const mesh = new THREE.Mesh(mergeGeometries(geos, false), mat);
-      mesh.receiveShadow = true;
-      mesh.castShadow = false;
-      mesh.matrixAutoUpdate = false;
-      mesh.renderOrder = 1;
-      group.add(mesh);
+      decalCanvas(kind); // ensure the family's canvas lands in the atlas
+      const [x0, y0, w, h] = DECAL_CELLS[kind];
+      const su = w / DECAL_ATLAS_S, sv = h / DECAL_ATLAS_S;
+      // flipY-aware offset: v=0 samples the cell's bottom row (canvas y+h)
+      const ou = x0 / DECAL_ATLAS_S, ov = (DECAL_ATLAS_S - y0 - h) / DECAL_ATLAS_S;
+      for (const g of geos) {
+        const uv = g.attributes.uv;
+        for (let i = 0; i < uv.count; i++) {
+          uv.setXY(i, uv.getX(i) * su + ou, uv.getY(i) * sv + ov);
+        }
+      }
+      decalGeos.push(...geos);
     }
     const dirtDiscs = [];
     const apronGeos = [];
@@ -3524,8 +3557,8 @@ ${snowCap ? `
         placed++;
       }
     }
-    addDecalMesh(dirtDiscs, makeDecalTexture('dirt'));
-    addDecalMesh(apronGeos, makeDecalTexture('apron'));
+    addDecalMesh(dirtDiscs, 'dirt');
+    addDecalMesh(apronGeos, 'apron');
     // craters: scattered shell holes with a raised rim mound. Town maps
     // (P.townCraters) let them pock the streets and squares themselves —
     // the contract's shelled-town read needs impact scars ON the asphalt,
@@ -3605,8 +3638,8 @@ ${snowCap ? `
     for (const [wx, wz] of wreckScorch) {
       burnDiscs.push(conformedDisc(wx, wz, 5.6, [0.03, 0.04, 0.05, 0.02]));
     }
-    addDecalMesh(craterDiscs, makeDecalTexture('crater'));
-    addDecalMesh(burnDiscs, makeDecalTexture('scorch'));
+    addDecalMesh(craterDiscs, 'crater');
+    addDecalMesh(burnDiscs, 'scorch');
     // r5 terrain_environment: TRACK-TEAR strips along the AI corridors —
     // tread-churned earth runs (14-26 m) with twin rut lanes, conformed to
     // the terrain, so the approaches read driven-over ("no tread-torn earth
@@ -3640,7 +3673,24 @@ ${snowCap ? `
           3.2 + trng() * 0.8));
         placed++;
       }
-      addDecalMesh(tearGeos, makeChurnTexture());
+      addDecalMesh(tearGeos, 'churn');
+    }
+    // perf-r1 (static batching): flush the shared atlas — one transparent
+    // draw for every ground decal family on the map.
+    if (decalGeos.length > 0) {
+      const mat = new THREE.MeshStandardMaterial({
+        map: buildDecalAtlas(), transparent: true, depthWrite: false,
+        roughness: 0.97, metalness: 0,
+        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+      });
+      engineCtx.setupShadowMaterial(mat);
+      const mesh = new THREE.Mesh(mergeGeometries(decalGeos, false), mat);
+      mesh.name = 'ground-decals';
+      mesh.receiveShadow = true;
+      mesh.castShadow = false;
+      mesh.matrixAutoUpdate = false;
+      mesh.renderOrder = 1;
+      group.add(mesh);
     }
   }
 
