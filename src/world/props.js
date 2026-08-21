@@ -28,6 +28,8 @@ import {
 } from './collision.js';
 import { hedgehogBeamSpecs, sampleDiscGround, sampleObbGround } from './propPlacement.js';
 import { box, gablePrism, jitterUV, scaleUV, slabBox } from './propGeometry.js';
+// SA-06: cell-local BatchedMesh pooling for the static buckets
+import { buildCellPool } from './propCellPools.js';
 // DESTRUCTIBLES r1: real-roster tank wrecks baked to static geometry
 import { bakeTankWreck, bakeWreckDebris, wreckPool } from './wrecks.js';
 // Build-time-baked licensed models (see tools/bake-props-models.mjs +
@@ -999,6 +1001,12 @@ function* propsBuildSteps(heightField, engineCtx, seed, cfg) {
 {
   vec4 gw = vec4(transformed, 1.0);
   vec3 gn = objectNormal;
+  // SA-06: cell-local BatchedMesh ranges carry a per-range batching matrix;
+  // de-batch before sampling the world-space grime/snow fields.
+  #ifdef USE_BATCHING
+  gw = batchingMatrix * gw;
+  gn = mat3(batchingMatrix) * gn;
+  #endif
   #ifdef USE_INSTANCING
   gw = instanceMatrix * gw;
   gn = mat3(instanceMatrix) * gn;
@@ -1035,7 +1043,7 @@ ${snowCap ? `
   };
   for (const [mk, m] of Object.entries(mats)) {
     engineCtx.setupShadowMaterial(m, mk === 'dark' || mk === 'glass' ? null : grimeHook);
-    m.customProgramCacheKey = () => 'world-props-' + mk + '-v6' + (snowCap ? 's' : '');
+    m.customProgramCacheKey = () => 'world-props-' + mk + '-v7' + (snowCap ? 's' : '');
   }
 
   const buckets = { plaster: [], plaster2: [], plaster3: [], stone: [], roof: [], wood: [], dark: [], glass: [], curtain: [], straw: [], baked: [] };
@@ -3773,16 +3781,16 @@ ${snowCap ? `
   // dressing only: pushes into the existing material buckets, no colliders.
   dressMapExtras({ mapId, extraKits: P.extraKits, L, heightField, rng, buckets });
 
-  // --- merge buckets into one mesh per material ---
+  // --- merge buckets into cell-local pools (SA-06 static-prop batching) ---
+  // Still one draw object per material family, but static geometry now pools
+  // per 128 m world cell (the cellLifecycle grid): single-cell buckets stay
+  // plain merged Meshes, multi-cell buckets become one BatchedMesh whose
+  // per-cell ranges the renderer frustum-culls independently (main + shadow
+  // pass) instead of always drawing the whole-map merge.
   for (const key of Object.keys(buckets)) {
     if (buckets[key].length === 0) continue;
-    // mergeGeometries requires uniform indexing (ExtrudeGeometry is non-indexed)
-    const merged = mergeGeometries(buckets[key].map((g) => (g.index ? g.toNonIndexed() : g)), false);
-    const mesh = new THREE.Mesh(merged, mats[key]);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    mesh.matrixAutoUpdate = false;
-    group.add(mesh);
+    const pool = buildCellPool(buckets[key], mats[key], { name: 'props-' + key });
+    group.add(pool.object);
     yield { fine: true }; // loading-speed r1: merge one material family per idle slice
   }
 
@@ -3856,13 +3864,16 @@ ${snowCap ? `
       pool.imB = imB;
     }
   }
-  // spatial hash over destructible records for the shell paths (8 m cells)
+  // spatial hash over destructible records for the shell paths (8 m cells).
+  // SA-06 x8-scan consumer fix: packed numeric keys (same packing as
+  // looseCellKey) keep every per-tick sweep/impact lookup allocation-free —
+  // the old `kx + ':' + kz` string built garbage on each query during combat.
   const D_CELL = 8;
   const dHash = new Map();
+  const dCellKey = (kx, kz) => (kx + 32768) * 65536 + (kz + 32768);
   for (let i = 0; i < destructibles.length; i++) {
     const rec = destructibles[i];
-    const kx = Math.floor(rec.x / D_CELL), kz = Math.floor(rec.z / D_CELL);
-    const key = kx + ':' + kz;
+    const key = dCellKey(Math.floor(rec.x / D_CELL), Math.floor(rec.z / D_CELL));
     let cell = dHash.get(key);
     if (!cell) { cell = []; dHash.set(key, cell); }
     cell.push(i);
@@ -3873,7 +3884,7 @@ ${snowCap ? `
   // boundary crossing (rare); the steady-state fixed step remains allocation
   // free and shell hits never target a stale/ghost position.
   function refreshDestructibleCell(rec) {
-    const key = Math.floor(rec.x / D_CELL) + ':' + Math.floor(rec.z / D_CELL);
+    const key = dCellKey(Math.floor(rec.x / D_CELL), Math.floor(rec.z / D_CELL));
     if (key === rec._dKey) return;
     const old = dHash.get(rec._dKey);
     if (old) {
@@ -4109,7 +4120,7 @@ ${snowCap ? `
     if ((maxX - minX + 1) * (maxZ - minZ + 1) > 220) return _dCells;
     for (let kx = minX; kx <= maxX; kx++) {
       for (let kz = minZ; kz <= maxZ; kz++) {
-        const cell = dHash.get(kx + ':' + kz);
+        const cell = dHash.get(dCellKey(kx, kz));
         if (cell) _dCells.push(cell);
       }
     }

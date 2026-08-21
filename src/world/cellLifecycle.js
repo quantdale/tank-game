@@ -55,6 +55,47 @@ export const CELL_SHADOW = Object.freeze([true, true, true, false, false]);
 /** Main-pass visibility per state (DORMANT content may hide/unmount). */
 export const CELL_VISIBLE = Object.freeze([true, true, true, true, false]);
 
+/**
+ * Ground decal visibility gate per state. Ground-level blending decals, aprons,
+ * craters, scorches, and track ruts are active in ACTIVE, VISIBLE, and SHADOW_ONLY;
+ * they cull in DISTANT and DORMANT as they fall below subpixel discernment.
+ */
+export const CELL_DECAL_VISIBLE = Object.freeze([true, true, true, false, false]);
+
+/**
+ * Prop animation update scale per state (1.0 in ACTIVE, 0.5 in VISIBLE, 0 in SHADOW_ONLY/DISTANT/DORMANT).
+ */
+export const CELL_PROP_UPDATE = Object.freeze([1, 0.5, 0, 0, 0]);
+
+/**
+ * Battlefield clutter / loose prop physics activity gate (ACTIVE/VISIBLE only).
+ */
+export const CELL_CLUTTER_PHYSICS = Object.freeze([true, true, false, false, false]);
+
+/**
+ * Prop shadow casting participation gate per state (castShadow gate).
+ */
+export const CELL_PROP_SHADOW = Object.freeze([true, true, true, false, false]);
+
+/**
+ * Ambient FX / emitter activity gate per state. Emitters and decorative
+ * particles only update and emit in ACTIVE and VISIBLE cells; SHADOW_ONLY,
+ * DISTANT, and DORMANT cells skip updating and particle submission.
+ */
+export const CELL_AMBIENT_FX = Object.freeze([true, true, false, false, false]);
+
+/** Cadence scale for ambient FX / particles (1.0 for ACTIVE, 0.5 for VISIBLE, 0 elsewhere). */
+export const CELL_AMBIENT_SCALE = Object.freeze([1, 0.5, 0, 0, 0]);
+
+/**
+ * Main-pass auxiliary mesh visibility gate per state. Terrain auxiliary meshes,
+ * water patches, road decals, and distant scenery layers hide in DORMANT cells.
+ */
+export const CELL_AUXILIARY_VISIBLE = Object.freeze([true, true, true, true, false]);
+
+/** Distant scenery / billboard detail tier per state (0=fine, 1=medium, 2=coarse/culled). */
+export const CELL_SCENERY_LOD = Object.freeze([0, 0, 1, 2, 2]);
+
 // Lifecycle grid mirrors the shared terrain/vegetation chunk grid.
 export const CELL_GRID_N = 8;
 export const CELL_SIZE_M = 128;
@@ -196,6 +237,74 @@ export function createCellLifecycle(opts = {}) {
     return CELL_UPDATE_SCALE[stateAt(x, z)];
   }
 
+  function decalVisibleAt(x, z) {
+    return CELL_DECAL_VISIBLE[stateAt(x, z)];
+  }
+
+  function propUpdateScaleAt(x, z) {
+    return CELL_PROP_UPDATE[stateAt(x, z)];
+  }
+
+  function clutterPhysicsAt(x, z) {
+    return CELL_CLUTTER_PHYSICS[stateAt(x, z)];
+  }
+
+  function ambientScaleAt(x, z) {
+    return CELL_AMBIENT_SCALE[stateAt(x, z)];
+  }
+
+  function isAmbientActiveAt(x, z) {
+    return CELL_AMBIENT_FX[stateAt(x, z)];
+  }
+
+  function isAuxiliaryVisibleAt(x, z) {
+    return CELL_AUXILIARY_VISIBLE[stateAt(x, z)];
+  }
+
+  function sceneryLodAt(x, z) {
+    return CELL_SCENERY_LOD[stateAt(x, z)];
+  }
+
+  function isCellActive(cellIndex) {
+    return cellIndex >= 0 && cellIndex < count && states[cellIndex] === CELL_STATES.ACTIVE;
+  }
+
+  function isCellVisible(cellIndex) {
+    return cellIndex >= 0 && cellIndex < count && states[cellIndex] <= CELL_STATES.VISIBLE;
+  }
+
+  function isCellRendered(cellIndex) {
+    return cellIndex >= 0 && cellIndex < count && states[cellIndex] <= CELL_STATES.DISTANT;
+  }
+
+  function isCellDormant(cellIndex) {
+    return cellIndex < 0 || cellIndex >= count || states[cellIndex] === CELL_STATES.DORMANT;
+  }
+
+  function isDecalVisible(cellIndex) {
+    return cellIndex >= 0 && cellIndex < count && CELL_DECAL_VISIBLE[states[cellIndex]];
+  }
+
+  function isPropShadow(cellIndex) {
+    return cellIndex >= 0 && cellIndex < count && CELL_PROP_SHADOW[states[cellIndex]];
+  }
+
+  /** Iterate over all cells whose state is <= maxState (e.g. <= VISIBLE). */
+  function forEachInState(maxState, cb) {
+    for (let i = 0; i < count; i++) {
+      if (states[i] <= maxState) cb(i, states[i]);
+    }
+  }
+
+  /** Collect indices of all cells whose state is <= maxState into `out`. */
+  function getActiveCells(maxState = CELL_STATES.VISIBLE, out = []) {
+    out.length = 0;
+    for (let i = 0; i < count; i++) {
+      if (states[i] <= maxState) out.push(i);
+    }
+    return out;
+  }
+
   /** Per-state cell counts into a reused object (debug HUD / probes). */
   function stats() {
     statsCounts.fill(0);
@@ -214,7 +323,7 @@ export function createCellLifecycle(opts = {}) {
    * at build time. A record with radius r covers every cell its bounding box
    * touches; point records cover exactly their containing cell.
    * @param {Array<{x:number, z:number, r?:number}>} items
-   * @param {string} kind stable consumer key ('treeCluster' | 'building' ...)
+   * @param {string} kind stable consumer key ('treeCluster' | 'building' | 'auxiliaryMesh' ...)
    */
   function registerContent(items, kind) {
     let cells = registry.get(kind);
@@ -241,6 +350,21 @@ export function createCellLifecycle(opts = {}) {
     }
   }
 
+  function unregisterContent(kind) {
+    registry.delete(kind);
+  }
+
+  /**
+   * Return registered content indices array for a cell, or empty array.
+   * @param {string} kind registry key passed to registerContent
+   * @param {number} cellIndex 0..count-1
+   * @returns {number[]}
+   */
+  function getContent(kind, cellIndex) {
+    const cells = registry.get(kind);
+    return (cells && cells[cellIndex]) || [];
+  }
+
   /**
    * Enumerate registered content indices of `kind` covering a cell.
    * @param {string} kind registry key passed to registerContent
@@ -258,7 +382,12 @@ export function createCellLifecycle(opts = {}) {
     states, changed, // read-only by convention; typed for cheap fan-out
     get version() { return version; },
     get classifies() { return classifies; }, // passes run (throttle telemetry)
-    update, indexAt, stateAt, updateScaleAt, stats,
-    registerContent, forEachContent,
+    update, indexAt, stateAt, updateScaleAt,
+    decalVisibleAt, propUpdateScaleAt, clutterPhysicsAt,
+    ambientScaleAt, isAmbientActiveAt, isAuxiliaryVisibleAt, sceneryLodAt,
+    isCellActive, isCellVisible, isCellRendered, isCellDormant,
+    isDecalVisible, isPropShadow,
+    forEachInState, getActiveCells, stats,
+    registerContent, unregisterContent, getContent, forEachContent,
   };
 }

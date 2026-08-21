@@ -5,6 +5,14 @@ import {
   CELL_UPDATE_SCALE,
   CELL_SHADOW,
   CELL_VISIBLE,
+  CELL_DECAL_VISIBLE,
+  CELL_PROP_UPDATE,
+  CELL_CLUTTER_PHYSICS,
+  CELL_PROP_SHADOW,
+  CELL_AMBIENT_FX,
+  CELL_AMBIENT_SCALE,
+  CELL_AUXILIARY_VISIBLE,
+  CELL_SCENERY_LOD,
   cellStateForDistance,
   cellEdgeDistance,
   createCellLifecycle,
@@ -147,6 +155,20 @@ assert.deepEqual(collect(32), [2]);
 assert.deepEqual(collect(16), [], 'rows above the clipped record stay empty');
 assert.deepEqual(collect(63), [], 'off-grid records register nowhere');
 
+// ---- getContent and unregisterContent helpers ------------------------------
+assert.deepEqual(reg.getContent('treeCluster', 36), [0]);
+assert.deepEqual(reg.getContent('treeCluster', 63), []);
+assert.deepEqual(reg.getContent('nonExistent', 36), []);
+
+const auxMeshes = [
+  { id: 'water0', x: 0, z: 0, r: 32 },
+  { id: 'roadDecal0', x: -100, z: -100, r: 10 },
+];
+reg.registerContent(auxMeshes, 'auxiliaryMesh');
+assert.equal(reg.getContent('auxiliaryMesh', reg.indexAt(0, 0)).length, 1);
+reg.unregisterContent('auxiliaryMesh');
+assert.deepEqual(reg.getContent('auxiliaryMesh', reg.indexAt(0, 0)), []);
+
 // ---- determinism -----------------------------------------------------------
 const a = createCellLifecycle(), b = createCellLifecycle();
 const path = [[0, 0], [90, 0], [90, 300], [-350, 300], [-350, -480], [480, 480]];
@@ -168,10 +190,46 @@ assert.equal(a.stateAt(2000, 0), CELL_STATES.DORMANT, 'outside the grid is DORMA
 assert.equal(a.updateScaleAt(2000, 0), 0, 'outside the grid updates nothing');
 assert.equal(b.updateScaleAt(200, 200), 1, 'an ACTIVE cell ticks at full rate');
 
+// ---- ambient and auxiliary query helpers -----------------------------------
+assert.equal(a.ambientScaleAt(200, 200), 1, 'ACTIVE cell has ambientScale 1');
+assert.equal(a.isAmbientActiveAt(200, 200), true, 'ACTIVE cell has ambient active');
+assert.equal(a.isAuxiliaryVisibleAt(200, 200), true, 'ACTIVE cell auxiliary visible');
+assert.equal(a.sceneryLodAt(200, 200), 0, 'ACTIVE cell scenery LOD 0');
+
+assert.equal(a.ambientScaleAt(2000, 0), 0, 'DORMANT cell has ambientScale 0');
+assert.equal(a.isAmbientActiveAt(2000, 0), false, 'DORMANT cell has ambient inactive');
+assert.equal(a.isAuxiliaryVisibleAt(2000, 0), false, 'DORMANT cell auxiliary hidden');
+assert.equal(a.sceneryLodAt(2000, 0), 2, 'DORMANT cell scenery LOD 2');
+
+const observerCell = a.indexAt(200, 200);
+assert.equal(a.isCellActive(observerCell), true);
+assert.equal(a.isCellVisible(observerCell), true);
+assert.equal(a.isCellRendered(observerCell), true);
+assert.equal(a.isCellDormant(observerCell), false);
+assert.equal(a.isCellDormant(-1), true);
+
+let inStateCount = 0;
+a.forEachInState(CELL_STATES.VISIBLE, (idx, st) => {
+  assert.ok(st <= CELL_STATES.VISIBLE);
+  inStateCount++;
+});
+assert.equal(inStateCount, s.ACTIVE + s.VISIBLE);
+
+const activeCells = a.getActiveCells(CELL_STATES.VISIBLE);
+assert.equal(activeCells.length, inStateCount);
+
 // ---- policy tables ---------------------------------------------------------
 assert.equal(CELL_STATE_NAMES.length, 5);
 assert.deepEqual(Array.from(CELL_UPDATE_SCALE), [1, 0.5, 0, 0, 0]);
-for (const table of [CELL_SHADOW, CELL_VISIBLE]) {
+assert.deepEqual(Array.from(CELL_PROP_UPDATE), [1, 0.5, 0, 0, 0]);
+assert.deepEqual(Array.from(CELL_DECAL_VISIBLE), [true, true, true, false, false],
+  'ground decals cull in DISTANT and DORMANT');
+assert.deepEqual(Array.from(CELL_CLUTTER_PHYSICS), [true, true, false, false, false],
+  'clutter physics active only in ACTIVE and VISIBLE');
+assert.deepEqual(Array.from(CELL_PROP_SHADOW), [true, true, true, false, false],
+  'prop shadow casting active in ACTIVE, VISIBLE, and SHADOW_ONLY');
+
+for (const table of [CELL_SHADOW, CELL_VISIBLE, CELL_DECAL_VISIBLE, CELL_CLUTTER_PHYSICS, CELL_PROP_SHADOW]) {
   assert.equal(table.length, 5, 'one gate per state');
   for (const v of table) assert.equal(typeof v, 'boolean');
 }
@@ -180,4 +238,4 @@ assert.deepEqual(CELL_SHADOW, [true, true, true, false, false],
 assert.deepEqual(CELL_VISIBLE, [true, true, true, true, false],
   'only DORMANT leaves the main pass');
 
-console.log('cellLifecycle.selftest: bands, hysteresis, throttle, registry, determinism passed');
+console.log('cellLifecycle.selftest: bands, hysteresis, throttle, registry, determinism, prop/decal lifecycle passed');

@@ -99,7 +99,7 @@ function stateDigest(props) {
 function renderObjects(group) {
   const out = [];
   group.traverse((o) => {
-    if (!o.isMesh && !o.isInstancedMesh) return;
+    if (!o.isMesh && !o.isInstancedMesh && !o.isBatchedMesh) return;
     out.push(o);
   });
   return out;
@@ -254,5 +254,35 @@ console.log('props.selftest: repeated builds are deterministic');
     + `${hits.size} families in one draw`);
 }
 
+// ---------------------------------------------------------------------------
+// 5. SA-06 cell-local static-prop pooling: every material bucket renders as
+// ONE draw object (plain Mesh when its content fits a single 128 m world
+// cell, otherwise one BatchedMesh with one frustum-cullable range per cell).
+// ---------------------------------------------------------------------------
+{
+  const props = buildProps('urban'); // town maps spread buckets over many cells
+  const pools = renderObjects(props.group)
+    .filter((o) => o.name && o.name.startsWith('props-'));
+  assert.ok(pools.length >= 5, `static material families pool (${pools.length})`);
+  const names = new Set(pools.map((o) => o.name));
+  assert.equal(names.size, pools.length, 'one pool object per material family');
+  let batched = 0;
+  for (const obj of pools) {
+    if (obj.isBatchedMesh) {
+      batched++;
+      assert.ok(obj.instanceCount > 1,
+        `${obj.name}: multi-cell bucket carries one range per cell (${obj.instanceCount})`);
+      assert.equal(obj.castShadow, true, `${obj.name}: batch casts shadows`);
+      assert.equal(obj.receiveShadow, true, `${obj.name}: batch receives shadows`);
+      assert.equal(obj.sortObjects, false, `${obj.name}: opaque static world skips depth sort`);
+    } else {
+      assert.ok(obj.isMesh, `${obj.name}: single-cell bucket stays a plain Mesh`);
+    }
+  }
+  assert.ok(batched > 0, `urban buckets span multiple cells and batch (${batched} batched)`);
+  console.log(`props.selftest: ${pools.length} static pools, ${batched} BatchedMesh `
+    + `(${[...names].join(', ')})`);
+}
+
 console.log('props.selftest: headless build, determinism, destruction round-trip, '
-  + 'and decal batching passed');
+  + 'decal batching, and cell-local pooling passed');

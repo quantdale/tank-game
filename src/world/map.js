@@ -10,6 +10,7 @@ import { createProps, createPropsAsync } from './props.js';
 import { getMapConfig } from './maps/index.js';
 import { createObstacleGrid, rayCollisionRecord } from './collision.js';
 import { createCellLifecycle } from './cellLifecycle.js';
+import { createAmbientFxSystem } from './ambientFx.js';
 
 const _pt = new THREE.Vector3();
 const _bisA = new THREE.Vector3();
@@ -121,6 +122,14 @@ function assembleWorld(engineCtx, config, heightField, terrain, vegetation, prop
   const cells = createCellLifecycle();
   cells.registerContent(vegetation._clusters || [], 'treeCluster');
   cells.registerContent(props.features.buildings || [], 'building');
+
+  // World-cell spatial lifecycle for ambient FX, emitters & auxiliary meshes
+  const ambientFx = createAmbientFxSystem({ cells });
+  if (terrain && terrain.userData && terrain.userData.auxiliaryMeshes) {
+    for (const aux of terrain.userData.auxiliaryMeshes) {
+      ambientFx.registerAuxiliaryMesh(aux);
+    }
+  }
 
   const sp = layout.spawns;
   const spawnPoints = {
@@ -262,6 +271,7 @@ function assembleWorld(engineCtx, config, heightField, terrain, vegetation, prop
     resetDestructibles: () => {
       if (props.resetDestructibles) props.resetDestructibles();
       if (vegetation.resetToppled) vegetation.resetToppled();
+      ambientFx.reset();
     },
     spawnPoints,
     /** @returns {{roads:Array, buildings:Array, tacticalBeats:Array, treeClusters:Array, waterOrSoft:Array}} minimap features */
@@ -273,7 +283,7 @@ function assembleWorld(engineCtx, config, heightField, terrain, vegetation, prop
       waterOrSoft: [...layout.marshes, ...layout.lakes].map((m) => ({ x: m.x, z: m.z, r: m.r })),
     }),
     /**
-     * Per-frame world update: terrain LOD swap + vegetation wind/density.
+     * Per-frame world update: terrain LOD swap + vegetation wind/density + ambient FX.
      * @param {number} dt seconds
      * @param {THREE.Vector3} cameraPos world camera position
      * @param {THREE.Vector3|null} [cameraFwd] unit camera forward — drives the
@@ -286,6 +296,7 @@ function assembleWorld(engineCtx, config, heightField, terrain, vegetation, prop
         focusPos ? focusPos.x : null, focusPos ? focusPos.z : null);
       terrain.userData.updateLOD(cameraPos);
       vegetation.update(dt, cameraPos, cameraFwd, focusPos);
+      ambientFx.update(dt, cameraPos);
       if (props.updateProps) props.updateProps(dt); // pole hinge-topple anims
     },
     /** Freeze hook for screenshots. @param {number} t wind time, seconds */
@@ -305,10 +316,11 @@ function assembleWorld(engineCtx, config, heightField, terrain, vegetation, prop
     /**
      * W8 per-cell lifecycle (cellLifecycle.js): states/changed typed arrays,
      * stateAt/updateScaleAt queries, stats(), and the static content registry
-     * ('treeCluster', 'building'). Read-only consumption for vegetation,
-     * props, shadows, and future residency.
+     * ('treeCluster', 'building', 'ambientEmitter', 'auxiliaryMesh'). Read-only
+     * consumption for vegetation, props, shadows, and ambient FX.
      */
     cells,
+    ambientFx,
     group,
   };
 }

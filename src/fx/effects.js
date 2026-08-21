@@ -2880,11 +2880,15 @@ export function createFx(engineCtx, heightField, { seed = 5000 } = {}) {
       for (const r of muzzleRings) applyMuzzleRing(r);
       // defensive decal sweep (~1.4 s cadence): drop scarring whose vehicle
       // wrecked or left the scene through any path that skipped the
-      // tank:destroyed / spawnDestruction clears
+      // tank:destroyed / spawnDestruction clears, and apply the SA-07
+      // world-cell visibility gate (CELL_DECAL_VISIBLE) from the render
+      // camera so distant/dormant-cell marks stop submitting draw calls
       decalSweepAcc += dt;
       if (decalSweepAcc > 1.4) {
         decalSweepAcc = 0;
-        impactDecals.sweep();
+        const swCam = engineCtx && engineCtx.camera;
+        impactDecals.sweep(swCam ? swCam.position.x : null,
+          swCam ? swCam.position.z : null);
       }
       // burning-wreck flicker: while the explosion light is idle, park it
       // over the newest smoke column so fires read as living light sources.

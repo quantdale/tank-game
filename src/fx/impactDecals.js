@@ -35,7 +35,10 @@
  * persistent for the battle, cleared when the vehicle wrecks (matching the
  * profile decalMeshes hidden by setDestroyed) and on resetAll(). Clearing on
  * destruction is also what keeps the burn sweep from ever re-materializing
- * a decal mesh into an opaque burnt quad.
+ * a decal mesh into an opaque burnt quad. SA-07 world-cell gating: the
+ * periodic sweep() also applies the shared 5-state cell lifecycle — marks on
+ * vehicles in DISTANT/DORMANT cells hide their batched meshes (subpixel
+ * discernment, CELL_DECAL_VISIBLE) until the cell enriches again.
  *
  * Perf: one shared CanvasTexture atlas + one shared material; ≤ 2 batched
  * meshes (hull/turret) per struck vehicle; CPU cost only at stamp time
@@ -44,11 +47,27 @@
 import * as THREE from 'three';
 import { mulberry32, makeFbm } from './particles.js';
 import { SURFACE_MARKING_STYLE } from '../vehicles/vehicleMarkings.js';
+import { createCellLifecycle, CELL_DECAL_VISIBLE } from '../world/cellLifecycle.js';
 
 /** Per-vehicle decal budget (oldest evicted beyond this). */
 export const IMPACT_DECAL_CAP = 24;
 /** Millimetre-scale separation avoids z-fighting without a visible air gap. */
 export const IMPACT_DECAL_LIFT_M = SURFACE_MARKING_STYLE.surfaceLiftM;
+
+/**
+ * World-cell lifecycle seam (SA-07): ballistic scarring renders only while
+ * its host vehicle's cell is ACTIVE/VISIBLE/SHADOW_ONLY — past that a
+ * caliber-scaled quad sits below subpixel discernment, so sweep() hides the
+ * batched meshes (draw call + fill-rate saving) until the cell enriches.
+ * Pure so the fx selftest pins the contract headlessly.
+ * @param {{stateAt:function(number, number): number}} lifecycle CellLifecycle
+ * @param {number} x world x of the host vehicle
+ * @param {number} z world z of the host vehicle
+ * @returns {boolean}
+ */
+export function decalVisibleForPosition(lifecycle, x, z) {
+  return CELL_DECAL_VISIBLE[lifecycle.stateAt(x, z)];
+}
 
 // --- atlas layout ------------------------------------------------------------
 const ATLAS = 1024;
@@ -517,6 +536,7 @@ export function createImpactDecals({ anisotropy = 4, seed = 0x51f7a3 } = {}) {
   function obtainNodeMesh() {
     const nm = meshPool.pop() || makeNodeMesh();
     nm.mesh.material = material; // defensive: undo any historical burnt swap
+    nm.mesh.visible = true; // defensive: undo any lifecycle cull from the previous owner
     nm.used = 0;
     nm.free.length = 0;
     nm.pos.array.fill(0);
@@ -537,6 +557,15 @@ export function createImpactDecals({ anisotropy = 4, seed = 0x51f7a3 } = {}) {
   const legacyKeys = new WeakMap(); // visual -> synthetic key
   let legacySeq = 0;
   const turretEnvBySpec = new Map(); // specId -> {min:[3],max:[3]}|null
+
+  // SA-07 world-cell gating: consumer-side tracker over the SAME 8x8 x 128 m
+  // grid as map.js's world.cells facade — the facade cannot be passed through
+  // effects' fixed signatures (same constraint as vegetation's WA3 tracker),
+  // and classification is pure, so driving it from the render camera alone
+  // tracks the facade's camera leg exactly. Visibility is a render concern,
+  // so the camera is the correct single observer here.
+  const cells = createCellLifecycle();
+  const _gw = new THREE.Vector3(); // sweep-time host world position scratch
 
   function recFor(key, visual) {
     let rec = records.get(key);
@@ -767,9 +796,13 @@ export function createImpactDecals({ anisotropy = 4, seed = 0x51f7a3 } = {}) {
     const h2 = (h || w) / 2;
     const lift = IMPACT_DECAL_LIFT_M + rng() * 0.002;
     _c0.copy(pos).addScaledVector(_n, lift);
-    const cells = FAMILY_CELLS[fam] || FAMILY_CELLS.pen;
-    const cell = cells[(rng() * cells.length) | 0];
+    const famCells = FAMILY_CELLS[fam] || FAMILY_CELLS.pen;
+    const cell = famCells[(rng() * famCells.length) | 0];
     const { nm, slot } = allocEntry(rec, nodeKey, node);
+    // Optimistic on stamp: a fresh combat mark must never land on a mesh the
+    // last sweep culled (vehicle drove away and back). The next gated sweep
+    // re-applies CELL_DECAL_VISIBLE if the cell is genuinely distant.
+    nm.mesh.visible = true;
     writeQuad(nm, slot, _c0, _t, _b, w2, h2, cell, shadeFor(fam));
     return true;
   }
@@ -850,12 +883,29 @@ export function createImpactDecals({ anisotropy = 4, seed = 0x51f7a3 } = {}) {
       for (const rec of [...records.values()]) clearRecord(rec);
     },
 
-    /** Drop decals whose vehicle has wrecked (defensive sweep). */
-    sweep() {
+    /**
+     * Defensive sweep, extended (SA-07) with world-cell decal gating. When
+     * the render camera position is supplied, first reclassify the internal
+     * cell tracker, then hide each surviving record's batched meshes while
+     * its host vehicle sits in a DISTANT/DORMANT cell (CELL_DECAL_VISIBLE —
+     * subpixel marks) and restore them when the cell enriches. Without
+     * camera args this stays the legacy wreck/scene-left cleanup only.
+     * @param {?number} [camX] render camera world x
+     * @param {?number} [camZ] render camera world z
+     */
+    sweep(camX = null, camZ = null) {
+      const gate = camX != null;
+      if (gate) cells.update(camX, camZ);
       for (const rec of [...records.values()]) {
         const v = rec.visual;
         if (!v || !v.root || !v.root.parent ||
-            (v.isDestroyed && v.isDestroyed())) clearRecord(rec);
+            (v.isDestroyed && v.isDestroyed())) { clearRecord(rec); continue; }
+        if (gate) {
+          v.root.getWorldPosition(_gw);
+          const vis = decalVisibleForPosition(cells, _gw.x, _gw.z);
+          if (rec.hull) rec.hull.mesh.visible = vis;
+          if (rec.turret) rec.turret.mesh.visible = vis;
+        }
       }
     },
 

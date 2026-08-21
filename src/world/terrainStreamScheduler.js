@@ -22,6 +22,7 @@ import {
   createFineGridBaker,
   TERRAIN_LOD_SEGS,
 } from './terrainStreamSlices.js';
+import { CELL_STATES, CELL_AUXILIARY_VISIBLE } from './cellLifecycle.js';
 
 const defaultClock = typeof performance !== 'undefined' && performance.now
   ? () => performance.now()
@@ -44,6 +45,8 @@ export function estimateCameraMotion(prevX, prevZ, x, z, dt, out = { vx: 0, vz: 
  * @param {object} opts
  * @param {Array} opts.chunks chunk records (terrain.js shape, mutated in place)
  * @param {object} opts.heightField HeightField from createHeightField
+ * @param {?object} [opts.cells] CellLifecycle instance (optional spatial lifecycle)
+ * @param {?Array} [opts.auxiliaryMeshes] terrain auxiliary mesh records to govern
  * @param {?function(number, number)} [opts.clock] monotonic ms source
  * @param {number} [opts.budgetMs] per-update spend for background jobs
  * @param {number} [opts.urgentBudgetMs] cap when visible detail is missing
@@ -58,6 +61,8 @@ export function estimateCameraMotion(prevX, prevZ, x, z, dt, out = { vx: 0, vz: 
 export function createTerrainStreamScheduler({
   chunks,
   heightField,
+  cells = null,
+  auxiliaryMeshes = null,
   clock = defaultClock,
   budgetMs = 1.25,
   urgentBudgetMs = 3,
@@ -68,6 +73,7 @@ export function createTerrainStreamScheduler({
   statsTarget = null,
 } = {}) {
   const list = chunks;
+  const auxList = auxiliaryMeshes || [];
   const pick = { index: -1, level: -1, distanceM: 0, urgent: false };
   const evictionPlan = [];
   let activeJob = null;     // job currently consuming budget
@@ -80,6 +86,7 @@ export function createTerrainStreamScheduler({
     picked: false, urgent: false, completed: false,
     slices: 0, msUsed: 0, msUsedMax: 0, overBudget: 0,
     suspended: 0, resumed: 0, evicted: 0,
+    dormantSkips: 0, auxiliaryMeshesCulled: 0,
     jobsCompleted: 0, evictions: 0,
   };
 
@@ -151,6 +158,16 @@ export function createTerrainStreamScheduler({
 
   function sweepRetention(camX, camZ) {
     planTerrainLodEvictions(list, camX, camZ, null, evictionPlan);
+    if (cells && evictionPlan.length > 1) {
+      // Prioritize releasing cached geometry from DORMANT/DISTANT cells first
+      evictionPlan.sort((a, b) => {
+        const ca = list[a.index], cb = list[b.index];
+        const sa = ca ? cells.states[ca.cx !== undefined ? cells.indexAt(ca.cx, ca.cz) : a.index] : 0;
+        const sb = cb ? cells.states[cb.cx !== undefined ? cells.indexAt(cb.cx, cb.cz) : b.index] : 0;
+        if (sa !== sb) return sb - sa; // higher state (DORMANT=4) evicted first
+        return b.distanceM - a.distanceM;
+      });
+    }
     let disposed = 0;
     for (let i = 0; i < evictionPlan.length; i++) {
       const cand = evictionPlan[i];
@@ -178,9 +195,24 @@ export function createTerrainStreamScheduler({
     updateCount++;
     stats.picked = false; stats.urgent = false; stats.completed = false;
     stats.slices = 0; stats.msUsed = 0; stats.evicted = 0;
+    stats.dormantSkips = 0; stats.auxiliaryMeshesCulled = 0;
 
     if (updateCount % retentionInterval === 0) {
       stats.evicted = sweepRetention(camX, camZ);
+    }
+
+    // Cell-lifecycle auxiliary mesh visibility sweep
+    if (auxList.length > 0 && cells) {
+      for (let i = 0; i < auxList.length; i++) {
+        const aux = auxList[i];
+        const ci = aux.cellIndex >= 0 ? aux.cellIndex : (aux.cellIndex = cells.indexAt(aux.x, aux.z));
+        const cState = ci >= 0 ? cells.states[ci] : CELL_STATES.DORMANT;
+        const vis = CELL_AUXILIARY_VISIBLE[cState];
+        if (aux.mesh) {
+          aux.mesh.visible = vis && (aux.enabled !== false);
+        }
+        if (!vis) stats.auxiliaryMeshesCulled++;
+      }
     }
 
     // Preempt background work the moment visible detail goes missing
@@ -213,6 +245,15 @@ export function createTerrainStreamScheduler({
       if (!activeJob) {
         const job = chooseTerrainLodBuild(list, camX, camZ, pick, motion);
         if (!job) return stats;
+        // When cell lifecycle is provided, skip background prefetch in DORMANT cells
+        if (cells && !job.urgent) {
+          const c = list[job.index];
+          const ci = c && c.cx !== undefined ? cells.indexAt(c.cx, c.cz) : job.index;
+          if (ci >= 0 && cells.states[ci] === CELL_STATES.DORMANT) {
+            stats.dormantSkips++;
+            return stats;
+          }
+        }
         activeJob = makePicked(job, camX, camZ);
       }
     }
