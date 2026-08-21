@@ -9,6 +9,7 @@ import { createVegetation, createVegetationAsync } from './vegetation.js';
 import { createProps, createPropsAsync } from './props.js';
 import { getMapConfig } from './maps/index.js';
 import { createObstacleGrid, rayCollisionRecord } from './collision.js';
+import { createCellLifecycle } from './cellLifecycle.js';
 
 const _pt = new THREE.Vector3();
 const _bisA = new THREE.Vector3();
@@ -109,6 +110,17 @@ function assembleWorld(engineCtx, config, heightField, terrain, vegetation, prop
   const queryObstacles = createObstacleGrid(obstacles);
   const queryColliders = createObstacleGrid(props.colliders);
   const rayCandidates = [];
+
+  // W8 cell-lifecycle foundations: the 8x8 grid of 128 m cells shared by
+  // terrain chunks and vegetation chunks, each holding one lifecycle state
+  // (ACTIVE/VISIBLE/SHADOW_ONLY/DISTANT/DORMANT — see cellLifecycle.js).
+  // Classified per frame from camera/chase-focus with hysteresis; vegetation
+  // (W2) and props (W7) consume world.cells instead of deriving their own
+  // distance bands. Static content is bucketed once here so consumers can
+  // enumerate what a state change affects.
+  const cells = createCellLifecycle();
+  cells.registerContent(vegetation._clusters || [], 'treeCluster');
+  cells.registerContent(props.features.buildings || [], 'building');
 
   const sp = layout.spawns;
   const spawnPoints = {
@@ -270,6 +282,8 @@ function assembleWorld(engineCtx, config, heightField, terrain, vegetation, prop
      *   enables the tree occlusion fade along focus→camera
      */
     update(dt, cameraPos, cameraFwd = null, focusPos = null) {
+      cells.update(cameraPos.x, cameraPos.z,
+        focusPos ? focusPos.x : null, focusPos ? focusPos.z : null);
       terrain.userData.updateLOD(cameraPos);
       vegetation.update(dt, cameraPos, cameraFwd, focusPos);
       if (props.updateProps) props.updateProps(dt); // pole hinge-topple anims
@@ -288,6 +302,13 @@ function assembleWorld(engineCtx, config, heightField, terrain, vegetation, prop
     setSniperFade(f, immediate = false, fovDeg = null, aimDistM = null) {
       vegetation.setSniperFade(f, immediate, fovDeg, aimDistM);
     },
+    /**
+     * W8 per-cell lifecycle (cellLifecycle.js): states/changed typed arrays,
+     * stateAt/updateScaleAt queries, stats(), and the static content registry
+     * ('treeCluster', 'building'). Read-only consumption for vegetation,
+     * props, shadows, and future residency.
+     */
+    cells,
     group,
   };
 }
