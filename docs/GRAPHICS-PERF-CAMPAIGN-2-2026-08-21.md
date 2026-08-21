@@ -217,7 +217,7 @@ Target: Measurably better performance + measurably better resource efficiency + 
 
 **Integration record:**
 - Campaign start / permanent comparison waypoint: `970ef9e3`
-- Implementation tip SHA (last code commit of this campaign): see git log — inserted below after commit grouping.
+- Implementation tip SHA (last code commit of this campaign): `d6c507aa` — "test(perf): wire campaign selftests into npm test; add tooling deps". Commit series: ca1440fc perf(render) → 4bb321e8 perf(assets) → defdf408 perf(world) → a4493ecf feat(render TAA) → 7b057696 gfx(vehicles) → dc8aebec gfx(world) → 2564d5d8 gfx(fx) → b5897f0b perf(quality) → d6c507aa test(perf).
 - All 16 workstreams COMPLETE (matrix above); evidence in §3–§12; measured A/B in §13 (garage) and §14 (battle).
 
 **Pre-existing environmental failure (not caused by this campaign):** headless Chrome on this host cannot complete battle-open — a ~34 s synchronous renderer stall during deferred world build ends in frame detach + `net::ERR_CONNECTION_TIMED_OUT`. Reproduced IDENTICALLY at baseline `970ef9e3` with two independent harnesses (`dev-perf-probe`, `perfprobe --scene battle`) and first recorded at 15:27 on 2026-08-21 before any Campaign 2 code existed. Diagnostics: `.qa-dev/campaign2-{current,baseline}.json`. Battle-scene measurement therefore ran headed (§14).
