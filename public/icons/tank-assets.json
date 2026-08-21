@@ -52961,24 +52961,24 @@
           "width": 512,
           "height": 256,
           "mime": "image/png",
-          "bytes": 80948,
-          "sha256": "59717f581ff7841222d1f8ecc732ff59cd5c035b624a0060696689cb8cb0bf90"
+          "bytes": 80907,
+          "sha256": "0b0c86bfb4d79fd2a91d9b520048c01f9526b4b9a152d151635743160262ed03"
         },
         "armorSide": {
           "file": "leo2a6m_armor_side.png",
           "width": 512,
           "height": 256,
           "mime": "image/png",
-          "bytes": 81422,
-          "sha256": "76eeadbd86970d1afc0a59896ee9f37d56b634f54b88eecdc4a304ca0c199987"
+          "bytes": 79219,
+          "sha256": "26501c9bf3275b70fdae958fd76d31497f78de569c5a85f6ea5b3b2fb1b7cda0"
         },
         "modulesSide": {
           "file": "leo2a6m_modules_side.png",
           "width": 512,
           "height": 256,
           "mime": "image/png",
-          "bytes": 84758,
-          "sha256": "12a031ec7b56670e0c6f2e0ff316f922c0149e8fb137f291b61dba4b89f3c186"
+          "bytes": 80786,
+          "sha256": "a70e35b49529b424a2524575c77ccc82e51b881a05dfcc552b91b0a9d13ae1a2"
         },
         "markings": {
           "file": "leo2a6m_markings.png",
@@ -57311,24 +57311,24 @@
           "width": 512,
           "height": 256,
           "mime": "image/png",
-          "bytes": 77629,
-          "sha256": "c5f4751c98d7b7e0bce326b502eaa64986c632ef2725f02994837bae64ac23f9"
+          "bytes": 78887,
+          "sha256": "9a8235010b36361020afbb97740acc8b2ec279a35ef05093b1e322ef786946f7"
         },
         "armorSide": {
           "file": "m1a1_armor_side.png",
           "width": 512,
           "height": 256,
           "mime": "image/png",
-          "bytes": 78001,
-          "sha256": "f40e1f6e3e240edf391288dbe3a3d0c5ee497936756ee4c9632cc7650b7dd305"
+          "bytes": 77391,
+          "sha256": "0b70d2375b11facccb49d9bf9e577136af46529871915049bf43e0fe80fd7571"
         },
         "modulesSide": {
           "file": "m1a1_modules_side.png",
           "width": 512,
           "height": 256,
           "mime": "image/png",
-          "bytes": 81979,
-          "sha256": "aad2a770ca868a8035e1533700c9285341a3bfa5178725b7f481ec04dfd34316"
+          "bytes": 77927,
+          "sha256": "36dd40272787697518dcb7bac842e10916ee6fe66adb1e5c9e008ffe8354dfa6"
         },
         "markings": {
           "file": "_markings_shared_23e749057c03.png",
@@ -59471,24 +59471,24 @@
           "width": 512,
           "height": 256,
           "mime": "image/png",
-          "bytes": 75524,
-          "sha256": "b82f14c0df01446337150cab32ce0ec939c36b3565f324dd41c54eb782584dd9"
+          "bytes": 75625,
+          "sha256": "dbaa7c704118f856a9b122ff06078d640c87b188d1af3e89c192067df4b7d593"
         },
         "armorSide": {
           "file": "m1a2_armor_side.png",
           "width": 512,
           "height": 256,
           "mime": "image/png",
-          "bytes": 75139,
-          "sha256": "d343d65d2f2eb9d38b94885b897aaf3c1198b7ec39a3f7386e4a4dbfbd3ddc02"
+          "bytes": 73134,
+          "sha256": "aa19a83bd08c09fd0e1831c71d676f87c6805332d8a0c22f2e76ada85fa640af"
         },
         "modulesSide": {
           "file": "m1a2_modules_side.png",
           "width": 512,
           "height": 256,
           "mime": "image/png",
-          "bytes": 79943,
-          "sha256": "b8f4e40c4589974f60ad32c1bf62a8650e3d7e6206c952c729c494cd6289377e"
+          "bytes": 74908,
+          "sha256": "60f624d4ac3edb3d1b36b21f3408cf0729d815227b32d3b2b608c266f9c69e93"
         },
         "markings": {
           "file": "_markings_shared_4bcce071873d.png",

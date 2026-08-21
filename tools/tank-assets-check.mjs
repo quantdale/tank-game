@@ -98,6 +98,10 @@ const server = await createServer({
 await server.listen();
 const browser = await puppeteer.launch({
   headless: 'new',
+  // The live-fingerprint audit renders the whole fleet in one page session;
+  // under host CPU contention a single Runtime.callFunctionOn can exceed
+  // puppeteer's 180 s default and abort an otherwise-green audit.
+  protocolTimeout: 600000,
   args: ['--use-gl=angle', '--enable-webgl', '--no-sandbox', '--disable-dev-shm-usage'],
 });
 const page = await browser.newPage();
