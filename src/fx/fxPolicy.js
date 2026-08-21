@@ -115,3 +115,55 @@ export function fxTracerEnergyK(physHalf, finalHalf) {
   if (r >= 1) return 1;
   return Math.pow(Math.max(r, 0), 0.45);
 }
+
+// --- SA-13 combat VFX art ceiling: turbulent media advection ------------------
+// Puff media flew pure ballistic arcs (velocity + drag + gravity), so smoke
+// columns, dust palls and propellant clouds evolved as rigid fans of
+// straight-line puffs. Every puff card now also runs a seeded sinusoidal
+// curl-walk (PUFF_VERT in particles.js): phase-offset sines drift the card's
+// world position while it ages, so columns shear, kink and curl like media.
+// Amplitude is a FRACTION of the card's CURRENT world size per family below —
+// near/far framing, caliber scaling and distBoost stay proportionate, and
+// pinned precision elements (flash cores) get exactly 0. Deterministic: the
+// phase reuses the existing per-particle rotation attribute, so no extra RNG
+// draws and frozen captures stay byte-stable. Zero perf cost: same shared
+// PUFF_VERT source for all six puff families (program census unchanged), no
+// new attributes, a handful of ALU ops per vertex.
+export const FX_PUFF_WOBBLE = Object.freeze({
+  smoke: 0.16,   // columns/palls: the headline churn read
+  dust: 0.14,    // wake veils + HE dust drift
+  psmoke: 0.09,  // muzzle propellant mass: gentle boil, keeps its torn shape
+  billow: 0.05,  // fireball body: silhouette must stay readable
+  fire: 0.03,    // additive flame cards: near-pinned
+  flash: 0.0,    // muzzle cores are precision-pinned to the tip — never drift
+});
+
+/** Shared angular frequency (rad/s) of the wobble walk. */
+export const FX_WOBBLE_FREQ = 1.35;
+
+/**
+ * Wobble amplitude fraction for a puff family (0 for unknown/precision).
+ * @param {'smoke'|'dust'|'psmoke'|'billow'|'fire'|'flash'} family
+ * @returns {number} 0..~0.35 fraction of current card size
+ */
+export function fxPuffWobble(family) {
+  return Object.prototype.hasOwnProperty.call(FX_PUFF_WOBBLE, family)
+    ? FX_PUFF_WOBBLE[family]
+    : 0;
+}
+
+// --- SA-13: debris ground bounce ----------------------------------------------
+// Wreckage hit the ground and SNAPPED into a slide (a bare position clamp),
+// so heavy chunks read as magnets sticking to the terrain. One analytic damped
+// rebound (integrated in DEBRIS_VERT): the vertical impact velocity reflects
+// at `restitution`, horizontal velocity keeps `tangentKeep`, and impacts
+// slower than `minSpeed` (m/s) just settle — no visible pop for pebbles.
+// Purely GPU-side algebra on the existing drag trajectory; the CPU clod-trail
+// sampling in effects.js terminates AT ground contact, so trails and bouncing
+// chunks never disagree. Constants are .toFixed()-interpolated into the
+// shader and guarded below — no hand-copied drift.
+export const FX_DEBRIS_BOUNCE = Object.freeze({
+  restitution: 0.34,   // vertical keep (one bounce only, then the slide clamp)
+  tangentKeep: 0.58,   // horizontal keep through the impact
+  minSpeed: 2.2,       // below this impact speed chunks settle in place
+});

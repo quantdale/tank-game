@@ -13,6 +13,10 @@
  * createParticleSystem().
  */
 import * as THREE from 'three';
+// SA-13 art ceiling: the numeric VFX policy (wobble amplitudes, debris bounce)
+// lives in fxPolicy.js so it stays unit-testable; the GLSL below interpolates
+// the constants via .toFixed() and fxPolicy.selftest.mjs guards the wiring.
+import { FX_DEBRIS_BOUNCE, FX_WOBBLE_FREQ, fxPuffWobble } from './fxPolicy.js';
 
 // Transparent combat FX render after the opaque/world post passes so their
 // shaders can sample resolved scene depth without a framebuffer feedback loop.
@@ -143,6 +147,9 @@ uniform float uTime;
 uniform float uDrag;
 uniform float uTiles;
 uniform vec3 uSunDirW;
+// SA-13 turbulent advection amplitude (fraction of current card size, per
+// family from fxPolicy.fxPuffWobble; 0 for pinned precision cards).
+uniform float uWobble;
 varying vec2 vUv;
 varying vec2 vUvA;
 varying vec2 vUvB;
@@ -169,6 +176,20 @@ void main() {
   vT = t;
   vec3 wpos = aPB.xyz + particleDisplace( aVL.xyz, aC0.w, age, uDrag );
   float size = mix( aSR.x, aSR.y, t );
+  // SA-13 turbulent advection: seeded sinusoidal curl-walk so buoyant media
+  // shears, kinks and curls instead of flying rigid ballistic arcs. Phase
+  // reuses the per-particle rotation attribute (no extra RNG draws); the
+  // amplitude gate keeps young puffs coherent and scales with the card's
+  // CURRENT size, so framing/caliber compensation stays proportionate.
+  float wobK = uWobble * size * smoothstep( 0.06, 0.55, t );
+  if ( wobK > 0.0 ) {
+    float ph = aSR.z * 11.0;
+    wpos += vec3(
+      sin( age * ${FX_WOBBLE_FREQ.toFixed(4)} + ph ) + 0.5 * sin( age * ${FX_WOBBLE_FREQ.toFixed(4)} * 2.17 + ph * 1.7 ),
+      0.6 * sin( age * ${FX_WOBBLE_FREQ.toFixed(4)} * 0.83 + ph * 0.61 ),
+      cos( age * ${FX_WOBBLE_FREQ.toFixed(4)} * 0.71 + ph * 1.3 ) + 0.5 * cos( age * ${FX_WOBBLE_FREQ.toFixed(4)} * 1.93 + ph * 2.3 )
+    ) * wobK;
+  }
   float ang = aSR.z + aSR.w * age;
   float ca = cos( ang ), sa = sin( ang );
   vec2 corner = vec2( position.x * ca - position.y * sa,
@@ -590,6 +611,11 @@ varying float vSeed;
 varying vec3 vWorldPos;
 ${FOG_PARS_V}
 ${DISPLACE_GLSL}
+// SA-13 debris ground-bounce policy (fxPolicy.FX_DEBRIS_BOUNCE, interpolated
+// — never hand-copied; fxPolicy.selftest.mjs guards the wiring).
+const float DB_E = ${FX_DEBRIS_BOUNCE.restitution.toFixed(4)};
+const float DB_TAN = ${FX_DEBRIS_BOUNCE.tangentKeep.toFixed(4)};
+const float DB_MIN = ${FX_DEBRIS_BOUNCE.minSpeed.toFixed(4)};
 mat3 axisAngle( vec3 axis, float ang ) {
   float c = cos( ang ), s = sin( ang ), ic = 1.0 - c;
   vec3 a = axis;
@@ -609,9 +635,44 @@ void main() {
     return;
   }
   float t = age / life;
-  vec3 center = aPB.xyz + particleDisplace( aVL.xyz, -21.6, age, 0.12 );
-  float grounded = step( center.y, aSG.y + aSG.x * 0.45 );
-  center.y = max( center.y, aSG.y + aSG.x * 0.45 );
+  vec3 vel0 = aVL.xyz;
+  float hc = aSG.y + aSG.x * 0.45;
+  vec3 center = aPB.xyz + particleDisplace( vel0, -21.6, age, 0.12 );
+  // SA-13 single damped ground bounce: solve the (drag-light) vertical
+  // ballistic for the first contact time tb, then continue from the contact
+  // point with the reflected velocity — vertical keeps DB_E, horizontal keeps
+  // DB_TAN, gentle impacts (<= DB_MIN) just settle into the slide clamp.
+  // Analytic on both segments of the SAME drag trajectory, so contact is
+  // continuous (no pop) and the CPU-side clod trails — which end AT ground
+  // contact — never disagree with the chunks.
+  float h0 = aPB.y - hc;
+  float disc = vel0.y * vel0.y + 43.2 * h0;
+  float tb = disc > 0.0 ? ( vel0.y + sqrt( disc ) ) / 21.6 : -1.0;
+  // one Newton refinement on the WITH-drag height (the closed form ignores
+  // drag; unrefined it lands ~0.1-0.2 s late and the chunk would skim the
+  // ground before the hop). Guarded to descending segments.
+  if ( tb > 0.0 ) {
+    float fT = aPB.y + vel0.y * ( 1.0 - exp( -0.12 * tb ) ) / 0.12 - 10.8 * tb * tb - hc;
+    float fdT = vel0.y * exp( -0.12 * tb ) - 21.6 * tb;
+    tb = fdT < -0.001 ? max( tb - fT / fdT, 0.0 ) : tb;
+  }
+  if ( tb > 0.0 && age > tb ) {
+    float dtb = age - tb;
+    vec3 preB = aPB.xyz + particleDisplace( vel0, -21.6, tb, 0.12 );
+    float ek = exp( -0.12 * tb );
+    float vyI = vel0.y * ek - 21.6 * tb;          // vertical impact velocity
+    vec2 vxI = vel0.xz * ek;                      // horizontal impact velocity
+    float vyr = max( -vyI, 0.0 ) * DB_E;
+    if ( sqrt( vxI.x * vxI.x + vxI.y * vxI.y + vyI * vyI ) > DB_MIN && vyr > 0.0 ) {
+      float sb = ( 1.0 - exp( -0.12 * dtb ) ) / 0.12;
+      center = vec3(
+        preB.x + vxI.x * DB_TAN * sb,
+        max( preB.y + vyr * sb - 10.8 * dtb * dtb, hc ),
+        preB.z + vxI.y * DB_TAN * sb );
+    }
+  }
+  float grounded = step( center.y, hc );
+  center.y = max( center.y, hc );
   float spin = aAR.w * age * mix( 1.0, 0.06, grounded );
   mat3 rot = axisAngle( normalize( aAR.xyz ), spin );
   float fade = 1.0 - smoothstep( 0.82, 1.0, t );
@@ -631,7 +692,18 @@ void main() {
   // r5 motion cue: velocity-aligned stretch on fast airborne chunks — a
   // tumbling slab frozen against the sky read as a static 2D card; smearing
   // the silhouette along the flight path reads as speed in every still.
-  vec3 vcur = aVL.xyz * exp( -0.12 * age ) + vec3( 0.0, -21.6 * age, 0.0 );
+  // SA-13: the stretch follows the CURRENT segment velocity, so a rebounding
+  // chunk smears along its post-bounce hop instead of the dead incoming arc.
+  vec3 vcur = vel0 * exp( -0.12 * age ) + vec3( 0.0, -21.6 * age, 0.0 );
+  if ( tb > 0.0 && age > tb ) {
+    float dtb = age - tb;
+    float ekc = exp( -0.12 * tb );
+    float vyI = vel0.y * ekc - 21.6 * tb;
+    vec2 vxI = vel0.xz * ekc;
+    float vyr = max( -vyI, 0.0 ) * DB_E;
+    float ek3 = exp( -0.12 * dtb );
+    vcur = vec3( vxI.x * DB_TAN * ek3, vyr * ek3 - 21.6 * dtb, vxI.y * DB_TAN * ek3 );
+  }
   float spd = length( vcur );
   if ( spd > 1.0 && grounded < 0.5 ) {
     vec3 vdir = vcur / spd;
@@ -1451,7 +1523,7 @@ export function createParticleSystem(engineCtx, { seed = 5000 } = {}) {
   // stale Verdant-only key after a map/studio atmosphere switch.
   const sunDirW = new THREE.Vector3(0.527, 0.574, -0.627).normalize();
 
-  function puffMaterial(map, additive, drag, intensity, tiles = 1, nearFade = [0.5, 2.2]) {
+  function puffMaterial(map, additive, drag, intensity, tiles = 1, nearFade = [0.5, 2.2], wobble = 0) {
     const mat = new THREE.ShaderMaterial({
       vertexShader: PUFF_VERT,
       fragmentShader: additive ? PUFF_FRAG_ADDITIVE : PUFF_FRAG_NORMAL,
@@ -1463,6 +1535,8 @@ export function createParticleSystem(engineCtx, { seed = 5000 } = {}) {
         uTiles: { value: tiles },
         uSunDirW: { value: sunDirW },
         uNearFade: { value: new THREE.Vector2(nearFade[0], nearFade[1]) },
+        // SA-13 turbulent advection amplitude (fxPolicy.fxPuffWobble per family)
+        uWobble: { value: wobble },
         uSceneDepth,
         uSoftViewport,
         uCameraNear,
@@ -1484,18 +1558,18 @@ export function createParticleSystem(engineCtx, { seed = 5000 } = {}) {
 
   const pools = {
     smoke: new Pool('smoke', makeQuadGeometry(POOL_SIZES.smoke),
-      puffMaterial(smokeTex, false, 0.9, 1, 4), PUFF_LAYOUT, POOL_SIZES.smoke, 'aVL', 3),
+      puffMaterial(smokeTex, false, 0.9, 1, 4, [0.5, 2.2], fxPuffWobble('smoke')), PUFF_LAYOUT, POOL_SIZES.smoke, 'aVL', 3),
     fire: new Pool('fire', makeQuadGeometry(POOL_SIZES.fire),
       // intensity 1.05: hot enough to bloom where sprites overlap without the
       // stacked-additive HDR clipping the fireball core to a featureless sheet.
       // Additive pools carry a longer lens fade (r7 scope flood): a fire card
       // 3 m from the eye is a screen-filling wash, not feedback.
-      puffMaterial(fireTex, true, 1.6, 0.66, 4, [1.2, 4.6]), PUFF_LAYOUT, POOL_SIZES.fire, 'aVL', 3),
+      puffMaterial(fireTex, true, 1.6, 0.66, 4, [1.2, 4.6], fxPuffWobble('fire')), PUFF_LAYOUT, POOL_SIZES.fire, 'aVL', 3),
     billow: new Pool('billow', makeQuadGeometry(POOL_SIZES.billow),
       // normal-blended fireball body (see PUFF_FRAG_BILLOW): occluding
       // fire-in-smoke lobes that give the blast a rolling silhouette
       (() => {
-        const m = puffMaterial(fireTex, false, 1.4, 1.0, 4, [1.2, 4.6]);
+        const m = puffMaterial(fireTex, false, 1.4, 1.0, 4, [1.2, 4.6], fxPuffWobble('billow'));
         m.fragmentShader = PUFF_FRAG_BILLOW;
         return m;
       })(), PUFF_LAYOUT, POOL_SIZES.billow, 'aVL', 3),
@@ -1503,15 +1577,15 @@ export function createParticleSystem(engineCtx, { seed = 5000 } = {}) {
       // muzzle propellant mass (see PUFF_FRAG_PROP): erosion-masked cold grey
       // powder smoke — torn billow structure instead of gaussian cotton balls
       (() => {
-        const m = puffMaterial(propTex, false, 0.9, 1.0, 4, [0.8, 3.0]);
+        const m = puffMaterial(propTex, false, 0.9, 1.0, 4, [0.8, 3.0], fxPuffWobble('psmoke'));
         m.fragmentShader = PUFF_FRAG_PROP;
         return m;
       })(), PUFF_LAYOUT, POOL_SIZES.psmoke, 'aVL', 3),
     dust: new Pool('dust', makeQuadGeometry(POOL_SIZES.dust),
-      puffMaterial(dustTex, false, 1.4, 1, 4), PUFF_LAYOUT, POOL_SIZES.dust, 'aVL', 3),
+      puffMaterial(dustTex, false, 1.4, 1, 4, [0.5, 2.2], fxPuffWobble('dust')), PUFF_LAYOUT, POOL_SIZES.dust, 'aVL', 3),
     flash: new Pool('flash', makeQuadGeometry(POOL_SIZES.flash),
       // 1.7: bright enough to bloom without clipping to a featureless sheet
-      puffMaterial(flashTex, true, 0.6, 1.7, 1, [1.2, 4.6]), PUFF_LAYOUT, POOL_SIZES.flash, 'aVL', 3),
+      puffMaterial(flashTex, true, 0.6, 1.7, 1, [1.2, 4.6], fxPuffWobble('flash')), PUFF_LAYOUT, POOL_SIZES.flash, 'aVL', 3),
     jet: new Pool('jet', makeQuadGeometry(POOL_SIZES.jet),
       new THREE.ShaderMaterial({
         vertexShader: JET_VERT,

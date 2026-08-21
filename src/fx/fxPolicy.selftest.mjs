@@ -8,11 +8,15 @@ import {
   FX_TRACER_MIN_HALF_PX,
   FX_TRACER_MAX_HALF_M,
   FX_PARTICLE_PROGRAM_GROUPS,
+  FX_PUFF_WOBBLE,
+  FX_WOBBLE_FREQ,
+  FX_DEBRIS_BOUNCE,
   fxLodLevel,
   fxColumnPuffsPerTick,
   fxDustAdmitted,
   fxPixelWorldSize,
   fxTracerEnergyK,
+  fxPuffWobble,
 } from './fxPolicy.js';
 
 // --- LOD bands ---------------------------------------------------------------
@@ -122,4 +126,48 @@ assert.ok(/textureAssetImages = null;/.test(particlesSrc) &&
   /textureAssetPromise = null;/.test(particlesSrc),
   'decoded atlas heap is released after install/bake');
 
-console.log('fxPolicy.selftest: LOD bands, admission budget, pressure response, tracer floor passed');
+// --- SA-13 combat VFX art ceiling: turbulent puff advection -------------------
+// Amplitudes are fractions of current card size: bounded, strictly ordered
+// (heavier media churns more), precision families pinned to zero.
+const wobbleOrder = ['smoke', 'dust', 'psmoke', 'billow', 'fire', 'flash'];
+assert.deepEqual(Object.keys(FX_PUFF_WOBBLE).sort(), [...wobbleOrder].sort(),
+  'wobble table covers exactly the six puff families');
+for (const [family, amp] of Object.entries(FX_PUFF_WOBBLE)) {
+  assert.ok(amp >= 0 && amp <= 0.35,
+    `wobble amplitude '${family}' bounded 0..0.35 (${amp})`);
+}
+for (let i = 1; i < wobbleOrder.length; i++) {
+  assert.ok(FX_PUFF_WOBBLE[wobbleOrder[i - 1]] > FX_PUFF_WOBBLE[wobbleOrder[i]],
+    `wobble amplitude descends ${wobbleOrder[i - 1]} -> ${wobbleOrder[i]}`);
+}
+assert.equal(FX_PUFF_WOBBLE.flash, 0, 'muzzle flash cores stay precision-pinned');
+assert.ok(FX_WOBBLE_FREQ > 0.5 && FX_WOBBLE_FREQ < 3,
+  'wobble frequency stays in the readable media-churn band');
+assert.equal(fxPuffWobble('smoke'), FX_PUFF_WOBBLE.smoke, 'fxPuffWobble reads the table');
+assert.equal(fxPuffWobble('nope'), 0, 'unknown families guard to zero (prototype-safe)');
+assert.equal(fxPuffWobble('toString'), 0, 'object-prototype keys do not leak amplitudes');
+// Shader wiring drift guards: the GLSL must interpolate the policy constants
+// (never hand-copied) and every puff family must pass its amplitude through.
+assert.ok(/from '\.\/fxPolicy\.js'/.test(particlesSrc),
+  'particles.js consumes fxPolicy (no parallel constant copy)');
+assert.ok(/FX_WOBBLE_FREQ\.toFixed/.test(particlesSrc),
+  'wobble frequency is interpolated from policy into PUFF_VERT');
+assert.ok(/uniform float uWobble;/.test(particlesSrc) &&
+  /uWobble: \{ value: wobble \}/.test(particlesSrc),
+  'uWobble uniform is declared and wired through puffMaterial');
+assert.equal(particlesSrc.split("fxPuffWobble('").length - 1, 6,
+  'all six puff pool materials wire their family wobble amplitude');
+
+// --- SA-13: debris ground bounce ----------------------------------------------
+assert.ok(FX_DEBRIS_BOUNCE.restitution > 0.1 && FX_DEBRIS_BOUNCE.restitution < 0.7,
+  'bounce restitution keeps a single low hop (no pogo)');
+assert.ok(FX_DEBRIS_BOUNCE.tangentKeep > 0.2 && FX_DEBRIS_BOUNCE.tangentKeep < 0.95,
+  'post-impact horizontal keep stays damped');
+assert.ok(FX_DEBRIS_BOUNCE.minSpeed > 0.5 && FX_DEBRIS_BOUNCE.minSpeed < 8,
+  'minSpeed gate settles pebbles without killing heavy-chunk rebounds');
+assert.ok(/const float DB_E = \$\{FX_DEBRIS_BOUNCE\.restitution\.toFixed/.test(particlesSrc) &&
+  /const float DB_TAN = \$\{FX_DEBRIS_BOUNCE\.tangentKeep\.toFixed/.test(particlesSrc) &&
+  /const float DB_MIN = \$\{FX_DEBRIS_BOUNCE\.minSpeed\.toFixed/.test(particlesSrc),
+  'debris bounce constants are interpolated from policy into DEBRIS_VERT');
+
+console.log('fxPolicy.selftest: LOD bands, admission budget, pressure response, tracer floor, SA-13 wobble/bounce policy passed');
