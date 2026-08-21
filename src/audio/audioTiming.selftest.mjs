@@ -8,6 +8,8 @@ import {
   resolveReloadCuePlan,
   resolveWeaponReportProfile,
   safeAudioStart,
+  shotReportAllowed,
+  SHOT_REPORT_MIN_GAP_S,
   worldDistanceGain,
 } from './audio.js';
 
@@ -90,5 +92,17 @@ assert.equal(magazineReload.profile, 'magazine', 'full magazine loads use the au
 assert.equal(magazineReload.cues.filter((cue) => cue.type === 'index').length, 3,
   'full magazine load has three audible conveyor indexes');
 assert.ok(magazineReload.cues.at(-1).at < 1, 'final breech cue precedes the authoritative ready edge');
+
+// SA-09 rapid-fire spam guard: per-shooter report gate stays pure and safe.
+assert.ok(SHOT_REPORT_MIN_GAP_S > 0 && SHOT_REPORT_MIN_GAP_S <= 0.2,
+  'gate gap fuses belt rounds without swallowing single-shot guns');
+assert.equal(shotReportAllowed(undefined, 100), true,
+  'a shooter with no previous report always renders');
+assert.equal(shotReportAllowed(100.0, 100.0 + SHOT_REPORT_MIN_GAP_S - 1e-9), false,
+  'belt round inside the gate window is suppressed');
+assert.equal(shotReportAllowed(100.0, 100.0 + SHOT_REPORT_MIN_GAP_S + 1e-6), true,
+  'next round past the gate window renders');
+assert.equal(shotReportAllowed(NaN, 100), false,
+  'a broken previous clock fails closed once a report exists');
 
 console.log('audioTiming.selftest: scheduling, weapon reports, reload mechanisms, distance and perspective mixes passed');

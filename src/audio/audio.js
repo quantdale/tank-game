@@ -83,6 +83,25 @@ export function safeAudioStart(now, scheduled, leadS = 0.001) {
   return Math.max(0, Number(now) + leadS, Number(scheduled));
 }
 
+// SA-09 rapid-fire spam guard: belt-fed autocannons emit one shell:fired per
+// round, and rendering every round floods the 24-voice pool with layered
+// reports that steal explosion tails from the mix. Reports from one gun
+// closer together than this fuse into the still-ringing previous report
+// (~700 rpm ceiling; single-shot guns never come near it).
+export const SHOT_REPORT_MIN_GAP_S = 0.085;
+
+/**
+ * Pure gate decision: may a new gunshot report render at `nowS` when this
+ * shooter last rendered at `lastAtS`? No previous report (`null`/`undefined`)
+ * always renders; a non-finite stored clock fails closed.
+ */
+export function shotReportAllowed(lastAtS, nowS, minGapS = SHOT_REPORT_MIN_GAP_S) {
+  if (lastAtS == null) return true;
+  if (!Number.isFinite(lastAtS)) return false;
+  const gap = Number(minGapS);
+  return Number(nowS) - lastAtS >= (Number.isFinite(gap) && gap > 0 ? gap : SHOT_REPORT_MIN_GAP_S);
+}
+
 const MAX_VOICES = 24;
 const SPEED_OF_SOUND_MPS = 340;
 // The battlefield must retain an audible horizon. Distance still lowers and
@@ -336,6 +355,8 @@ export function createAudio() {
 
   /** Active one-shot voices: { start, end, in: GainNode, pan, sources[], dead } */
   const voices = [];
+  /** SA-09 spam guard: tankId -> { t, kind } of last rendered shot report. */
+  const shotGate = new Map();
   /** tankId -> engine loop voice */
   const engines = new Map();
   // Reused nearest-emitter ranking. The cap protects CPU/headroom; ranking
@@ -2183,6 +2204,19 @@ export function createAudio() {
     const ownShot = listenerOwnerId != null
       ? e.shooterId === listenerOwnerId
       : !!e.isPlayer;
+    // SA-09 spam guard: one rendered report per shooter per gate window.
+    // Keyed by resolved report kind so a mixed-weapon salvo (autocannon belt
+    // + ATGM launch on IFVs) never eats the launcher's distinct report. The
+    // gate updates even on suppressed rounds — a same-tick flood stays shut.
+    const reportKind = resolveWeaponReportProfile(e.weaponSound).kind;
+    const nowT = ctx.currentTime;
+    const last = shotGate.get(e.shooterId);
+    const gated = !!last && last.kind === reportKind && !shotReportAllowed(last.t, nowT);
+    shotGate.set(e.shooterId, { t: nowT, kind: reportKind });
+    if (gated) {
+      logSound('shell:fired:gated', { id: e.shellId, shooterId: e.shooterId });
+      return;
+    }
     const s = spat(mp[0], mp[1], mp[2]);
     const dist = s.dist, gain = s.gain;
     gunshot(mp[0], mp[1], mp[2], e.caliberMm, ownShot,
@@ -2504,6 +2538,7 @@ export function createAudio() {
       if (next === 'battle' && prev !== 'battle') {
         garageToneStop();
         stopWorldLoops('battle-reset');
+        shotGate.clear();
         tankInfo.clear();
         playerId = null;
         moduleState.clear();
