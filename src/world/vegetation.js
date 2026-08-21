@@ -37,6 +37,18 @@ function smoothstepJs(a, b, x) {
   return t * t * (3 - 2 * t);
 }
 
+// Midfield chunk density at edge-adjusted camera distance d. Pure function so
+// vegetationLod.selftest.mjs can pin the curve. Full density to 56 m, the r5
+// deep taper down to its 6% floor at taperEnd — then that residue DRAINS TO
+// ZERO before the shader scale-out finishes at fadeEnd. The old constant 6%
+// tail kept rendering a sub-2px speckle annulus between taperEnd and fadeEnd
+// that the terrain meadow albedo already carries (see GRASS_PER_CHUNK above).
+export function midfieldGrassFraction(d, fadeEnd, taperEnd) {
+  if (d >= fadeEnd) return 0;
+  return (1 - 0.94 * smoothstepJs(56, taperEnd, d))
+    * (1 - smoothstepJs(taperEnd, fadeEnd - 12, d));
+}
+
 function _mustReplace(src, anchor, replacement) {
   const out = src.replace(anchor, replacement);
   if (out === src) throw new Error(`world/vegetation: shader anchor missing: ${anchor}`);
@@ -1580,7 +1592,13 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
         float rayBand = 1.0 - (1.0 - smoothstep(2.6, 6.0, dRay)) * (1.0 - smoothstep(90.0, 130.0, dCam));
         gfade *= mix(1.0, nearBand * rayBand, uSniperFade);
         transformed *= gfade;
-        float sway = uv.y * uv.y;
+        // ao-boil r4 WIND FREEZE: past ~60 m a tuft's whole sway arc is well
+        // under one screen pixel, but its alpha-cutout DEPTH keeps churning
+        // the GTAO occluder field every frame (GTAO consumes the shared scene
+        // depth directly). Freeze beyond reading range: identical look,
+        // temporally static occluders, AO history settles instead of boiling.
+        float wFade = 1.0 - smoothstep(60.0, 110.0, dCam);
+        float sway = uv.y * uv.y * wFade;
         float phase = giw.x * 0.35 + giw.z * 0.28;
         transformed.x += sway * (0.12 * sin(uWindTime * 1.6 + phase) + 0.05 * sin(uWindTime * 3.7 + phase * 2.3));
         transformed.z += sway * 0.08 * cos(uWindTime * 1.3 + phase);
@@ -1614,14 +1632,18 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
     makeGrassCardTexture(mulberry32(seed + 41), 0, veg.grassTexTone),
     makeGrassCardTexture(mulberry32(seed + 42), 1, veg.grassTexTone),
   ];
-  function makeGrassMaterial(tex, farDist, cacheKey) {
+  function makeGrassMaterial(tex, farDist) {
     // Lambert is materially cheaper for a rough, non-metallic alpha card and
     // preserves the lighting/shadow response that is actually visible here.
     const mat = new THREE.MeshLambertMaterial({
       map: tex, alphaTest: 0.44, alphaToCoverage: true, side: THREE.DoubleSide,
     });
     engineCtx.setupShadowMaterial(mat, grassWindHook(farDist));
-    mat.customProgramCacheKey = () => cacheKey;
+    // One shared program for the midfield and carpet materials: their hooked
+    // shader source is IDENTICAL (the fade distances are uGrassFar uniform
+    // values, not code), so separate cache keys only bought a second compile
+    // and an extra per-frame program switch.
+    mat.customProgramCacheKey = () => 'world-grass-wind-v6';
     return mat;
   }
   const grassVariants = [];
@@ -1633,8 +1655,8 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
     grassVariants.push({
       geo: makeTuftGeometry(w, h),
       geoFar: makeTuftFarGeometry(w, h), // performance_budget r5 (see builder)
-      matMid: makeGrassMaterial(grassTex[gv], grassFadeEnd, 'world-grass-wind-v6'),
-      matNear: makeGrassMaterial(grassTex[gv], CARPET_FAR, 'world-grass-carpet-v6'),
+      matMid: makeGrassMaterial(grassTex[gv], grassFadeEnd),
+      matNear: makeGrassMaterial(grassTex[gv], CARPET_FAR),
     });
   }
 
@@ -1834,6 +1856,10 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
       mesh.visible = false;
       mesh.matrixAutoUpdate = false;
       mesh.userData.aoExclude = true; // GTAO override prepass ignores alphaTest
+      // W2 graphics campaign: chunk coordinates for the LOD selftest (and any
+      // future scene dump) — meshes carry no transform of their own.
+      mesh.userData.grassChunkCx = gc.cx;
+      mesh.userData.grassChunkCz = gc.cz;
       group.add(mesh);
       chunkMeshes.push({
         mesh, total: count,
@@ -2012,7 +2038,12 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
       {
         vec4 tiw = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
         float ph = tiw.x * 0.043 + tiw.z * 0.051;
-        float amp = aFlex * 0.14;
+        // ao-boil r4 WIND FREEZE (see grass hook note): full sway inside
+        // 140 m, frozen by 220 m — always inside the 260 m near-LOD edge so a
+        // crown never crosses the freeze line during an LOD handoff. The <=9 cm
+        // tip arc is sub-pixel out there; the freeze only stops per-frame
+        // cutout-depth churn (GTAO boil) and far-treeline silhouette crawl.
+        float amp = aFlex * 0.14 * (1.0 - smoothstep(140.0, 220.0, distance(tiw.xyz, uCamPos)));
         transformed.x += amp * (sin(uWindTime * 1.15 + ph) + 0.45 * sin(uWindTime * 2.63 + ph * 1.7));
         transformed.z += amp * 0.7 * cos(uWindTime * 0.97 + ph * 1.3);
         vec4 tvw = instanceMatrix * vec4(transformed, 1.0);
@@ -3410,6 +3441,18 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
         if (grassBuildJob) advanceGrassChunk(grassBuildJob, 250);
       }
     }
+    // W2 graphics campaign: behind-camera cull vector (see the visibility
+    // loop below). Normalized HORIZONTAL forward; a near-vertical camFwd
+    // (top-down establishing shots) leaves it inactive.
+    let cullActive = false;
+    let cullFx = 0, cullFz = 0;
+    if (camFwd) {
+      const fl = Math.hypot(camFwd.x, camFwd.z);
+      if (fl > 0.2) {
+        cullActive = true;
+        cullFx = camFwd.x / fl; cullFz = camFwd.z / fl;
+      }
+    }
     for (const gc of grassChunks) {
       if (!gc.built) continue;
       const d = gc.cameraDist;
@@ -3427,7 +3470,10 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
       // 40-60 m" seam line (critique). Full midfield density now runs PAST
       // the carpet handover before the far taper begins; the far half of the
       // r3 cut (sub-pixel range) is preserved by the same 205 m endpoint.
-      let frac = d < grassFadeEnd ? 1 - 0.94 * smoothstepJs(56, grassTaperEnd, d) : 0;
+      // W2 graphics campaign: the curve moved to midfieldGrassFraction()
+      // (pure, selftest-pinned), which also drains the constant 6% residue
+      // to zero before the shader scale-out ends.
+      const frac = midfieldGrassFraction(d, grassFadeEnd, grassTaperEnd);
       // PERF (performance_budget r5): far-band tuft geometry LOD (see
       // makeTuftFarGeometry). `d` is already edge-adjusted by the chunk
       // radius; beyond 48 m the nearest possible card is small enough for the
@@ -3435,9 +3481,22 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
       // stable while the camera moves.
       if (d > 48) gc.lod = true;
       else if (d < 40) gc.lod = false;
+      // W2 graphics campaign: behind-camera suppression. Chunk meshes run
+      // with frustumCulled=false (visibility is handled here), so chunks
+      // entirely BEHIND the camera paid full vertex processing for fragments
+      // the clipper discarded every frame. The horizontal-plane reject keeps
+      // a chunk hidden only when NO part of its XZ square can face the
+      // camera: the margin is the chunk circumradius (CHUNK_SIZE * 0.71)
+      // plus slack. Vertical/null camFwd (top-down shots, harnesses,
+      // establishing rigs) disables the cull entirely.
+      let behind = false;
+      if (cullActive) {
+        behind = (gc.cx - camPos.x) * cullFx + (gc.cz - camPos.z) * cullFz
+          < -(CHUNK_SIZE * 0.71 + 6);
+      }
       for (const cm of gc.meshes) {
         const count = Math.floor(cm.total * frac);
-        cm.mesh.visible = count > 0;
+        cm.mesh.visible = count > 0 && !behind;
         if (count > 0) cm.mesh.count = count;
         const g = gc.lod ? cm.geoFar : cm.geoNear;
         if (cm.mesh.geometry !== g) cm.mesh.geometry = g;
@@ -3495,5 +3554,20 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
   }
 
   return { group, update, setWindTime, setSniperFade, treeObstacles, concealers,
-    crushTree, resetToppled, _clusters: clusters };
+    crushTree, resetToppled, _clusters: clusters,
+    // W2 graphics campaign: read-only partition diagnostics for the
+    // deterministic LOD selftest (slot totals, in-flight cross-fades, and an
+    // order-independent membership fingerprint — slot order shuffles as
+    // trees swap partitions, so the selftest sums positions instead).
+    _partitionStats: () => {
+      let near = 0, far = 0, fp = 0;
+      for (const sp of speciesList) {
+        for (const a of nearSlots[sp]) {
+          near += a.length;
+          for (const t of a) fp += t.x + t.z;
+        }
+        for (const a of farSlots[sp]) far += a.length;
+      }
+      return { near, far, transitioning: lodTransitions.length, nearFingerprint: fp };
+    } };
 }
