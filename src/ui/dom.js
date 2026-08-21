@@ -16,3 +16,18 @@ export function createElement(tag, className = '', parent = null) {
   if (parent) parent.appendChild(element);
   return element;
 }
+
+/**
+ * Escape a string for safe interpolation into innerHTML templates.
+ * Required for any network-supplied text (player nicknames arrive over the
+ * wire and must never be able to inject markup). Non-string inputs pass
+ * through String() so numeric/nullish fields keep rendering as before.
+ */
+export function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}

@@ -2187,9 +2187,14 @@ export function createStudio(ctx) {
     // by main.js from its final covered stage, where all Studio dependencies
     // already exist but __GAME_READY deliberately has not flipped yet.
     if (!opts.coveredByBoot && !window.__GAME_READY) {
-      await new Promise((res) => {
+      // Bounded wait: a boot that never reaches readiness must not leave this
+      // 60 ms poll spinning forever (runaway-timer hardening). Healthy boots
+      // flip __GAME_READY in seconds; the cap only fires on broken boots.
+      await new Promise((res, rej) => {
+        let waited = 0;
         const t = setInterval(() => {
-          if (window.__GAME_READY) { clearInterval(t); res(); }
+          if (window.__GAME_READY) { clearInterval(t); res(); return; }
+          if ((waited += 60) >= 60_000) { clearInterval(t); rej(new Error('studio entry timed out waiting for game boot')); }
         }, 60);
       });
     }
@@ -2582,13 +2587,19 @@ export function createStudio(ctx) {
   window.__STUDIO = api;
 
   // Auto-entry: the /studio pretty route or the legacy ?studio=1 param
-  // (waits for readiness; map via ?map=…)
+  // (waits for readiness; map via ?map=…). Bounded: a boot that never
+  // reaches readiness stops polling after a minute instead of spinning.
   if (ctx.autoEnter !== false && (urlParam('studio') || onStudioRoute())) {
+    let waitedMs = 0;
     const t = setInterval(() => {
-      if (!window.__GAME_READY) return;
-      clearInterval(t);
-      enter({ map: urlParam('map') || 'verdant' })
-        .catch((err) => console.error('[studio] auto-enter failed', err));
+      if (window.__GAME_READY) {
+        clearInterval(t);
+        enter({ map: urlParam('map') || 'verdant' })
+          .catch((err) => console.error('[studio] auto-enter failed', err));
+      } else if ((waitedMs += 60) >= 60_000) {
+        clearInterval(t);
+        console.error('[studio] auto-enter abandoned: game boot never became ready');
+      }
     }, 60);
   }
 

@@ -2918,6 +2918,11 @@ export function createGarage(opts) {
   });
   function onKey(e) {
     if (!api.isOpen) return;
+    // modal_ownership r1: Escape with the battle-type menu open is claimed in
+    // CAPTURE phase by the dedicated listener below (a bubble-phase
+    // stopPropagation cannot beat the input layer, which registered its own
+    // window keydown listener before this screen existed). The branch stays
+    // here as a fallback for listeners attached after garage.show().
     if (e.code === 'Escape' && battleMenu.classList.contains('open')) {
       closeBattleMenu({ restoreFocus: true });
       e.preventDefault();
@@ -2931,6 +2936,29 @@ export function createGarage(opts) {
       e.preventDefault();
     }
   }
+  // modal_ownership r1: while the battle-type menu is open, Escape belongs to
+  // the menu alone. The rebindable input layer listens on window bubble and
+  // was created before this screen, so by bubble time the settingsMenu action
+  // had already fired — closing the menu AND popping the settings panel over
+  // it. Claim the press in capture phase instead (service-record pattern,
+  // openServiceRecord above). Enter confirms the battle from outside the
+  // menu's own controls; a focused menu item keeps its native activation.
+  window.addEventListener('keydown', (event) => {
+    if (!api.isOpen || !battleMenu.classList.contains('open')) return;
+    const code = event.code;
+    const onControl = !!event.target?.closest?.('button,input,select,a,[role="button"]');
+    if (code === 'Escape') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeBattleMenu({ restoreFocus: true });
+      return;
+    }
+    if ((code === 'Enter' || code === 'NumpadEnter') && !onControl) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      battle(); // battle() closes the menu itself
+    }
+  }, true);
 
   const api = {
     root,

@@ -31,7 +31,7 @@
 
 import { FONT_STACK, ensureFonts } from './fonts.js';
 import { uiIconSVG } from './uiIcons.js';
-import { shouldOpenSettingsFromPointerUnlock } from './keyboardOwnership.js';
+import { shouldOpenSettingsFromPointerUnlock, shouldBlockSettingsHotkey } from './keyboardOwnership.js';
 import { createElement as el, ensureStyle } from './dom.js';
 import {
   getDeviceTier, getMobilePresetChoice, getStoredChoice,
@@ -869,9 +869,7 @@ export function createSettings(opts) {
     for (const t of root.querySelectorAll('.cot-set-tab')) {
       t.classList.toggle('sel', t.dataset.tab === activeTab);
     }
-    resetBtn.style.visibility =
-      activeTab === 'controls' || activeTab === 'graphics' || activeTab === 'sound'
-        ? 'visible' : 'hidden';
+    resetBtn.style.visibility = 'visible'; // every tab has a defaults story now
     if (activeTab === 'controls') renderControls();
     else if (activeTab === 'graphics') renderGraphics();
     else if (activeTab === 'sound') renderSound();
@@ -1164,6 +1162,17 @@ export function createSettings(opts) {
       emit('ui:click', {});
       return;
     }
+    if (activeTab === 'gameplay') {
+      // SA-12: the GAMEPLAY tab previously had no reset story (the button was
+      // hidden). Restore every slider/picker through the same clamped,
+      // persisted setSetting path, then rebroadcast what live consumers track.
+      input.resetSettings();
+      emitPerfMeter();
+      emit('ui:difficulty', { difficulty: input.getSettings().aiDifficulty });
+      renderTab();
+      emit('ui:click', {});
+      return;
+    }
     input.resetBindings();
     bindingsMutated();
   });
@@ -1179,7 +1188,22 @@ export function createSettings(opts) {
   // layer is live. NOT while a kill-cam replay owns the screen: there Esc is
   // just another ANY-KEY skip (the replay handles it in capture phase), and
   // the done-grace absorbs the skip keypress itself — see KC_DONE_GRACE_MS.
-  input.onAction('settingsMenu', () => { if (!open && !replayOwnsScreen()) openPanel(); });
+  //
+  // boot-modal r1: two ownership leaks on this hotkey, both blocked by
+  // shouldBlockSettingsHotkey (keyboardOwnership.js — rationale documented
+  // there): a native <dialog> closing on Escape used to stack this panel
+  // underneath itself, and the entry gate's dismissing Escape used to drop
+  // the player into a fresh garage with the options menu already open.
+  // Garage / battle / results Esc behavior is unchanged.
+  input.onAction('settingsMenu', () => {
+    if (shouldBlockSettingsHotkey({
+      settingsOpen: open,
+      replayActive: replayOwnsScreen(),
+      nativeDialogOpen: !!document.querySelector('dialog[open]'),
+      bootSplashPresent: !!document.getElementById('cot-boot'),
+    })) return;
+    openPanel();
+  });
 
   // WoT behavior: pressing Esc under pointer lock is swallowed by the browser
   // as the unlock gesture — detect the unexpected unlock mid-battle and treat

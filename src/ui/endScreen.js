@@ -28,7 +28,7 @@
  */
 
 import { FONT_STACK, FONT_COND, ensureFonts } from './fonts.js';
-import { createElement as el, ensureStyle } from './dom.js';
+import { createElement as el, ensureStyle, escapeHtml } from './dom.js';
 import { iconUrl, maskIcon } from './icons.js';
 import { uiIconSVG } from './uiIcons.js';
 import { getSpec } from '../vehicles/specs.js';
@@ -543,7 +543,9 @@ export function createEndScreen(bus, host) {
           : res === 'draw' && sum.reason === 'time_limit'
             ? 'Battle timer expired. No side held the field.'
             : res === 'draw' ? 'Neither side held the field.' : '';
-      sub.innerHTML = `${sum.playerVehicle ? `<b>${sum.playerVehicle}</b> — ` : ''}${outcomeLine}`;
+      // playerVehicle can be a wire-supplied nickname (battle:ended roster
+      // override in shotInfo) — escape every name interpolated below.
+      sub.innerHTML = `${sum.playerVehicle ? `<b>${escapeHtml(sum.playerVehicle)}</b> — ` : ''}${outcomeLine}`;
       const meta = el('div', 'es-meta es-in', hero);
       meta.style.setProperty('--i', nextI());
       const bits = [];
@@ -599,7 +601,7 @@ export function createEndScreen(bus, host) {
         strip.innerHTML =
           `<span class="bk">${uiIconSVG('autoAim', 16)}<span>Best shot</span></span>` +
           `<span class="bd">${fmtN(b.damage)}</span>` +
-          `<span class="bt"><b>${b.targetName || 'Enemy vehicle'}</b>` +
+          `<span class="bt"><b>${escapeHtml(b.targetName || 'Enemy vehicle')}</b>` +
           `<small>${[b.zone, b.distM ? `${Math.round(b.distM)} m` : '', b.destroyed ? 'Kill confirmed' : '']
             .filter(Boolean).join(' · ')}</small></span>`;
         host.dataset.bestShot = String(Math.round(b.damage));
@@ -618,7 +620,7 @@ export function createEndScreen(bus, host) {
         const row = el('div', 'es-kr', killList);
         row.innerHTML =
           '<span class="si"></span>' +
-          `<span class="nm">${kr.name || kr.id}</span>` +
+          `<span class="nm">${escapeHtml(kr.name || kr.id)}</span>` +
           `<span class="dm">${kr.dmg > 0 ? fmtN(kr.dmg) : ''}</span>`;
         maskIcon(row.querySelector('.si'), kr.specId || kr.id, 'side_silhouette',
           'rgba(255,209,102,.85)');
@@ -667,7 +669,7 @@ export function createEndScreen(bus, host) {
           if (r.kills > 0) details.push(`${r.kills} kill${r.kills === 1 ? '' : 's'}`);
           row.innerHTML =
             '<span class="si"></span>' +
-            `<span class="identity"><span class="nm">${r.isPlayer ? '<b class="you">YOU</b>' : ''}${r.name || r.id}</span>` +
+            `<span class="identity"><span class="nm">${r.isPlayer ? '<b class="you">YOU</b>' : ''}${escapeHtml(r.name || r.id)}</span>` +
             `<span class="veh">${details.filter(Boolean).join(' · ')}</span></span>` +
             '<span class="output"><span class="ov"></span><span class="obar" aria-hidden="true"><i></i></span></span>' +
             `<span class="st">${uiIconSVG(r.dead ? 'skull' : 'check', 16)}</span>`;
