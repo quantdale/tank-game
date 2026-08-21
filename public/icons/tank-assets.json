@@ -16241,7 +16241,7 @@
           "sha256": "e033ff52aefd0ef6adb628f1d66fb03252fb743921b2950cc76bb8689d6be955"
         },
         "markings": {
-          "file": "centurion3_markings.png",
+          "file": "_markings_shared_1c6243fce368.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -17165,7 +17165,7 @@
           "sha256": "e2fe65d8afff60aaeb036fd546f705f952f4b66eaa49365707ce6444a7b1bde9"
         },
         "markings": {
-          "file": "centurion5_markings.png",
+          "file": "_markings_shared_1c6243fce368.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -19164,7 +19164,7 @@
           "sha256": "d170cd13f1c97e5af26ce46687fd56749cb9b38b5aeeb82d196dd21ef42c79c9"
         },
         "markings": {
-          "file": "challenger_cruiser_markings.png",
+          "file": "_markings_shared_5249f179d298.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -20149,7 +20149,7 @@
           "sha256": "6bf1ba7dc232c4110390f7e859088afcec57eb12518ff7eb7b453b165d68033a"
         },
         "markings": {
-          "file": "challenger1_markings.png",
+          "file": "_markings_shared_1c6243fce368.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -21133,7 +21133,7 @@
           "sha256": "780f63e77c611181c0fed7f0a1a7a629d5e88b0d22804d31fa1229cf4d60d96c"
         },
         "markings": {
-          "file": "challenger2_markings.png",
+          "file": "_markings_shared_1c6243fce368.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -22948,7 +22948,7 @@
           "sha256": "b99186e2317818abc89e1771b94fd7fb3fc4cbe6d4d2dc2e67680fcfa174c6d1"
         },
         "markings": {
-          "file": "chieftain_mk10_markings.png",
+          "file": "_markings_shared_1c6243fce368.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -23872,7 +23872,7 @@
           "sha256": "390f06460f982dbccc667376e7619ad036081a6d2ec044297723496a8641adbe"
         },
         "markings": {
-          "file": "chieftain5_markings.png",
+          "file": "_markings_shared_1c6243fce368.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -24824,7 +24824,7 @@
           "sha256": "00b050858828ef04bfb4941023babe7f47917a1b9ca0c548041733e9c9224254"
         },
         "markings": {
-          "file": "comet_markings.png",
+          "file": "_markings_shared_5249f179d298.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -29568,7 +29568,7 @@
           "sha256": "1c49c18c1b6bafcdc0db71e76c423bd3d5436a4acf16efd414610df63ed2e505"
         },
         "markings": {
-          "file": "is3_markings.png",
+          "file": "_markings_shared_968c45b43e29.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -30459,7 +30459,7 @@
           "sha256": "46251039331c350fba01e9fb8d3f8b2d43dc083a6c1a4a7249f5ec8ebf55a36e"
         },
         "markings": {
-          "file": "is3_bergman_markings.png",
+          "file": "_markings_shared_968c45b43e29.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -46586,7 +46586,7 @@
           "sha256": "a7f70c766c5eeb4cf2d5382634829f33f0192926036bf2456042e48ea52b383a"
         },
         "markings": {
-          "file": "leo2_revolution_markings.png",
+          "file": "_markings_shared_6109a7dc3aa5.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -47573,7 +47573,7 @@
           "sha256": "f37fde96f0163336784f85dd454397c4015c671a9664242d3e5442f72d27f20f"
         },
         "markings": {
-          "file": "leo2a4_markings.png",
+          "file": "_markings_shared_94510e36f02e.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -50695,7 +50695,7 @@
           "sha256": "407bc04e32709ff1012ba55bd637264fedbe53fe490800ad8a8cf3d140d4e536"
         },
         "markings": {
-          "file": "leo2a5_markings.png",
+          "file": "_markings_shared_f26f1aaf666d.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -51837,7 +51837,7 @@
           "sha256": "b87db0247ee7a0cae4d4d4d8d85401b531dfc3a6907f3716a79e583b1680e35f"
         },
         "markings": {
-          "file": "leo2a6_markings.png",
+          "file": "_markings_shared_f26f1aaf666d.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -54123,7 +54123,7 @@
           "sha256": "4da58fc5de083891955474285c4201dc0efb11740907710120d07797ec5d5f9c"
         },
         "markings": {
-          "file": "leo2a7_markings.png",
+          "file": "_markings_shared_6109a7dc3aa5.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -55264,7 +55264,7 @@
           "sha256": "725336ae1068ab0441033bd97619f89fee6f428df48e58666d651de6a1db23a0"
         },
         "markings": {
-          "file": "leo2a7v_markings.png",
+          "file": "_markings_shared_6109a7dc3aa5.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -56251,7 +56251,7 @@
           "sha256": "ddae99351690cacd3f74b495bf82d53b8600aa9bb4c585f670cbcfdc866a310a"
         },
         "markings": {
-          "file": "leopard2_proto_markings.png",
+          "file": "_markings_shared_94510e36f02e.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -57331,7 +57331,7 @@
           "sha256": "aad2a770ca868a8035e1533700c9285341a3bfa5178725b7f481ec04dfd34316"
         },
         "markings": {
-          "file": "m1a1_markings.png",
+          "file": "_markings_shared_23e749057c03.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -58411,7 +58411,7 @@
           "sha256": "09dd0cec3238443b9b9322c595c468dd5f44071accdae48bf25c6d29936a50a9"
         },
         "markings": {
-          "file": "m1a1ha_markings.png",
+          "file": "_markings_shared_23e749057c03.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -59491,7 +59491,7 @@
           "sha256": "b8f4e40c4589974f60ad32c1bf62a8650e3d7e6206c952c729c494cd6289377e"
         },
         "markings": {
-          "file": "m1a2_markings.png",
+          "file": "_markings_shared_4bcce071873d.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -61653,7 +61653,7 @@
           "sha256": "0c7501728f900d992187175768aa9b928376f36c42bad1c39a6ad009f7e16d7c"
         },
         "markings": {
-          "file": "m1a2_sepv2_markings.png",
+          "file": "_markings_shared_4bcce071873d.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -64768,7 +64768,7 @@
           "sha256": "d933d0944130bb960d69af02fb67e8dad0bbd4c2e18cfafb40dd0f84d15b5eed"
         },
         "markings": {
-          "file": "m26_pershing_markings.png",
+          "file": "_markings_shared_76bf78fbfc63.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -67728,7 +67728,7 @@
           "sha256": "177e8ed7b032104d283de11118a6d276eecb4161d8f730ae61e7a384d29d2f03"
         },
         "markings": {
-          "file": "m45_patton_markings.png",
+          "file": "_markings_shared_76bf78fbfc63.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -68713,7 +68713,7 @@
           "sha256": "faf203534cc1824b98d7c8dd49c819ab4228ff0ae7743c020659ff4fb94ad35c"
         },
         "markings": {
-          "file": "m46_patton_markings.png",
+          "file": "_markings_shared_a2e5ec54e89a.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -69698,7 +69698,7 @@
           "sha256": "976981f73d69c396eb1b5ee9d3a0f244660e04b6ba5f108c6ddf60dc4d032fd7"
         },
         "markings": {
-          "file": "m47_patton_markings.png",
+          "file": "_markings_shared_a2e5ec54e89a.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -71638,7 +71638,7 @@
           "sha256": "b3c4c6ecd8553255f84202c36ce97d99126d26cd7a6c0c0d55547abb349948de"
         },
         "markings": {
-          "file": "m4a3e8_markings.png",
+          "file": "_markings_shared_76bf78fbfc63.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -72623,7 +72623,7 @@
           "sha256": "7ab17ff30d14cab3b718a971d2b33cf60a457400d96a27fc3d4ba7af90c1f01c"
         },
         "markings": {
-          "file": "m60a1_markings.png",
+          "file": "_markings_shared_a2e5ec54e89a.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -74731,7 +74731,7 @@
           "sha256": "599468d47afe2034bf68d3e007b070791fbe6e93d2ad66fb533795032dc37dd9"
         },
         "markings": {
-          "file": "m60a3_markings.png",
+          "file": "_markings_shared_a2e5ec54e89a.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -77771,7 +77771,7 @@
           "sha256": "3ac720537f4483b0d3c3f5bd14521d87dce21648fa1f649d835c98367422fd77"
         },
         "markings": {
-          "file": "merkava1b_markings.png",
+          "file": "_markings_shared_28a1c7147b1b.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -78819,7 +78819,7 @@
           "sha256": "3ea942bd4f8093035780a0963d3e8d410021a53972852f81e88db89d9e38aefb"
         },
         "markings": {
-          "file": "merkava2b_markings.png",
+          "file": "_markings_shared_28a1c7147b1b.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -79867,7 +79867,7 @@
           "sha256": "11ceff3b86e8478892f778de4eb5b5ab2616f0f97f991ffbd697111b01691140"
         },
         "markings": {
-          "file": "merkava2d_markings.png",
+          "file": "_markings_shared_28a1c7147b1b.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -80916,7 +80916,7 @@
           "sha256": "8a4ae782568fac6a10b43803247e70e693f4a74034083ede54148296ed8fb19a"
         },
         "markings": {
-          "file": "merkava3c_markings.png",
+          "file": "_markings_shared_28a1c7147b1b.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -81964,7 +81964,7 @@
           "sha256": "2cbf13ca7295aba802c66d97864cece116a6bb338eff4efb92d5e833b665a182"
         },
         "markings": {
-          "file": "merkava3d_markings.png",
+          "file": "_markings_shared_28a1c7147b1b.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -83011,7 +83011,7 @@
           "sha256": "a60e8994bd845a504064659793dd0295df823513ae69599b246718cd4e08bf8d"
         },
         "markings": {
-          "file": "merkava4_markings.png",
+          "file": "_markings_shared_28a1c7147b1b.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -84059,7 +84059,7 @@
           "sha256": "5cc9ee97cf736d8113d8a4af64054220123ce35da3dc8bec0811651943242c5f"
         },
         "markings": {
-          "file": "merkava4b_markings.png",
+          "file": "_markings_shared_28a1c7147b1b.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -108081,7 +108081,7 @@
           "sha256": "a7d1ceb9659828f4d3aea1aa9cf182b3c8a44d9388c2aa2c3d48f95a61cd5fea"
         },
         "markings": {
-          "file": "t64bv1_markings.png",
+          "file": "_markings_shared_7fedc0da7fd4.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -109251,7 +109251,7 @@
           "sha256": "400dd4cf9a3ee5a926aa6018887adb2a8a337c30622a0dc47a96029ea53d86a8"
         },
         "markings": {
-          "file": "t72b_1987_markings.png",
+          "file": "_markings_shared_7fedc0da7fd4.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -110424,7 +110424,7 @@
           "sha256": "334c78c4e97d387f8605fd154c2481c6a928a3c34eed1a196b5293c7cf80c794"
         },
         "markings": {
-          "file": "t72b3_markings.png",
+          "file": "_markings_shared_7fedc0da7fd4.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -111596,7 +111596,7 @@
           "sha256": "6c332598de59e56d5a07a85571b1f1a7614d457be305b512ed4ffc69e0c5991f"
         },
         "markings": {
-          "file": "t72b3m_markings.png",
+          "file": "_markings_shared_7fedc0da7fd4.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -112861,7 +112861,7 @@
           "sha256": "b33a3ecdcd8243c6c50bff1c99bf5f6d9ba930823bcfb89213ac2f274418571f"
         },
         "markings": {
-          "file": "t72bu_markings.png",
+          "file": "_markings_shared_85d5bac40b69.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -122117,7 +122117,7 @@
           "sha256": "3c6d33bf254a666f794f88c79c8718a59e8cb6f920a4f36bcf0204f1d2a24153"
         },
         "markings": {
-          "file": "t90a_markings.png",
+          "file": "_markings_shared_85d5bac40b69.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -124648,7 +124648,7 @@
           "sha256": "7782afff14d103d0761df76385d90b4a2f8ead7fd1b93ca169165945e33b320b"
         },
         "markings": {
-          "file": "t90a_vladimir_markings.png",
+          "file": "_markings_shared_85d5bac40b69.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -125912,7 +125912,7 @@
           "sha256": "2e16cdbbbaca23d506ef449d001a1a2e48d9bbca41ffd590ca370dad99314339"
         },
         "markings": {
-          "file": "t90m_markings.png",
+          "file": "_markings_shared_ac81aadb198c.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -128442,7 +128442,7 @@
           "sha256": "c6c6e7bffa3a6db5d46122e6930ba89f17ee83970911c33c1acd460c687e2d99"
         },
         "markings": {
-          "file": "t90sm_markings.png",
+          "file": "_markings_shared_ac81aadb198c.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -132105,7 +132105,7 @@
           "sha256": "b5ae02e5cc4ff698fa0e5a6282444e5cf830f86500aaae939c35f46526c22abf"
         },
         "markings": {
-          "file": "type10_markings.png",
+          "file": "_markings_shared_aee20416da3e.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
@@ -136960,7 +136960,7 @@
           "sha256": "982b7c76b286934984d141e278fc54f200ea1014c47b373e6e13cc8529a1956f"
         },
         "markings": {
-          "file": "type90_markings.png",
+          "file": "_markings_shared_aee20416da3e.png",
           "width": 256,
           "height": 128,
           "mime": "image/png",
