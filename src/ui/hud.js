@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { createElement as el, ensureStyle } from './dom.js';
 import { spectatorCardModel, spectatorSwitcherMarkup } from './spectatorSwitcher.js';
-import { fillDriveTelemetry, isDriveSampleDue } from './driveTelemetry.js';
+import { battleClockLabel, fillDriveTelemetry, isDriveSampleDue } from './driveTelemetry.js';
 
 // --- palette (locked colors per ARCHITECTURE §3.7.1) ---
 const PEN_GREEN = '#7ee87e';
@@ -839,11 +839,6 @@ function penColor(r) {
   return r >= 1.15 ? PEN_GREEN : r >= 0.85 ? PEN_ORANGE : PEN_RED;
 }
 
-function fmtTimer(s) {
-  const t = Math.max(0, Math.floor(s));
-  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
-}
-
 /**
  * Create the battle HUD overlay and subscribe it to the event bus.
  * @param {{on:Function,off:Function,emit:Function}} bus - injected event bus (§1.5).
@@ -873,6 +868,11 @@ export function initHud(bus) {
     hp: tgtEl.querySelector('.hp'), cg: tgtEl.querySelector('.cg'),
   };
   let tgtLastCls = null; // cached class-glyph key (avoid per-frame innerHTML)
+  let tgtLastId = null;      // PERF: nick/tier/veh only move with the target
+  let tgtLastHpTxt = null;   // cached "hp / max" numerals
+  let tgtLastHpMax = null;
+  let tgtLastFracW = null;   // cached fill-width string
+  const tgtRectView = { cx: 0, hw: 75, top: 0, bottom: 0 }; // reused — no per-frame literal
   let tgtShown = false;
   let tgtRect = null; // screen-px rect of the shown plate (sniper hairline gap)
   let aimTargetId = null;
@@ -1281,6 +1281,9 @@ export function initHud(bus) {
   const specialKey = specialButton.querySelector('.sk');
   let specialSpecId = null;
   let specialKind = SPECIAL_ACTION_KINDS.NONE;
+  let specialActive = null;   // PERF: change-gated — these three wrote the DOM
+  let specialPending = null;  // every frame even when nothing moved
+  let specialDisabled = null;
 
   function updateSpecialAction(player) {
     const specId = player?.spec?.id || null;
@@ -1299,11 +1302,23 @@ export function initHud(bus) {
       specialButton.classList.toggle('show', specialKind !== SPECIAL_ACTION_KINDS.NONE);
     }
     const action = player?.specialAction;
-    specialButton.classList.toggle('active', !!action?.active);
-    specialButton.classList.toggle('pending', !!(action?.pendingFire ||
-      action?.inFlightShellId != null));
-    specialButton.disabled = !player || !!player.combat?.destroyed;
-    specialButton.setAttribute('aria-pressed', action?.active ? 'true' : 'false');
+    const active = !!action?.active;
+    if (active !== specialActive) {
+      specialActive = active;
+      specialButton.classList.toggle('active', active);
+      specialButton.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+    const pending = !!(action?.pendingFire ||
+      action?.inFlightShellId != null);
+    if (pending !== specialPending) {
+      specialPending = pending;
+      specialButton.classList.toggle('pending', pending);
+    }
+    const disabled = !player || !!player.combat?.destroyed;
+    if (disabled !== specialDisabled) {
+      specialDisabled = disabled;
+      specialButton.disabled = disabled;
+    }
   }
 
   const shellBox = el('div', 'cot-shells', root);
@@ -1315,7 +1330,16 @@ export function initHud(bus) {
       `<div class="tip"><div class="tnm"></div>PEN <b class="p"></b> &nbsp;&middot;&nbsp; DMG <b class="d"></b></div>` +
       `<div class="cool"></div>`;
     s._icon = s.querySelector('canvas');
-    s._iconType = null;
+    s._typeKey = null;
+    // PERF: per-frame writers resolve these once here instead of via
+    // querySelector on every update (renderShells/updateShellCooldown).
+    s._ty = s.querySelector('.ty');
+    s._clr = s.querySelector('.clr');
+    s._tnm = s.querySelector('.tnm');
+    s._p = s.querySelector('.p');
+    s._d = s.querySelector('.d');
+    s._cnt = s.querySelector('.cnt');
+    s._cool = s.querySelector('.cool');
     s.addEventListener('click', () => {
       selectSlot(i);
       bus.emit('ui:shellSelect', { slot: i });
@@ -1336,6 +1360,10 @@ export function initHud(bus) {
     s.title = c.label;
     s.innerHTML = `<div class="key">${c.key}</div>${c.svg}` +
       `<div class="cnt">${c.count != null ? c.count : ''}</div><div class="cool"></div>`;
+    // PERF: resolved once — updateConsumableCooldowns used to re-query both
+    // nodes for all three slots on every frame.
+    s._cnt = s.querySelector('.cnt');
+    s._cool = s.querySelector('.cool');
     s.addEventListener('click', () => {
       bus.emit('ui:consumable', { slot: i });
     });
@@ -1343,21 +1371,29 @@ export function initHud(bus) {
   }
 
   function updateConsumableCooldowns(timeS) {
+    // PERF: gated writes — idle consumables (the common case) settle to zero
+    // DOM work; an active sweep only writes when its 0.1%-quantized string,
+    // whole-second count or visibility actually changes.
     for (let i = 0; i < conEls.length; i++) {
       const s = conEls[i];
       const remaining = cooldownRemaining(timeS, conReadyAt[i]);
-      const cool = s.querySelector('.cool');
-      const count = s.querySelector('.cnt');
+      const cool = s._cool;
+      const count = s._cnt;
       if (remaining > 0) {
         const pct = Math.max(0, Math.min(100, remaining / conCooldownS[i] * 100));
-        cool.style.display = 'block';
-        cool.style.setProperty('--cool', `${pct.toFixed(1)}%`);
-        count.textContent = String(Math.ceil(remaining));
-        s.classList.add('cooling');
+        const pctTxt = `${pct.toFixed(1)}%`;
+        if (s._coolDisplay !== true) { cool.style.display = 'block'; s._coolDisplay = true; }
+        if (s._coolPct !== pctTxt) { cool.style.setProperty('--cool', pctTxt); s._coolPct = pctTxt; }
+        const secs = String(Math.ceil(remaining));
+        if (s._cntVal !== secs) { count.textContent = secs; s._cntVal = secs; }
+        if (s._cooling !== true) { s.classList.add('cooling'); s._cooling = true; }
       } else {
-        cool.style.display = 'none';
-        count.textContent = CONSUMABLE_READY_MARK;
-        s.classList.remove('cooling');
+        if (s._coolDisplay !== false) { cool.style.display = 'none'; s._coolDisplay = false; }
+        if (s._cntVal !== CONSUMABLE_READY_MARK) {
+          count.textContent = CONSUMABLE_READY_MARK;
+          s._cntVal = CONSUMABLE_READY_MARK;
+        }
+        if (s._cooling !== false) { s.classList.remove('cooling'); s._cooling = false; }
       }
     }
   }
@@ -1380,6 +1416,7 @@ export function initHud(bus) {
   let mmDirty = true; // force an immediate minimap paint on the next update()
   let w = 1, h = 1, dpr = 1;
   let scopeGrad = null;
+  let scopeChromGrad = null; // sniper chromatic fringe (rebuilt on resize)
   let scopeFadeMs = -1; // scope-shadow fade-in start (perf.now ms; -1 = settled)
   let scopePrevMode = 'hidden'; // transition detector for the fade
   let lastCamera = null;
@@ -1411,8 +1448,8 @@ export function initHud(bus) {
   const hpPool = new Map(); // tank id -> { root, fill, nm, lastFrac }
   const spotById = new Map(); // tank id -> { vis, lastT, lastX, lastZ, ever }
   let mapWorldSize = 1024;
-  let lastScore = '';
-  let lastTimer = '';
+  let lastScoreKey = -1; // packed integer score state (see updateTeams)
+  const hudClockCell = { sec: -1 }; // battle-clock label gate (driveTelemetry)
   let spawnFlags = null; // [{x,z,color}] — team spawn markers, set per battle
 
   function resize() {
@@ -1427,6 +1464,7 @@ export function initHud(bus) {
     retCanvas.height = Math.round(h * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     scopeGrad = null;
+    scopeChromGrad = null;
   }
   window.addEventListener('resize', resize);
   resize();
@@ -1536,7 +1574,24 @@ export function initHud(bus) {
     return nick;
   }
 
-  let rosterSig = '';
+  // PERF: allocation-free roster-change detection — the old per-frame
+  // signature string (id + ';' concat per tank) churned GC in the hottest UI
+  // path. Mirrors the old key exactly: entries without a spec never mattered,
+  // and only id + player flag identify a row.
+  let prevRosterTanks = null;
+  function rosterUnchanged(tanks) {
+    if (!prevRosterTanks || prevRosterTanks.length !== tanks.length) return false;
+    for (let i = 0; i < tanks.length; i++) {
+      const t = tanks[i];
+      const p = prevRosterTanks[i];
+      if (!(t && t.spec) !== !(p && p.spec)) return false;
+      if (t && t.spec && (p.id !== t.id || !!p.isPlayer !== !!t.isPlayer)) return false;
+    }
+    return true;
+  }
+  // PERF: reused frag-chip class lists (were two fresh arrays every frame)
+  const deadEnemiesScratch = [];
+  const deadAlliesScratch = [];
   function updateTeams(frame) {
     // Network presentation may omit hidden enemies from `frame.tanks` to
     // prevent reticle/minimap leakage. The team ears still know the locked
@@ -1546,28 +1601,24 @@ export function initHud(bus) {
     // setMode('hidden') — when the participant set (or the player entity)
     // changes, drop and rebuild the whole roster DOM instead of appending
     // 4 fresh rows under the stale 4 (entity ids are stable spec ids).
-    let sig = '';
-    for (let i = 0; i < tanks.length; i++) {
-      const t = tanks[i];
-      if (t && t.spec) sig += t.id + (t.isPlayer ? '*' : '') + ';';
-    }
-    if (sig !== rosterSig) {
-      rosterSig = sig;
+    const rosterSame = rosterUnchanged(tanks);
+    prevRosterTanks = tanks;
+    if (!rosterSame) {
       for (const [, row] of earRows) row.root.remove();
       earRows.clear();
       nickById.clear();
-      lastScore = '';
+      lastScoreKey = -1;
     }
     let allyAlive = 0, allyTotal = 0, enemyAlive = 0, enemyTotal = 0;
-    const deadEnemies = []; // class ids — fill the ALLY frag chips
-    const deadAllies = [];  // class ids — fill the ENEMY frag chips
+    deadEnemiesScratch.length = 0; // class ids — fill the ALLY frag chips
+    deadAlliesScratch.length = 0;  // class ids — fill the ENEMY frag chips
     for (let i = 0; i < tanks.length; i++) {
       const t = tanks[i];
       if (!t || !t.spec) continue;
       const ally = t.team === 'player' || t.isPlayer;
       const dead = !!(t.combat && t.combat.destroyed);
-      if (ally) { allyTotal++; if (!dead) allyAlive++; else deadAllies.push(t.spec.class); }
-      else { enemyTotal++; if (!dead) enemyAlive++; else deadEnemies.push(t.spec.class); }
+      if (ally) { allyTotal++; if (!dead) allyAlive++; else deadAlliesScratch.push(t.spec.class); }
+      else { enemyTotal++; if (!dead) enemyAlive++; else deadEnemiesScratch.push(t.spec.class); }
       let row = earRows.get(t.id);
       if (!row) {
         const r = el('div', 'cot-er');
@@ -1612,21 +1663,27 @@ export function initHud(bus) {
         }
       }
     }
-    const score = `${enemyTotal - enemyAlive}:${allyTotal - allyAlive}|${allyAlive}/${allyTotal}|${enemyAlive}/${enemyTotal}`;
-    if (score !== lastScore) {
+    // PERF: integer score key — the old code built (and compared) a template
+    // string every frame just to detect "nothing changed". Six bounded counts
+    // pack losslessly into one double.
+    const scoreKey = (((((enemyTotal - enemyAlive) * 64 + (allyTotal - allyAlive)) * 64 +
+      allyAlive) * 64 + allyTotal) * 64 + enemyAlive) * 64 + enemyTotal;
+    if (scoreKey !== lastScoreKey) {
       const allyKills = enemyTotal - enemyAlive;
       const enemyKills = allyTotal - allyAlive;
       fgEl.textContent = String(allyKills);
       feEl.textContent = String(enemyKills);
       const slots = Math.max(allyTotal, enemyTotal);
-      syncWedge(wedgeL, slots, deadEnemies, false);
-      syncWedge(wedgeR, slots, deadAllies, true);
+      syncWedge(wedgeL, slots, deadEnemiesScratch, false);
+      syncWedge(wedgeR, slots, deadAlliesScratch, true);
       earL.querySelector('.al').textContent = `${allyAlive} / ${allyTotal}`;
       earR.querySelector('.al').textContent = `${enemyAlive} / ${enemyTotal}`;
-      lastScore = score;
+      lastScoreKey = scoreKey;
     }
-    const timer = fmtTimer(BATTLE_DURATION_S - frame.timeS);
-    if (timer !== lastTimer) { tmEl.textContent = timer; lastTimer = timer; }
+    // PERF: clock label gate — null means the displayed second is unchanged,
+    // so the DOM write (and the M:SS string build) is skipped entirely.
+    const timer = battleClockLabel(hudClockCell, BATTLE_DURATION_S - frame.timeS);
+    if (timer != null) tmEl.textContent = timer;
   }
 
   // ---------- reticle / scope canvas ----------
@@ -1684,11 +1741,15 @@ export function initHud(bus) {
     // grading — but real scope glass shows a cool chromatic fringe where
     // the vignette bites. Same elliptical space, slightly wider start so
     // the blue-violet edge sits just outside the luminance falloff knee.
-    const chrom = ctx.createRadialGradient(0, 0, w * 0.40, 0, 0, w * 0.66);
-    chrom.addColorStop(0, 'rgba(84,118,205,0)');
-    chrom.addColorStop(0.72, 'rgba(88,122,210,0.055)');
-    chrom.addColorStop(1, 'rgba(104,130,225,0.15)');
-    ctx.fillStyle = chrom;
+    // PERF: cached per resize — its geometry depends only on w, yet the old
+    // code allocated a fresh CanvasGradient every sniper frame.
+    if (!scopeChromGrad) {
+      scopeChromGrad = ctx.createRadialGradient(0, 0, w * 0.40, 0, 0, w * 0.66);
+      scopeChromGrad.addColorStop(0, 'rgba(84,118,205,0)');
+      scopeChromGrad.addColorStop(0.72, 'rgba(88,122,210,0.055)');
+      scopeChromGrad.addColorStop(1, 'rgba(104,130,225,0.15)');
+    }
+    ctx.fillStyle = scopeChromGrad;
     ctx.fillRect(-lensCx, -lensCy / sy, w, h / sy);
     ctx.restore();
     ctx.globalAlpha = fadeK;
@@ -2445,24 +2506,35 @@ export function initHud(bus) {
   }
 
   function renderShells(shells, slot) {
+    // PERF: every write below is gated on the value actually changing — this
+    // ran unconditionally per frame (3 plates × ~8 DOM writes + queries)
+    // while loadout text only changes on shell switch / ammo consumption.
     for (let i = 0; i < 3; i++) {
       const sp = shells && shells[i] ? shells[i] : DEFAULT_SHELLS[i];
       const s = slotEls[i];
-      if (s._iconType !== sp.type) {
+      if (s._typeKey !== sp.type) {
+        // icon repaint, label ink and class underline only move with the type
+        s._typeKey = sp.type;
         drawShellIcon(s._icon, sp.type);
-        s._iconType = sp.type;
+        s._ty.textContent = sp.type || '';
+        s._ty.style.color = SHELL_TYPE_COLOR[sp.type] || '#9fb0bf';
+        s._clr.style.background =
+          SHELL_CLASS_UNDERLINE[sp.type] || 'rgba(146,164,180,.4)';
       }
-      const ty = s.querySelector('.ty');
-      ty.textContent = sp.type || '';
-      ty.style.color = SHELL_TYPE_COLOR[sp.type] || '#9fb0bf';
-      // shell-CLASS underline (silver kinetic / orange chemical / olive HE)
-      s.querySelector('.clr').style.background =
-        SHELL_CLASS_UNDERLINE[sp.type] || 'rgba(146,164,180,.4)';
-      s.querySelector('.tnm').textContent = sp.name || '—';
-      s.querySelector('.p').textContent = sp.penLabel != null ? sp.penLabel : '—';
-      s.querySelector('.d').textContent = sp.dmg != null ? String(sp.dmg) : '—';
+      if (s._nameVal !== sp.name) {
+        s._nameVal = sp.name;
+        s._tnm.textContent = sp.name || '—';
+      }
+      if (s._penVal !== sp.penLabel) {
+        s._penVal = sp.penLabel;
+        s._p.textContent = sp.penLabel != null ? sp.penLabel : '—';
+      }
+      if (s._dmgVal !== sp.dmg) {
+        s._dmgVal = sp.dmg;
+        s._d.textContent = sp.dmg != null ? String(sp.dmg) : '—';
+      }
       const n = shellCount(sp);
-      s.querySelector('.cnt').textContent = `${n}`;
+      if (s._cntVal !== n) { s._cntVal = n; s._cnt.textContent = `${n}`; }
       s.classList.toggle('sel', i === slot);
     }
     localSlot = slot;
@@ -2471,12 +2543,12 @@ export function initHud(bus) {
   // dim/sweep the active shell plate during reload (WoT ammo-plate feedback)
   function updateShellCooldown(reload, slot) {
     for (let i = 0; i < 3; i++) {
-      const coolEl = slotEls[i].querySelector('.cool');
+      const coolEl = slotEls[i]._cool;
+      let hVal = '0';
       if (i === slot && reload && reload.totalS > 0 && reload.t > 0.001) {
-        coolEl.style.height = `${((reload.t / reload.totalS) * 100).toFixed(1)}%`;
-      } else {
-        coolEl.style.height = '0';
+        hVal = `${((reload.t / reload.totalS) * 100).toFixed(1)}%`;
       }
+      if (coolEl._hVal !== hVal) { coolEl._hVal = hVal; coolEl.style.height = hVal; }
     }
   }
 
@@ -2603,26 +2675,38 @@ export function initHud(bus) {
     }
     tgtEl.style.transform =
       `translate(${_sx.toFixed(1)}px,${(_sy - 24).toFixed(1)}px) translate(-50%,-100%)`;
-    tgtRefs.nick.textContent = nickFor(best);
-    tgtRefs.tier.textContent = (best.spec && tierNumeral(best.spec.id)) || '–';
-    tgtRefs.veh.textContent = best.spec ? best.spec.name : String(best.id);
-    // same class-glyph language as the team panels (r6-2)
-    const tCls = best.spec ? best.spec.class : 'medium';
-    if (tCls !== tgtLastCls) {
-      tgtRefs.cg.innerHTML = classGlyphSVG(tCls, '#f0b4ab', 11, 9);
-      tgtLastCls = tCls;
+    // PERF: identity-gated statics + value-gated numerals — the plate used to
+    // rewrite nick/tier/vehicle/hp/fill every frame while it tracks a target.
+    if (best.id !== tgtLastId) {
+      tgtLastId = best.id;
+      tgtRefs.nick.textContent = nickFor(best);
+      tgtRefs.tier.textContent = (best.spec && tierNumeral(best.spec.id)) || '–';
+      tgtRefs.veh.textContent = best.spec ? best.spec.name : String(best.id);
+      // same class-glyph language as the team panels (r6-2)
+      const tCls = best.spec ? best.spec.class : 'medium';
+      if (tCls !== tgtLastCls) {
+        tgtRefs.cg.innerHTML = classGlyphSVG(tCls, '#f0b4ab', 11, 9);
+        tgtLastCls = tCls;
+      }
     }
     const frac = Math.max(0, Math.min(1, best.combat.hp / best.combat.maxHp));
-    tgtRefs.fl.style.width = `${(frac * 100).toFixed(1)}%`;
-    tgtRefs.hp.textContent =
-      `${Math.max(0, Math.round(best.combat.hp))} / ${Math.round(best.combat.maxHp)}`;
+    const fracW = `${(frac * 100).toFixed(1)}%`;
+    if (fracW !== tgtLastFracW) { tgtRefs.fl.style.width = fracW; tgtLastFracW = fracW; }
+    const hpInt = Math.max(0, Math.round(best.combat.hp));
+    const hpMaxInt = Math.round(best.combat.maxHp);
+    if (hpInt !== tgtLastHpTxt || hpMaxInt !== tgtLastHpMax) {
+      tgtLastHpTxt = hpInt;
+      tgtLastHpMax = hpMaxInt;
+      tgtRefs.hp.textContent = `${hpInt} / ${hpMaxInt}`;
+    }
     if (!tgtShown) { tgtEl.style.display = 'block'; tgtShown = true; }
     // record the plate's screen rect so the sniper hairlines gap behind it
-    // (drawScope runs after this in both the live and forced-still paths)
-    tgtRect = {
-      cx: _sx, hw: 75,
-      top: _sy - 24 - (tgtEl.offsetHeight || 62), bottom: _sy - 24,
-    };
+    // (drawScope runs after this in both the live and forced-still paths);
+    // reused record — drawScope consumes it synchronously within this frame
+    tgtRect = tgtRectView;
+    tgtRectView.cx = _sx;
+    tgtRectView.top = _sy - 24 - (tgtEl.offsetHeight || 62);
+    tgtRectView.bottom = _sy - 24;
     // the ambient plate for this tank (if it was already mounted) yields
     const bar = hpPool.get(best.id);
     if (bar) bar.root.style.display = 'none';
@@ -3586,11 +3670,16 @@ export function initHud(bus) {
   });
   bus.on('ui:consumableReset', () => {
     for (let i = 0; i < conEls.length; i++) {
+      const s = conEls[i];
       conReadyAt[i] = 0;
       conCooldownS[i] = CONSUMABLE_RULES[i].cooldownS;
-      conEls[i].querySelector('.cnt').textContent = CONSUMABLE_READY_MARK;
-      conEls[i].querySelector('.cool').style.display = 'none';
-      conEls[i].classList.remove('used', 'deny', 'cooling');
+      s._cntVal = CONSUMABLE_READY_MARK;
+      s._coolDisplay = false;
+      s._coolPct = null;
+      s._cooling = false;
+      s._cnt.textContent = CONSUMABLE_READY_MARK;
+      s._cool.style.display = 'none';
+      s.classList.remove('used', 'deny', 'cooling');
     }
   });
   bus.on('ui:autoAimState', ({ on, targetName, reason }) => {
@@ -3848,11 +3937,17 @@ export function initHud(bus) {
         sixthEl.classList.remove('on');
         for (const [, row] of earRows) row.root.remove();
         earRows.clear();
-        rosterSig = ''; // content_breadth r2: keep the rebuild signature in sync
+        prevRosterTanks = null; // content_breadth r2: force a roster rebuild
         for (const [, bar] of hpPool) bar.root.remove();
         hpPool.clear();
-        lastScore = '';
-        lastTimer = '';
+        lastScoreKey = -1;
+        hudClockCell.sec = -1;
+        // over-target plate caches: a new battle can reuse an entity id with
+        // a different vehicle/nick, so the gated writers must re-emit once
+        tgtLastId = null;
+        tgtLastHpTxt = null;
+        tgtLastHpMax = null;
+        tgtLastFracW = null;
       }
     },
 

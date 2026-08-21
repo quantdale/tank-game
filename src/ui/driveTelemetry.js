@@ -35,3 +35,17 @@ export function fillDriveTelemetry(out, state, spec) {
   out.needleDeg = -135 + out.sweepDeg;
   return out;
 }
+
+/**
+ * Battle-clock label gate: returns the M:SS string only when the DISPLAYED
+ * second changed since the last accepted sample, else null. The HUD calls it
+ * once per frame and skips the DOM write entirely on the null path — the old
+ * inline fmtTimer rebuilt (and compared) the label string every frame.
+ * Non-finite/negative remainders clamp to 0:00, matching the old fmtTimer.
+ */
+export function battleClockLabel(cell, remainingS) {
+  const sec = remainingS > 0 ? Math.floor(remainingS) : 0;
+  if (cell.sec === sec) return null;
+  cell.sec = sec;
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+}

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { fillDriveTelemetry, isDriveSampleDue } from './driveTelemetry.js';
+import { battleClockLabel, fillDriveTelemetry, isDriveSampleDue } from './driveTelemetry.js';
 
 const out = {};
 fillDriveTelemetry(out, { speed: 10 }, { topSpeedKmh: 60, reverseSpeedKmh: 18 });
@@ -41,5 +41,22 @@ assert.equal(isDriveSampleDue(3 / 60, 0, 1 / 20), true,
   '20 Hz arc cadence should land every three 60 Hz simulation ticks');
 assert.equal(isDriveSampleDue(6 / 60, 0, 0.1), true,
   '10 Hz text cadence should not slip a frame due to floating-point error');
+
+// Battle-clock label gate: the HUD writes the timer only when the displayed
+// second flips — sub-second frames must return null (skip the DOM write).
+const clock = { sec: -1 };
+assert.equal(battleClockLabel(clock, 900), '15:00', 'first sample always emits the label');
+assert.equal(battleClockLabel(clock, 899.98), '14:59',
+  'crossing an integer boundary re-emits immediately');
+assert.equal(battleClockLabel(clock, 899.97), null,
+  'sub-second remainders inside the same second skip the write');
+assert.equal(battleClockLabel(clock, 899.01), null);
+assert.equal(battleClockLabel(clock, 898.99), '14:58');
+assert.equal(battleClockLabel(clock, -5), '0:00',
+  'expired clock clamps to zero like the old fmtTimer');
+assert.equal(battleClockLabel(clock, NaN), null,
+  'non-finite remainders clamp to the same 0:00 cell instead of rendering NaN:NaN');
+assert.equal(battleClockLabel(clock, 120), '2:00',
+  'a fresh battle clock (timeS reset) re-emits after the clamp');
 
 console.log('driveTelemetry.selftest: circular speedometer sweep and directional limits passed');

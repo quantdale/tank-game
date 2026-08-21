@@ -198,9 +198,12 @@ export function createPerfHud({ renderer, game }) {
       while (stalls.length && now - stalls[0].t > 5000) stalls.shift();
       if (now - lastDom < 250) return;
       lastDom = now;
+      // PERF: the percentile sort is pure dashboard fuel — skip it entirely
+      // while the opt-in panel is hidden (production play never renders it).
+      // snapshot()/stats() stay available to probes on demand.
+      if (!visible || captureHidden) return;
       const s = stats();
-      if (!s) return;
-      if (visible && !captureHidden) renderDashboard(s);
+      if (s) renderDashboard(s);
     },
     toggle() {
       if (debugRequested || !PROD_BUILD) {
