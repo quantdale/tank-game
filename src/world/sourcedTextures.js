@@ -194,11 +194,52 @@ function loadImage(url) {
   return _imgCache.get(url);
 }
 
+// --- WA6 map-load CPU: shared readback scratch + composite reuse ---
+// composeAlbedo used to allocate up to three canvases + 2D contexts per call
+// (color output, AO decode, roughness decode) and recomposite every layer on
+// EVERY map load — 2.8 s CPU self-time in the campaign baseline profile. Two
+// bounded pieces remove that churn without changing one output byte:
+// - one persistent willReadFrequently scratch canvas decodes AO/roughness
+//   (PERFORMANCE.md "Canvas readback": readback-heavy contexts opt in; the
+//   output canvas is drawn once per composite and keeps a plain context);
+// - finished composites are memoized per (set, opts) with an LRU cap, and
+//   normal canvases per set, so revisiting a map (rematch, rotation, garage
+//   round-trip) swaps ready canvases instead of recompositing 1024² pixels.
+//   Entries record their compose size: a tier change moves texSize() and
+//   recomposites at the new resolution instead of reusing stale pixels.
+let _scratchCanvas = null, _scratchCtx = null, _scratchSize = 0;
+function readScaledPixels(img, s) {
+  if (!img) return null;
+  if (!_scratchCanvas) {
+    _scratchCanvas = document.createElement('canvas');
+    _scratchCtx = _scratchCanvas.getContext('2d', { willReadFrequently: true });
+  }
+  if (_scratchSize !== s) {
+    _scratchCanvas.width = _scratchCanvas.height = s;
+    _scratchSize = s;
+  }
+  _scratchCtx.drawImage(img, 0, 0, s, s);
+  return _scratchCtx.getImageData(0, 0, s, s).data;
+}
+
+const _compositeCache = new Map(); // compositeKey -> { s, canvas } (LRU-ordered)
+// Two full battlefields (terrain layers + building buckets ≈ 7 composites
+// each) stay resident, so rematch/map-rotation cycles never recomposite;
+// ~16 × 4 MB at 1024² desktop, a quarter of that on the mobile tier.
+const _COMPOSITE_CACHE_MAX = 16;
+const _normalCache = new Map(); // setKey -> { s, canvas }, bounded by SETS
+
+function compositeKey(setKey, { roughInAlpha, roughMul, tint, desat, lift }) {
+  return `${setKey}|${roughInAlpha ? 1 : 0}|${roughMul}|${tint ? tint.join(',') : '-'}|${desat || 0}|${lift || 0}`;
+}
+
 /**
  * Compose color * AO with roughness packed into alpha (terrain contract) or
  * alpha=255 (props). Returns a canvas sized to the color map (max 1024).
+ * Exported for the byte-golden selftest; the swap paths go through applySet,
+ * which short-circuits to _compositeCache for repeat (set, opts) pairs.
  */
-function composeAlbedo(color, ao, rough, { roughInAlpha = false, roughMul = 1, tint = null, desat = 0, lift = 0 } = {}) {
+export function composeAlbedo(color, ao, rough, { roughInAlpha = false, roughMul = 1, tint = null, desat = 0, lift = 0 } = {}) {
   const s = Math.min(color.width, texSize(1024)); // MOBILE r1: tier-scaled compose
   const c = document.createElement('canvas');
   c.width = c.height = s;
@@ -206,21 +247,8 @@ function composeAlbedo(color, ao, rough, { roughInAlpha = false, roughMul = 1, t
   ctx.drawImage(color, 0, 0, s, s);
   const px = ctx.getImageData(0, 0, s, s);
   const d = px.data;
-  let aod = null, rgd = null;
-  if (ao) {
-    const c2 = document.createElement('canvas');
-    c2.width = c2.height = s;
-    const x2 = c2.getContext('2d');
-    x2.drawImage(ao, 0, 0, s, s);
-    aod = x2.getImageData(0, 0, s, s).data;
-  }
-  if (rough) {
-    const c3 = document.createElement('canvas');
-    c3.width = c3.height = s;
-    const x3 = c3.getContext('2d');
-    x3.drawImage(rough, 0, 0, s, s);
-    rgd = x3.getImageData(0, 0, s, s).data;
-  }
+  const aod = readScaledPixels(ao, s);
+  const rgd = readScaledPixels(rough, s);
   const tr = tint ? tint[0] : 1, tg = tint ? tint[1] : 1, tb = tint ? tint[2] : 1;
   for (let i = 0; i < d.length; i += 4) {
     const a = aod ? aod[i] / 255 : 1;
@@ -274,8 +302,28 @@ async function applySet(setKey, layer, opts) {
     set.rough ? loadImage(set.rough).catch(() => null) : null,
     set.ao ? loadImage(set.ao).catch(() => null) : null,
   ]);
-  swapTexture(layer.albedo, composeAlbedo(color, ao, rough, opts));
-  swapTexture(layer.normal, normalCanvas(normal));
+  const s = Math.min(color.width, texSize(1024));
+  // Short-circuit recomposition: the same (set, opts) pair recurs on every
+  // revisit of a map and across rematches — reuse the finished canvas.
+  const key = compositeKey(setKey, opts);
+  let hit = _compositeCache.get(key);
+  if (hit && hit.s === s) {
+    _compositeCache.delete(key); // LRU refresh
+    _compositeCache.set(key, hit);
+  } else {
+    hit = { s, canvas: composeAlbedo(color, ao, rough, opts) };
+    _compositeCache.set(key, hit);
+    while (_compositeCache.size > _COMPOSITE_CACHE_MAX) {
+      _compositeCache.delete(_compositeCache.keys().next().value);
+    }
+  }
+  swapTexture(layer.albedo, hit.canvas);
+  let nrm = _normalCache.get(setKey);
+  if (!nrm || nrm.s !== s) {
+    nrm = { s, canvas: normalCanvas(normal) };
+    _normalCache.set(setKey, nrm);
+  }
+  swapTexture(layer.normal, nrm.canvas);
 }
 
 /**
