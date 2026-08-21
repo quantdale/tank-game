@@ -4523,7 +4523,7 @@ const VIEW_TIME = {
   tank_closeup_modern: 0.8,
   tank_closeup_ww2: 0.9,
   tank_closeup_t90m: 0.8,
-  tank_closeup_leo2a7: 0.8,
+  tank_closeup_leo2a7v: 0.8,
   combat_firing: 0.5,
   explosion: 1.5,
   garage: 0.7,
@@ -4565,6 +4565,14 @@ const VIEW_MAP = {
   battlefield_alpine: 'alpine',
   battlefield_caldera: 'caldera',
   battlefield_foundry: 'foundry',
+};
+
+// Per-view staged PLAYER spec (the deterministic roster otherwise stages only
+// the core TANK_IDS, so closeup recipes for other vehicles must stage their
+// subject as the player to get a built state). killcam_xray keeps its inline
+// sepv3 override in __SHOTS.set.
+const VIEW_PLAYER = {
+  tank_closeup_leo2a7v: 'leo2a7v',
 };
 
 // MAP-CONFIG WIRING: pin the shot to its map, re-seating the staged battle
@@ -4983,10 +4991,14 @@ const SHOT_VIEWS = {
     closeupStage(game.tankById.get('t90m'));
     orbitPose(game.tankById.get('t90m'), 8, -38, 15, 45); // lighting_post r4: elev 10 -> 15 (contact shadow read)
   },
-  tank_closeup_leo2a7() {
+  // tank_closeup_leo2a7v: the owner delisted leo2a7 on 2026-08-06 (its spec
+  // row survives only as a make() donor); the contract closeup now stages the
+  // playable 2A7V. The old leo2a7 recipe threw on a missing roster entry and
+  // failed the whole screenshot harness from that release onward.
+  tank_closeup_leo2a7v() {
     hud.setMode('hidden');
-    closeupStage(game.tankById.get('leo2a7'));
-    orbitPose(game.tankById.get('leo2a7'), 8, -35, 15, 45); // lighting_post r4: elev 10 -> 15 (contact shadow read)
+    closeupStage(game.tankById.get('leo2a7v'));
+    orbitPose(game.tankById.get('leo2a7v'), 8, -35, 15, 45); // lighting_post r4: elev 10 -> 15 (contact shadow read)
   },
   detrack() {
     // effects_combat r2: de-track destruction visuals — slumped band, thrown
@@ -5172,7 +5184,7 @@ const SHOT_VIEWS = {
 window.__SHOTS = {
   views: [
     'battlefield', 'player_view', 'spectator_view', 'sniper_view', 'tank_closeup_modern',
-    'tank_closeup_ww2', 'tank_closeup_t90m', 'tank_closeup_leo2a7',
+    'tank_closeup_ww2', 'tank_closeup_t90m', 'tank_closeup_leo2a7v',
     'detrack', 'combat_firing', 'explosion', 'garage',
     'battlefield_desert', 'battlefield_winter', 'battlefield_urban',
     'battlefield_coastal', 'battlefield_autumn', 'battlefield_steppe',
@@ -5200,7 +5212,7 @@ window.__SHOTS = {
     zeroInputs();
     killcam.cancel(); // KILL-CAM: clear any staged/active replay (restores materials)
     ensureShotWorld(VIEW_MAP[name] || 'verdant',
-      name === 'killcam_xray' ? 'm1a2_sepv3' : 'm1a2'); // MAP-CONFIG WIRING
+      name === 'killcam_xray' ? 'm1a2_sepv3' : (VIEW_PLAYER[name] || 'm1a2')); // MAP-CONFIG WIRING
     // camo_spotting r2: garage shot keeps the neutral pedestal key; every
     // battlefield shot gets the authored map sun.
     setGarageSunTrim(name === 'garage');

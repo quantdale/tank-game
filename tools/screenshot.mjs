@@ -142,8 +142,29 @@ const page = await browser.newPage();
 await page.setViewport({ width, height, deviceScaleFactor: dpr });
 
 const consoleErrors = [];
+// Third-party network failures (e.g. the garage stars widget hitting GitHub
+// API rate limiting) produce a generic browser "Failed to load resource"
+// console error that is not a game defect — the deterministic capture gate
+// must not red/green on someone else's rate limiter. Count failed external
+// responses and tolerate exactly that many generic resource lines; genuine
+// game asset failures (localhost) still fail the run.
+let externalResourceFailures = 0;
+page.on('response', (r) => {
+  try {
+    const host = new URL(r.url()).hostname;
+    if (r.status() >= 400 && host !== 'localhost' && host !== '127.0.0.1') {
+      externalResourceFailures += 1;
+    }
+  } catch { /* opaque URLs are not external-resource lines */ }
+});
 page.on('console', (msg) => {
-  if (msg.type() === 'error' && !msg.text().includes('favicon')) consoleErrors.push(msg.text());
+  if (msg.type() !== 'error' || msg.text().includes('favicon')) return;
+  const text = msg.text();
+  if (text.includes('Failed to load resource') && externalResourceFailures > 0) {
+    externalResourceFailures -= 1;
+    return;
+  }
+  consoleErrors.push(text);
 });
 page.on('pageerror', (err) => consoleErrors.push(String(err)));
 

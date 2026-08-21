@@ -24,7 +24,7 @@ MUST uphold this contract at all times or the build is considered broken.
 | `tank_closeup_modern` | close orbit shot of the M1A2 Abrams model, full detail |
 | `tank_closeup_ww2` | close orbit shot of the Tiger I (or T-34-85) model, full detail |
 | `tank_closeup_t90m` | close orbit shot of the T-90M model, full detail |
-| `tank_closeup_leo2a7` | close orbit shot of the Leopard 2A7 model, full detail |
+| `tank_closeup_leo2a7v` | close orbit shot of the Leopard 2A7V model, full detail (retargeted from the owner-delisted 2A7, whose stale recipe broke the harness) |
 | `combat_firing` | a tank mid-shot: muzzle flash, smoke, tracer visible |
 | `explosion` | a vehicle destruction: fireball, debris, smoke column |
 | `garage` | the garage/tank-select screen |
