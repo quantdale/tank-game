@@ -1355,6 +1355,46 @@ function mkShell(shellSpec, distM = 100) {
     'ram: closing speed sign is ignored');
 }
 
+// ------------------------------------------- SA-03 extreme-input hardening ----
+// Regression pins for the SA-03 ballistics/armor/damage audit: degenerate
+// numeric inputs must fail safe instead of leaking NaN into CombatState.
+{
+  // blastRadiusM: calibers ≤ 0 / non-numeric clamp to the 1 m floor
+  // (positive calibers are untouched by the guard).
+  assert(blastRadiusM(-30) === 1, 'nan-hard: negative caliber clamps to min blast radius');
+  assert(blastRadiusM(0) === 1, 'nan-hard: zero caliber clamps to min blast radius');
+  near(blastRadiusM(122), 4.0884, 1e-3, 'nan-hard: normal-caliber blast radius unchanged');
+
+  // Full pipeline: a corrupt negative-caliber HE burst used to return NaN
+  // damage and leave combat.hp permanently NaN (unkillable tank). It must now
+  // splash deterministically inside the clamped 1 m sphere.
+  const badHE = mkShellSpec({
+    name: 'corrupt HE', type: 'HE', caliberMm: -30,
+    pen100Mm: 61, pen1000Mm: 61, dmg: 450, velocityMps: 770, moduleDmg: 30,
+  });
+  const thin = mkPlate({ physicalMm: 10, keMm: 10, ceMm: 10 });
+  const victim = mkTarget({ armor: { hullPlates: [thin], turretPlates: [] } });
+  const evs = resolveHeBurst(
+    mkShell(badHE, 50), V(0, 1, 2.2), [victim], null, null, rngHalf
+  );
+  assert(evs.length === 1, 'nan-hard: clamped burst still resolves one splash event');
+  // radius 1 m, surface dist 0.2 ⇒ falloff 0.8: 0.5·450·0.8 − 1.1·10 = 169.
+  if (evs.length === 1) {
+    near(evs[0].damage, 169, 1e-9, 'nan-hard: clamped-radius splash follows the standard falloff');
+    near(victim.combat.hp, 831, 1e-9, 'nan-hard: victim HP stays finite after corrupt-caliber burst');
+    assert(Number.isFinite(victim.combat.hp) && !victim.combat.destroyed,
+      'nan-hard: no NaN reaches CombatState');
+  }
+
+  // ramDamage: non-finite closing speed must fall through to the free-bump
+  // floor instead of producing a NaN damage pool.
+  const nanRam = ramDamage(45, 45, NaN);
+  assert(nanRam.total === 0 && nanRam.toA === 0 && nanRam.toB === 0,
+    'nan-hard: NaN closing speed rams for zero damage');
+  assert(isFinite(ramDamage(45, 45, Infinity).total),
+    'nan-hard: infinite closing speed still capped by RAM_MAX_TOTAL');
+}
+
 // ------------------------------------------------------------------ report --
 if (failures > 0) {
   console.error(`combat.selftest: ${failures}/${checks} assertions FAILED`);

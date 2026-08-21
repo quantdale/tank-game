@@ -19,6 +19,9 @@ __pycache__/
 .env.local
 public/models/tanks/**/*.glb
 
+# Worker scratchpad evidence probes (sa02-*/sa07-*) - transient, kept local
+scratchpad/
+
 # Machine-local QA/perf diagnostics from campaign verification runs
 # (traces, headed/headless capture JSON, boot failure diagnostics).
 # Intentionally untracked; preserved locally for future A/B work.

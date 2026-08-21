@@ -148,8 +148,10 @@ const RAM_MAX_TOTAL = 900;       // freight-train cap (60+ km/h closing)
 export function ramDamage(massAT, massBT, closingMps) {
   const mA = massAT > 0 ? massAT : 40;
   const mB = massBT > 0 ? massBT : 40;
-  const c = Math.abs(closingMps);
-  if (c < RAM_MIN_CLOSING_MPS) return { total: 0, toA: 0, toB: 0 };
+  // NaN closing speed must fall through to the free-bump floor, never into
+  // the damage math (a NaN pool would poison HP permanently).
+  const c = Math.abs(Number(closingMps));
+  if (!(c >= RAM_MIN_CLOSING_MPS)) return { total: 0, toA: 0, toB: 0 };
   const mRed = (mA * mB) / (mA + mB);
   const total = Math.min(RAM_MAX_TOTAL, RAM_K * c * c * mRed);
   return {
@@ -1750,10 +1752,12 @@ export function estimatePenRatio(shellSpec, distM, plateInfo) {
 
 /**
  * HE blast radius from caliber: 0.66·(caliber/30)^1.3 m, clamped to 1–8 m
- * (shells doc §6).
+ * (shells doc §6). Degenerate calibers (≤ 0 or non-numeric) clamp to the
+ * same floor instead of poisoning every splash distance with NaN.
  * @param {number} caliberMm
  * @returns {number} radius in meters
  */
 export function blastRadiusM(caliberMm) {
-  return Math.min(8, Math.max(1, 0.66 * Math.pow(caliberMm / 30, 1.3)));
+  const c = Math.max(0, Number(caliberMm) || 0);
+  return Math.min(8, Math.max(1, 0.66 * Math.pow(c / 30, 1.3)));
 }
