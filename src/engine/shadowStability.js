@@ -26,3 +26,20 @@ export function subtexelCullRadius(worldUnitsPerTexel,
   if (!(worldUnitsPerTexel > 0)) return 0;
   return worldUnitsPerTexel * minTexels;
 }
+
+/**
+ * WA2 preset lever: per-preset override of the sub-texel caster floor
+ * (quality.js `shadowCasterMinTexels`). A missing key falls back to the
+ * shipped constant, so presets predating the lever keep exact wave-1
+ * behavior. The value is validated (finite, > 0) so a preset typo fails
+ * safe to the tuned default instead of silently disabling or widening the
+ * cut; 0 is deliberately NOT accepted as "disable" — omit the key instead.
+ * @param {{shadowCasterMinTexels?:number}} [preset] active quality preset
+ * @returns {number} resolvability floor in cascade-map texels
+ */
+export function resolveCasterMinTexels(preset) {
+  const v = preset?.shadowCasterMinTexels;
+  return typeof v === 'number' && Number.isFinite(v) && v > 0
+    ? v
+    : SHADOW_CASTER_MIN_TEXELS;
+}

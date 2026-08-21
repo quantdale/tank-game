@@ -71,6 +71,24 @@ export function shadowInstanceBudget(cascadeIndex, nearCount = 2,
 }
 
 /**
+ * WA2 preset lever: per-preset override of the far-cascade instance budget
+ * (quality.js `shadowFarInstanceBudget`). A missing key falls back to the
+ * shipped constant, so presets predating the lever keep exact wave-1
+ * behavior. An explicit Infinity is honored as "unbound this tier's far
+ * cascades"; other invalid values (negative, NaN, non-number) fail safe to
+ * the constant. Fractional budgets floor later in shadowInstanceBudget().
+ * @param {{shadowFarInstanceBudget?:number}} [preset] active quality preset
+ * @returns {number} max surviving instances per far-cascade refresh
+ */
+export function resolveFarInstanceBudget(preset) {
+  const v = preset?.shadowFarInstanceBudget;
+  if (v === Number.POSITIVE_INFINITY) return v;
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0
+    ? v
+    : SHADOW_FAR_INSTANCE_BUDGET;
+}
+
+/**
  * @param {number} cascadeCount
  * @param {{nearCount?:number, intervalS?:number}} [opts]
  */

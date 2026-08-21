@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { PRESETS } from './quality.js';
 import {
   SHADOW_CASTER_MIN_TEXELS,
+  resolveCasterMinTexels,
   snapShadowCoordinate,
   subtexelCullRadius,
 } from './shadowStability.js';
@@ -68,6 +69,48 @@ for (const [name, preset] of Object.entries(PRESETS)) {
     'ultra mid-far cascade keeps a 50 cm caster');
   assert.ok(subtexelCullRadius(mobileTexels[2]) > 0.5,
     'mobile far cascade sheds a 50 cm caster');
+  // An explicit (preset-resolved) floor is honored, and a higher floor sheds
+  // a strict superset; floor 0 disables the cut entirely.
+  const midTexel = ultraTexels[2];
+  assert.ok(subtexelCullRadius(midTexel, 1.25) > subtexelCullRadius(midTexel, 0.75),
+    'a raised preset floor culls more than the shipped one');
+  assert.equal(subtexelCullRadius(midTexel, 0), 0,
+    'floor 0 disables the sub-texel cut');
+}
+
+// --- WA2 preset lever: shadowCasterMinTexels ---------------------------------
+// The W4 sub-texel floor becomes preset-readable (quality.js
+// `shadowCasterMinTexels`) with the shipped constant as fallback. Until
+// quality.js grows the key, every tier must resolve to wave-1 behavior.
+{
+  assert.equal(resolveCasterMinTexels(undefined), SHADOW_CASTER_MIN_TEXELS,
+    'missing preset falls back to the shipped floor');
+  assert.equal(resolveCasterMinTexels(null), SHADOW_CASTER_MIN_TEXELS,
+    'null preset falls back to the shipped floor');
+  assert.equal(resolveCasterMinTexels({}), SHADOW_CASTER_MIN_TEXELS,
+    'preset without the key keeps the shipped floor');
+  assert.equal(resolveCasterMinTexels({ shadowCasterMinTexels: 1.25 }), 1.25,
+    'preset override is honored');
+  for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 'big', null]) {
+    assert.equal(resolveCasterMinTexels({ shadowCasterMinTexels: bad }),
+      SHADOW_CASTER_MIN_TEXELS,
+      `invalid override ${String(bad)} fails safe to the shipped floor`);
+  }
+  // Presets now carry per-tier floor data (campaign-2026-08-21 wave 2):
+  // every preset must resolve a usable (finite, positive) floor, desktop
+  // tiers keep the shipped 0.75, and constrained tiers shed more.
+  for (const [name, preset] of Object.entries(PRESETS)) {
+    const resolved = resolveCasterMinTexels(preset);
+    assert.ok(Number.isFinite(resolved) && resolved > 0,
+      `${name} resolves a usable floor`);
+    if (name === 'medium' || name === 'low' || name.includes('mobile')) {
+      assert.ok(resolved >= SHADOW_CASTER_MIN_TEXELS,
+        `${name} sheds at least the shipped floor`);
+    } else {
+      assert.equal(resolved, SHADOW_CASTER_MIN_TEXELS,
+        `${name} keeps the shipped floor`);
+    }
+  }
 }
 
 console.log('shadowStability.selftest: ok');

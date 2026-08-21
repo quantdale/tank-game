@@ -12,12 +12,19 @@ import { CSM } from 'three/examples/jsm/csm/CSM.js';
 import { CSMFrustum } from 'three/examples/jsm/csm/CSMFrustum.js';
 import { getDeviceTier, getPreset, onPresetChange } from './quality.js';
 import {
+  SHADOW_FAR_INSTANCE_BUDGET,
   createShadowRefreshScheduler,
   isContinuousShadowCascade,
   mergeRequiredShadowWork,
+  resolveFarInstanceBudget,
   shadowInstanceBudget,
 } from './shadowRefresh.js';
-import { snapShadowCoordinate, subtexelCullRadius } from './shadowStability.js';
+import {
+  SHADOW_CASTER_MIN_TEXELS,
+  resolveCasterMinTexels,
+  snapShadowCoordinate,
+  subtexelCullRadius,
+} from './shadowStability.js';
 
 const CASCADES = 4;
 // Battlefield establishing shots read objects out to ~500 m; with the clearer
@@ -449,9 +456,35 @@ const _cullMat = new THREE.Matrix4();
 const _cascadeShadows = new WeakMap(); // shadowCamera -> { shadow, index }
 let _cullTexel = 0; // world units per texel of the cascade being drawn (0 = unknown)
 let _cullBudget = Number.POSITIVE_INFINITY; // instance budget of the cascade being drawn
+let _cullIndex = -1; // registered cascade being drawn (-1 = foreign shadow light)
 let _cullFrusCam = null;
 let _cullFrusStamp = -1;
 let _cullTick = 0; // bumped once per lighting.update() — invalidates the frustum memo
+// WA2 preset levers: the W4 caster-cut constants become preset-readable
+// (quality.js `shadowCasterMinTexels` / `shadowFarInstanceBudget`, resolved by
+// resolveCasterMinTexels / resolveFarInstanceBudget with the shipped constants
+// as fallbacks). Cached at creation + on preset change so the per-draw hook
+// above never calls getPreset() in the shadow hot path.
+let _casterMinTexels = SHADOW_CASTER_MIN_TEXELS;
+let _farInstanceBudget = SHADOW_FAR_INSTANCE_BUDGET;
+// WA2 caster telemetry: monotonic per-cascade classification totals, reset on
+// preset change so each tier's savings attribute in its own window. Indexed by
+// registered CSM cascade only — foreign shadow lights (garage rig, deviceDiag)
+// never register and stay uncounted and behavior-identical. Preallocated
+// Float64Arrays: incremented inside the per-draw hook, no hot-loop allocation.
+const SHADOW_CASCADE_STAT_SLOTS = 8; // > any cascade count this rig builds
+const _cullStats = {
+  refreshes: new Float64Array(SHADOW_CASCADE_STAT_SLOTS),
+  candidates: new Float64Array(SHADOW_CASCADE_STAT_SLOTS),
+  survivors: new Float64Array(SHADOW_CASCADE_STAT_SLOTS),
+  culledSubtexel: new Float64Array(SHADOW_CASCADE_STAT_SLOTS),
+  culledFrustum: new Float64Array(SHADOW_CASCADE_STAT_SLOTS),
+  shedBudget: new Float64Array(SHADOW_CASCADE_STAT_SLOTS),
+};
+
+function resetCullStats() {
+  for (const key of Object.keys(_cullStats)) _cullStats[key].fill(0);
+}
 
 function geometryTris(geo) {
   const idx = geo.index;
@@ -577,12 +610,17 @@ function shadowCullBefore(object, shadowCamera) {
     _cullFrustum.setFromProjectionMatrix(_cullProj);
     // W4 per-cascade budget inputs (registered CSM cascades only): the
     // cascade's actual texel edge — read live so preset switches and refits
-    // are honored — and its instance budget (near pair unbounded).
+    // are honored — and its instance budget (near pair unbounded). WA2: both
+    // levers are preset-resolved (see _casterMinTexels above).
     const reg = _cascadeShadows.get(shadowCamera);
     _cullTexel = reg
       ? (shadowCamera.right - shadowCamera.left) / Math.max(1, reg.shadow.mapSize.x)
       : 0;
-    _cullBudget = reg ? shadowInstanceBudget(reg.index, FAR_CASCADE_START) : Number.POSITIVE_INFINITY;
+    _cullBudget = reg
+      ? shadowInstanceBudget(reg.index, FAR_CASCADE_START, _farInstanceBudget)
+      : Number.POSITIVE_INFINITY;
+    _cullIndex = reg ? reg.index : -1;
+    if (reg) _cullStats.refreshes[reg.index]++;
     _cullFrusCam = shadowCamera;
     _cullFrusStamp = _cullTick;
   }
@@ -593,23 +631,37 @@ function shadowCullBefore(object, shadowCamera) {
   // maps an occluder's cross-section 1:1 onto the map plane, so a sub-floor
   // caster darkens less than one texel before the >=1.25-texel PCF disk
   // spreads it under perceivable contrast — pure wasted vertex work.
-  const minRadius = subtexelCullRadius(_cullTexel);
+  // WA2: the floor is preset-resolved (quality.js shadowCasterMinTexels).
+  const minRadius = subtexelCullRadius(_cullTexel, _casterMinTexels);
   const budget = _cullBudget;
   let k = 0;
-  let dropped = 0;
+  let culledSubtexel = 0;
+  let culledFrustum = 0;
+  let shedBudget = 0;
   // Pass 1 — classify only: record survivor slots in draw order; no buffer
   // writes, so the nothing-culled early-out below stays byte-exact (copying
   // during the scan would silently permute the owner's arrays).
   for (let j = 0; j < n; j++) {
     const i = order[j];
-    if (geoRadii[i] < minRadius) { dropped++; continue; }
+    if (geoRadii[i] < minRadius) { culledSubtexel++; continue; }
     _cullSphere.center.set(centers[i * 3], centers[i * 3 + 1], centers[i * 3 + 2]);
     _cullSphere.radius = radii[i];
-    if (!_cullFrustum.intersectsSphere(_cullSphere)) { dropped++; continue; }
-    if (k >= budget) { dropped += n - j; break; } // largest-first: the tail is all smaller
+    if (!_cullFrustum.intersectsSphere(_cullSphere)) { culledFrustum++; continue; }
+    if (k >= budget) { shedBudget = n - j; break; } // largest-first: the tail is all smaller
     survivors[k++] = i;
   }
-  if (dropped === 0) return; // nothing culled — buffers untouched, draw as-is
+  // WA2 telemetry: attribute this draw's classification to its cascade so
+  // probes can split frustum vs sub-texel vs budget savings per refresh.
+  if (_cullIndex >= 0) {
+    _cullStats.candidates[_cullIndex] += n;
+    _cullStats.survivors[_cullIndex] += k;
+    _cullStats.culledSubtexel[_cullIndex] += culledSubtexel;
+    _cullStats.culledFrustum[_cullIndex] += culledFrustum;
+    _cullStats.shedBudget[_cullIndex] += shedBudget;
+  }
+  if (culledSubtexel + culledFrustum + shedBudget === 0) {
+    return; // nothing culled — buffers untouched, draw as-is
+  }
   // Pass 2 — compact the prefix from the snapshot (never from live arrays).
   for (let s = 0; s < k; s++) {
     const i = survivors[s];
@@ -804,6 +856,12 @@ ${endHead}`);
  */
 export function createLighting(scene, camera, sunDir) {
   const preset = getPreset();
+  // WA2 preset levers: resolve the caster-cut constants for this tier once
+  // (and again on every preset change below); constants apply until
+  // quality.js grows the keys. Telemetry counters start a fresh window.
+  _casterMinTexels = resolveCasterMinTexels(preset);
+  _farInstanceBudget = resolveFarInstanceBudget(preset);
+  resetCullStats();
   // Phones use three stable splits over their shorter 260-340 m shadow
   // range. Desktop keeps four out to 700 m. The single mobile far split is
   // refreshed every other frame, matching the existing cadence of each far
@@ -892,6 +950,11 @@ export function createLighting(scene, camera, sunDir) {
   let pendingShadowCursor = 0;
   // Live quality switching (settings UI → quality.setPresetName)
   onPresetChange((p) => {
+    // WA2: re-resolve the caster-cut levers for the incoming tier and start
+    // a fresh telemetry attribution window.
+    _casterMinTexels = resolveCasterMinTexels(p);
+    _farInstanceBudget = resolveFarInstanceBudget(p);
+    resetCullStats();
     // Reallocating every cascade synchronously creates a 1000+ draw-call
     // recovery frame exactly while the GPU is already overloaded. Keep each
     // existing map alive, then replace/refresh one cascade per render frame.
@@ -1131,20 +1194,44 @@ export function createLighting(scene, camera, sunDir) {
         frame: shFrame,
         forceFrames,
         scheduledMask: lastScheduledMask,
-        cascades: csm.lights.map((light) => {
+        // WA2: live caster-cut levers (preset-resolved; constants until
+        // quality.js grows the keys) so probes can label the counters below.
+        shadowCasterMinTexels: _casterMinTexels,
+        shadowFarInstanceBudget: _farInstanceBudget,
+        cascades: csm.lights.map((light, index) => {
           const shadow = light.shadow;
+          const worldUnitsPerTexel = (shadow.camera.right - shadow.camera.left)
+            / Math.max(1, shadow.mapSize.x);
+          const budget = shadowInstanceBudget(index, FAR_CASCADE_START, _farInstanceBudget);
           return {
             size: shadow.mapSize.x,
             allocated: !!shadow.map,
             allocatedSize: shadow.map?.width || 0,
-            worldUnitsPerTexel: Number((
-              (shadow.camera.right - shadow.camera.left) / Math.max(1, shadow.mapSize.x)
-            ).toFixed(6)),
+            worldUnitsPerTexel: Number(worldUnitsPerTexel.toFixed(6)),
             position: light.position.toArray().map((value) => Number(value.toFixed(4))),
             radius: shadow.radius,
             normalBias: shadow.normalBias,
             autoUpdate: shadow.autoUpdate,
             needsUpdate: shadow.needsUpdate,
+            // WA2 per-refresh caster classification — cumulative since the
+            // rig was created or the last preset switch. `refreshes` counts
+            // this cascade's shadow-map renders that classified instanced
+            // casters; `candidates`/`survivors` are instance classifications
+            // and drawn survivors; culledFrustum/culledSubtexel/shedBudget
+            // split the savings by mechanism. `floorMeters` is the cascade's
+            // live sub-texel floor; `budget` null = unbounded (near pair).
+            casters: {
+              refreshes: _cullStats.refreshes[index],
+              candidates: _cullStats.candidates[index],
+              survivors: _cullStats.survivors[index],
+              culledFrustum: _cullStats.culledFrustum[index],
+              culledSubtexel: _cullStats.culledSubtexel[index],
+              shedBudget: _cullStats.shedBudget[index],
+              floorMeters: Number(
+                subtexelCullRadius(worldUnitsPerTexel, _casterMinTexels).toFixed(4),
+              ),
+              budget: Number.isFinite(budget) ? budget : null,
+            },
           };
         }),
       };

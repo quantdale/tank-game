@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { PRESETS } from './quality.js';
 import {
   SHADOW_FAR_INSTANCE_BUDGET,
   SHADOW_REFRESH_INTERVAL_S,
   createShadowRefreshScheduler,
   isContinuousShadowCascade,
   mergeRequiredShadowWork,
+  resolveFarInstanceBudget,
   shadowInstanceBudget,
 } from './shadowRefresh.js';
 
@@ -143,6 +145,61 @@ function sample(hz, seconds = 2, cascades = 4) {
   assert.equal(shadowInstanceBudget(2, 2, -5), 0, 'negative budgets clamp to zero');
   assert.equal(shadowInstanceBudget(2, 2, 100.9), 100,
     'fractional budgets floor to whole instances');
+}
+
+// --- WA2 preset lever: shadowFarInstanceBudget --------------------------------
+// The far-cascade budget becomes preset-readable (quality.js
+// `shadowFarInstanceBudget`) with the shipped constant as fallback. Until
+// quality.js grows the key, every tier must resolve to wave-1 behavior.
+{
+  assert.equal(resolveFarInstanceBudget(undefined), SHADOW_FAR_INSTANCE_BUDGET,
+    'missing preset falls back to the shipped budget');
+  assert.equal(resolveFarInstanceBudget(null), SHADOW_FAR_INSTANCE_BUDGET,
+    'null preset falls back to the shipped budget');
+  assert.equal(resolveFarInstanceBudget({}), SHADOW_FAR_INSTANCE_BUDGET,
+    'preset without the key keeps the shipped budget');
+  assert.equal(resolveFarInstanceBudget({ shadowFarInstanceBudget: 1024 }), 1024,
+    'preset override is honored');
+  assert.equal(
+    resolveFarInstanceBudget({ shadowFarInstanceBudget: Number.POSITIVE_INFINITY }),
+    Number.POSITIVE_INFINITY,
+    'a preset may unbind its far cascades explicitly',
+  );
+  for (const bad of [-1, Number.NaN, '4096', null]) {
+    assert.equal(resolveFarInstanceBudget({ shadowFarInstanceBudget: bad }),
+      SHADOW_FAR_INSTANCE_BUDGET,
+      `invalid override ${String(bad)} fails safe to the shipped budget`);
+  }
+  // Presets now carry per-tier budget data (campaign-2026-08-21 wave 2):
+  // desktop reference tiers keep the shipped 4096; constrained tiers are
+  // bounded at or below it.
+  for (const [name, preset] of Object.entries(PRESETS)) {
+    const resolved = resolveFarInstanceBudget(preset);
+    if (name === 'ultra' || name === 'high') {
+      assert.equal(resolved, SHADOW_FAR_INSTANCE_BUDGET,
+        `${name} keeps the shipped budget`);
+    } else {
+      assert.ok(resolved >= 0 && resolved <= SHADOW_FAR_INSTANCE_BUDGET,
+        `${name} bounds the far-cascade budget`);
+    }
+  }
+  // End-to-end plumbing: the resolved lever flows into shadowInstanceBudget
+  // unchanged for far cascades while the near pair stays unbounded.
+  assert.equal(
+    shadowInstanceBudget(2, 2, resolveFarInstanceBudget({ shadowFarInstanceBudget: 1024 })),
+    1024,
+    'resolved preset budget reaches the far cascade',
+  );
+  assert.equal(
+    shadowInstanceBudget(0, 2, resolveFarInstanceBudget({ shadowFarInstanceBudget: 1024 })),
+    Number.POSITIVE_INFINITY,
+    'resolved preset budget never bounds the hero cascade',
+  );
+  assert.equal(
+    shadowInstanceBudget(3, 2, resolveFarInstanceBudget({ shadowFarInstanceBudget: 100.9 })),
+    100,
+    'fractional preset budgets floor at the draw site',
+  );
 }
 
 console.log('shadowRefresh.selftest: 60/120/144 Hz cadence and phase spreading passed');
