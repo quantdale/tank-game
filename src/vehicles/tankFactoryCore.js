@@ -355,7 +355,10 @@ function collectMobileDetailObjects(root, rigParents) {
     return false;
   };
   for (const group of managedGroups) records.push({ object: group, baseVisible: group.visible });
-  const fineGear = /^(gearRoadWheel.*(?:Inset|Ring|Rim|Bowl|Hub|Dish|Recess)|gearReturnRollers|gearEndWheelHardware)$/;
+  // Instanced running-gear DRESS sheds with the cosmetic clutter: return
+  // rollers, painted face layers and stamped insets vanish at combat range
+  // while tires, discs, bands and pads (silhouette + articulation) stay.
+  const fineGear = /^(gearRoadWheel.*(?:Inset|Ring|Rim|Bowl|Hub|Dish|Recess|Detail\d*)|gearReturnRoller(?:Tires|Discs)|gearEndWheelHardware)$/;
   root.traverse((object) => {
     if (!object.isMesh || underManagedGroup(object)) return;
     const name = object.name || '';
@@ -419,8 +422,52 @@ function lodWrap(parent, obj, dist = LOD1_DIST) {
   lod.addLevel(obj, 0);
   lod.addLevel(new THREE.Object3D(), dist, 0.1);
   parent.add(lod);
-  return obj;
+  return lod;
 }
+
+// W9 screen-space-importance tiers for battle presentation. Raw distance
+// ignores vehicle size, so tiers key off the projected-size proxy
+// normDist = viewDistM / armor.boundingRadiusM: a rig twice as large holds
+// each tier out to the same APPARENT size. Constants reproduce the r3
+// handoff on a median ~5.2 m bounding radius (m1a2): hero detail until
+// ~99 m with re-shed at ~128 m, distance policy past ~169 m where the
+// greeble THREE.LOD band (150 m) already strips bucket dressing.
+const TIER_HERO_NORM = 19;
+const TIER_BATTLE_NORM = 29;
+const TIER_HERO_HYSTERESIS = 1.3;
+const TIER_BATTLE_HYSTERESIS = 1.12;
+
+/** Classify a normalized camera distance without hysteresis. */
+export function battleDetailTier(normDist) {
+  if (normDist < TIER_HERO_NORM) return 'hero';
+  if (normDist < TIER_BATTLE_NORM) return 'battle';
+  return 'distance';
+}
+
+/**
+ * Advance the tier with per-boundary hysteresis: leaving a tier waits for
+ * margin past its boundary, returning to it uses the bare boundary — the
+ * r3 attach/detach contract generalized to both rungs, so a bot hovering
+ * at a handoff never churns scene children.
+ */
+export function stepBattleDetailTier(current, normDist) {
+  const base = battleDetailTier(normDist);
+  if (base === current) return current;
+  if (current === 'hero' && base !== 'hero'
+    && normDist < TIER_HERO_NORM * TIER_HERO_HYSTERESIS) return 'hero';
+  if (current === 'battle' && base === 'distance'
+    && normDist < TIER_BATTLE_NORM * TIER_BATTLE_HYSTERESIS) return 'battle';
+  return base;
+}
+
+// Tiny fittings on dedicated material slots (optics lenses, canvas bundles,
+// spare track links) shed from BATTLE on; rubber skirt trim holds until
+// DISTANCE. Silhouette shells, cupolas, mantlet, gun, wheels, bands and pads
+// stay — articulation combat requires them.
+const BATTLE_COSTLY_BUCKETS = new Set([
+  'hullGlass', 'turretGlass', 'hullCloth', 'turretCloth',
+  'hullTrack', 'turretTrack',
+]);
 
 // PERF + FIDELITY: procedural tanks used to submit every bevel, fitting and
 // armor plate to each CSM pass. The first proxy pass fixed that cost with a
@@ -4729,6 +4776,8 @@ function bakeDirt(geo, yOffset, strength = 1, deckEq = false) {
  *   batchStatic?: boolean, battleDetailLod?: boolean}} [opts] — PERF r3:
  *   'ai' keeps full geometry detail but bakes the shared texture set at half
  *   resolution (materials.js QUALITY_SIZES); 'high' is hero-grade.
+ *   battleDetailLod installs the W9 screen-space-importance tiers
+ *   (HERO/BATTLE/DISTANCE, see TIER_* notes) for battle-only AI visuals.
  * @returns {object} TankVisual (ARCHITECTURE §3.3.2)
  */
 // ---------------------------------------------------------------------------
@@ -5204,6 +5253,10 @@ export function createTank(specId, engineCtx, opts = {}) {
   const eraPlacements = [];
   const decals = [];
   const disposables = [];
+  // W9 battle-tier shedding targets (battleDetailLod builds only): LOD
+  // wrappers around tiny-fitting material buckets plus the skirt-trim mesh.
+  const battleCostlyWrappers = battleDetailLod ? [] : null;
+  let battleRubberMesh = null;
 
   const P = {
     // PERF r3: `quality` remains the texture tier. Mobile battle bots can
@@ -5442,12 +5495,18 @@ export function createTank(specId, engineCtx, opts = {}) {
     // only — geometry/hash-invariant; banded builds are unaffected).
     if (/track|tread/i.test(bucket)) mesh.userData.trackBucket = bucket;
     mesh.castShadow = mesh.receiveShadow = true;
+    if (bucket === 'hullRubber' && battleDetailLod) battleRubberMesh = mesh;
     const parent = ({
       hullG, turretG, recoilG, gunG,
       barrel0G: barrelGs[0], barrel1G: barrelGs[1],
     })[parentKey];
     if (!parent) throw new Error(`${specId}: bucket ${bucket} requires authored twin barrels`);
     if (LOD0_KEEP.has(bucket)) parent.add(mesh);
+    else if (battleCostlyWrappers && BATTLE_COSTLY_BUCKETS.has(bucket)) {
+      const wrapper = lodWrap(parent, mesh, geometryQuality === 'low' ? 64 : LOD1_DIST);
+      wrapper.userData.battleCostlyWrapper = true;
+      battleCostlyWrappers.push(wrapper);
+    }
     else lodWrap(parent, mesh, geometryQuality === 'low' ? 64 : LOD1_DIST);
   }
 
@@ -5884,6 +5943,7 @@ export function createTank(specId, engineCtx, opts = {}) {
   let mobileDetailsVisible = true;
   let battleDetailGroups = [];
   let battleDetailsAttached = true;
+  let battleTier = 'hero';
   function setBattleDetailsAttached(attached) {
     if (!battleDetailGroups.length || attached === battleDetailsAttached) return;
     battleDetailsAttached = attached;
@@ -5894,6 +5954,21 @@ export function createTank(specId, engineCtx, opts = {}) {
         record.group.removeFromParent();
       }
     }
+  }
+  function setBattleCostlyVisible(visible) {
+    // Tanks built without the battleDetailLod opt-in (wrecks, mobile low tier)
+    // have no wrapper registry — null, not an empty array.
+    if (!battleCostlyWrappers) return;
+    for (const lod of battleCostlyWrappers) lod.visible = visible;
+  }
+  /** Apply one screen-space-importance tier to every managed detail class. */
+  function applyBattleDetailTier(tier) {
+    if (tier === battleTier) return;
+    battleTier = tier;
+    root.userData.battleDetailTier = tier;
+    setBattleDetailsAttached(tier === 'hero');
+    setBattleCostlyVisible(tier === 'hero');
+    if (battleRubberMesh) battleRubberMesh.visible = tier !== 'distance';
   }
   const emberPhase = rng() * Math.PI * 2;
   // r6 SHADER BURN MASK (replaces the r4/r5 per-mesh charQueue swap — critic:
@@ -6009,7 +6084,8 @@ export function createTank(specId, engineCtx, opts = {}) {
      *   step the recoil by calling this N times) keep their contract; the
      *   render loop should pass its true dt so a 120 Hz client does not
      *   play the recuperator cycle twice as fast.
-     * @param {number} [viewDistM] camera distance for battle-detail LOD
+     * @param {number} [viewDistM] camera distance driving the
+     *   screen-space-importance tiers (undefined = inspection contract)
      * @param {object|null} [presentationState] read-only interpolated pose;
      *   authority remains in `state` for queued impulses and gameplay.
      */
@@ -6018,13 +6094,14 @@ export function createTank(specId, engineCtx, opts = {}) {
       // flinch impulses. A presentation state is a read-only, allocation-free
       // interpolated view used only for transforms and running-gear phase.
       const renderState = presentationState || state;
-      if (battleDetailGroups.length) {
-        // Hysteresis keeps a bot hovering at the handoff from churning scene
-        // children. Undefined distance is an inspection/cinematic contract:
-        // studio, staged shots and killcam ghosts always restore exact detail.
-        const shouldAttach = viewDistM === undefined
-          || (battleDetailsAttached ? viewDistM < 122 : viewDistM < 96);
-        setBattleDetailsAttached(shouldAttach);
+      if (battleDetailGroups.length || battleCostlyWrappers?.length || battleRubberMesh) {
+        // Screen-space-importance tiers (TIER_* notes): undefined distance is
+        // an inspection/cinematic contract — studio, staged shots and killcam
+        // ghosts always restore exact detail. Per-boundary hysteresis keeps a
+        // bot hovering at a handoff from churning scene children.
+        const normDist = viewDistM === undefined
+          ? 0 : viewDistM / Math.max(armor.boundingRadiusM || 4, 1);
+        applyBattleDetailTier(stepBattleDetailTier(battleTier, normDist));
       }
       if (mobileDetailObjects.length) {
         // Hysteresis prevents tiny cosmetics from toggling when a vehicle
@@ -6425,6 +6502,15 @@ export function createTank(specId, engineCtx, opts = {}) {
       const restoreDetachedBattleDetails = battleDetailGroups.length > 0
         && !battleDetailsAttached;
       setBattleDetailsAttached(true);
+      // Same capture-integrity rule for the tier-shed classes: lenses, canvas
+      // bundles, spare links and skirt trim must be present (and therefore
+      // burn-hooked) for the one-time char sweep, then shed again per the
+      // live tier instead of submitting one-frame cosmetic draws at the
+      // exact moment of the blast.
+      const costlyWasVisible = battleTier === 'hero';
+      const rubberWasVisible = battleTier !== 'distance';
+      setBattleCostlyVisible(true);
+      if (battleRubberMesh) battleRubberMesh.visible = true;
       destroyed = true;
       // lazy capture (see originalMats note): traverse NOW so GLB-swapped
       // meshes are included in the burnt swap and restorable on rematch.
@@ -6502,6 +6588,8 @@ export function createTank(specId, engineCtx, opts = {}) {
       popTrailAcc = 0;
       applyPop();
       if (restoreDetachedBattleDetails) setBattleDetailsAttached(false);
+      setBattleCostlyVisible(costlyWasVisible);
+      if (battleRubberMesh) battleRubberMesh.visible = rubberWasVisible;
     },
 
     /** @returns {boolean} the wreck look is currently applied */
@@ -6677,6 +6765,26 @@ export function createTank(specId, engineCtx, opts = {}) {
       battleDetailGroups = installed.groups;
       root.userData.battleDetailGroupCount = battleDetailGroups.length;
       root.userData.battleDetailObjectCount = installed.objectCount;
+      // Deterministic per-tier draw receipt: renderable leaves the renderer
+      // would submit at each importance tier (groups attached, wrappers and
+      // skirt trim visible at hero). Selftests assert the battle and
+      // distance tiers strictly reduce this against the hero build.
+      const groupSet = new Set(battleDetailGroups.map((record) => record.group));
+      let heroDraws = 0;
+      let groupedDraws = 0;
+      root.traverse((object) => {
+        if (!(object.isMesh || object.isBatchedMesh || object.isInstancedMesh)) return;
+        heroDraws++;
+        for (let p = object.parent; p && p !== root; p = p.parent) {
+          if (groupSet.has(p)) { groupedDraws++; break; }
+        }
+      });
+      const battleDraws = heroDraws - groupedDraws - battleCostlyWrappers.length;
+      root.userData.battleTierDrawEstimate = {
+        hero: heroDraws,
+        battle: battleDraws,
+        distance: battleDraws - (battleRubberMesh ? 1 : 0),
+      };
     }
   }
 
