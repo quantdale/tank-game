@@ -2,6 +2,11 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import puppeteer from 'puppeteer';
 import { createServer } from 'vite';
+// W11 asset compression: bake outputs are alpha-only sprite sheets, so the raw
+// canvas RGBA PNGs are re-encoded as grayscale+alpha (~40% smaller) before
+// they touch disk. optimizeAtlasPng verifies a pixel-exact round trip and
+// passes through any atlas that ever stops being grayscale.
+import { optimizeAtlasPng } from './campaign-optimize-fx-atlases.mjs';
 
 const server = await createServer({
   root: process.cwd(),
@@ -32,9 +37,10 @@ try {
   const outDir = join(process.cwd(), 'public', 'fx');
   await mkdir(outDir, { recursive: true });
   for (const [name, atlas] of Object.entries(atlases)) {
-    const bytes = Buffer.from(atlas.png.slice(atlas.png.indexOf(',') + 1), 'base64');
-    await writeFile(join(outDir, `particles-${name}.png`), bytes);
-    console.log(`${name.padEnd(5)} ${atlas.width}x${atlas.height} ${bytes.length} bytes`);
+    const raw = Buffer.from(atlas.png.slice(atlas.png.indexOf(',') + 1), 'base64');
+    const opt = optimizeAtlasPng(raw);
+    await writeFile(join(outDir, `particles-${name}.png`), opt.buffer);
+    console.log(`${name.padEnd(5)} ${atlas.width}x${atlas.height} ${raw.length} -> ${opt.buffer.length} bytes${opt.mode === 'grayalpha' ? ' (gray+alpha)' : ''}`);
   }
   console.log(JSON.stringify(metrics, null, 2));
 } finally {

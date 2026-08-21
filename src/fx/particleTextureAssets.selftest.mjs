@@ -2,13 +2,16 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
+// W11 asset compression: the atlases are re-encoded as grayscale+alpha PNGs
+// (color type 4) by tools/campaign-optimize-fx-atlases.mjs — pixel-identical
+// to the seeded bake, ~40% fewer bytes. Hashes below pin that re-encoded form.
 const expected = {
-  smoke: [512, 512, '4fe7ca3b4cba2d95c095e033110d097897460521e5e3c29329278e93270642f4'],
-  fire: [1024, 1024, 'b2ad43b56272b8e05db83dc45614772b9c75cb4445460316ff55644a65cbe601'],
-  prop: [768, 768, 'de3aa41f2ff6e44584bfe110c94d2d3b6553504a58c492c5c73a0afa051b3cf6'],
-  dust: [512, 512, 'a2bf9115a02c7fe8de3f7dc66014ace7c2582714889c5f4a70b8dee88a972752'],
-  flash: [128, 128, 'be16e4b85fc4edf269c67551f99a4c7387f7b89db4b07050b17c85d7ced2a145'],
-  jet: [256, 96, '3086936da70f105a19b99a9c859981ec94e0418bf7662c62c182c627b5e1409d'],
+  smoke: [512, 512, '2d37e0fed45aaa061c5b669e8037030e314a4516d645f40d3d8c117edc568dac'],
+  fire: [1024, 1024, '028dc1a5599d32e04d0320ba4794d0b9b032067a7689d7046b2e90fbbdd878b5'],
+  prop: [768, 768, '179789135ceeef1a89886023041b09f9b81eabb12b6f72a57827a70a341e8627'],
+  dust: [512, 512, '2a70de365f80a32feba07972a7784ce9b3bba9b969c70d931fd46e731d3608b9'],
+  flash: [128, 128, '264ed3252eb32537393b53b351132f5ef5293c26be8673ff864586798822f5be'],
+  jet: [256, 96, '372f759df4cd83e14b2a0888f26627da91c44cbc86cbe69d7f04f3510c3452f8'],
 };
 
 for (const [name, [width, height, sha256]] of Object.entries(expected)) {
