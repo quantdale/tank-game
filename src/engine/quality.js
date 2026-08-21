@@ -49,6 +49,17 @@
  *           cascades, shorter shadow range.
  */
 
+import {
+  AdaptiveBudgetCoordinator,
+  createAdaptiveBudgetCoordinator,
+  resolveEffectiveGrassBands,
+  resolveEffectiveShadowLevers,
+  resolveEffectiveTerrainStreamBudget,
+  resolveEffectiveAoScale,
+  resolveEffectiveBloomScale,
+  resolveEffectiveFxBudget,
+} from './renderScalePolicy.js';
+
 const LS_KEY = 'cot.gfxPreset';
 const LS_MOBILE_KEY = 'cot.gfxMobilePreset';
 let _mobileResetHandled = false;
@@ -547,3 +558,51 @@ export function onPresetChange(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
+
+// -----------------------------------------------------------------------------
+// UNIFIED BUDGET COORDINATOR SINGLETON & HELPERS
+// -----------------------------------------------------------------------------
+let _coordinator = null;
+
+/**
+ * Access the shared singleton adaptive budget coordinator.
+ * Automatically wires sustained tier demotion back into quality preset governance.
+ * @returns {AdaptiveBudgetCoordinator}
+ */
+export function getBudgetCoordinator() {
+  if (!_coordinator) {
+    _coordinator = createAdaptiveBudgetCoordinator({
+      onTierDemote: () => reportSustainedOverload(),
+    });
+    onPresetChange((preset) => {
+      _coordinator.reset(preset);
+    });
+  }
+  return _coordinator;
+}
+
+/**
+ * Subscribe to live budget coordinator adjustments. Returns unsubscribe function.
+ * @param {(coordinator: AdaptiveBudgetCoordinator) => void} fn
+ * @returns {() => void}
+ */
+export function onBudgetAdjustment(fn) {
+  return getBudgetCoordinator().addListener(fn);
+}
+
+/**
+ * Compute the fully resolved effective quality levers combining the active preset
+ * and the live adaptive budget coordinator trims.
+ * @param {object} [preset]
+ * @param {AdaptiveBudgetCoordinator} [coordinator]
+ * @param {number} [rendererPixelRatio]
+ * @returns {object}
+ */
+export function resolveEffectiveQuality(
+  preset = getPreset(),
+  coordinator = getBudgetCoordinator(),
+  rendererPixelRatio = 1.0,
+) {
+  return coordinator.getEffectiveLevers(preset, rendererPixelRatio);
+}
+
