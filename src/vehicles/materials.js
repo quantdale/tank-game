@@ -2621,10 +2621,13 @@ function paintHeight(canvas, visual, rng, feats, seed) {
 }
 
 // Sobel the heightfield into a tangent-space normal map (wrapping edges).
-function* heightToNormalSteps(hCanvas, strength = 1.6) {
+// W10: `outCanvas` lets the shared-bake path write straight into the entry's
+// normal canvas — same dimensions as the heightfield, so the old allocate-
+// second-canvas-then-blit round trip is skipped.
+function* heightToNormalSteps(hCanvas, strength = 1.6, outCanvas = null) {
   const S = hCanvas.width;
   const src = hCanvas.getContext('2d').getImageData(0, 0, S, S).data;
-  const out = makeCanvas(S, S);
+  const out = outCanvas || makeCanvas(S, S);
   const octx = out.getContext('2d');
   const img = octx.createImageData(S, S);
   const d = img.data;
@@ -2701,6 +2704,8 @@ function paintRoughness(canvas, rng, feats, base = 0.84) {
 }
 
 // ===================== CAMO PATTERN SECTION =====================
+// Scratch holder for paintPatchRoughness's half-res classification pass.
+const _patchClassScratch = { canvas: null };
 // camo_spotting r4: pattern-keyed roughness modulation. Every pattern was an
 // ALBEDO-only repaint — one constant-response roughness field under all
 // patches, so at garage range camo read as printed vinyl, and big flat plates
@@ -2725,7 +2730,13 @@ function paintPatchRoughness(roughCanvas, camoCanvas, visual) {
   // same paint always answers light the same way on every vehicle)
   const offs = tones.map((c) => ((((c[0] * 3 + c[1] * 5 + c[2] * 7) % 97) / 96) * 2 - 1) * 0.045);
   const Sd = S >> 1;                       // half-res classification grid
-  const down = makeCanvas(Sd, Sd);
+  // W10: the classification scratch is reused across bakes and pattern-switch
+  // repaints (resized when a tier change moves the map size) instead of
+  // allocating a fresh half-res canvas per pass.
+  if (!_patchClassScratch.canvas || _patchClassScratch.canvas.width !== Sd) {
+    _patchClassScratch.canvas = makeCanvas(Sd, Sd);
+  }
+  const down = _patchClassScratch.canvas;
   const dctx = down.getContext('2d', { willReadFrequently: true });
   dctx.drawImage(camoCanvas, 0, 0, Sd, Sd);
   const cd = dctx.getImageData(0, 0, Sd, Sd).data;
@@ -2824,6 +2835,35 @@ function paintTrack(rng) {
   return c;
 }
 
+// W10 material pipeline: shared track-band steel LIBRARY. Every TEX_CACHE
+// entry used to bake its own track canvas at acquire time (~350 canvas ops +
+// a texSize(512)^2 backing each), so the playable fleet held N near-identical
+// canvases and every multiplayer fixed-pattern key duplicated one again. The
+// band language is fleet-common — only wear/mud speckle placement varies — so
+// a small deterministic variant library shares that cost: entries pick a
+// variant by seed (the fleet keeps visible variety) while resource count stays
+// capped at TRACK_LIBRARY_VARIANTS per tier size.
+const TRACK_LIBRARY_VARIANTS = 4;
+const _trackLibrary = new Map(); // texSize(512) -> Map(variant -> canvas)
+function sharedTrackCanvas(seed) {
+  const S = texSize(512);
+  let lib = _trackLibrary.get(S);
+  if (!lib) { lib = new Map(); _trackLibrary.set(S, lib); }
+  const variant = (seed >>> 0) % TRACK_LIBRARY_VARIANTS;
+  let cnv = lib.get(variant);
+  if (!cnv) {
+    // variant-seeded, not caller-seeded: every consumer of variant i shares
+    // byte-identical pixels regardless of which entry baked it first.
+    cnv = paintTrack(mulberry32((0x7b41 + variant * 0x9e37) >>> 0));
+    lib.set(variant, cnv);
+  }
+  return cnv;
+}
+/** Diagnostic census of the shared track library (selftests/tools). */
+export function trackLibraryStats() {
+  return [..._trackLibrary].map(([size, lib]) => ({ size, variants: lib.size }));
+}
+
 // Transparent marking decal canvases.
 function paintDecal(kind, text, marking) {
   const c = makeCanvas(256, 256);
@@ -2837,7 +2877,7 @@ function paintDecal(kind, text, marking) {
       drawTacticalNumber(ctx, marking, { x: 2, y: 34, width: 252, height: 188 });
     };
     draw();
-    if (document.fonts && !document.fonts.check("bold 16px 'ABC Monument Grotesk'")) {
+    if (typeof document !== 'undefined' && document.fonts && !document.fonts.check("bold 16px 'ABC Monument Grotesk'")) {
       document.fonts.ready.then(draw).catch(() => {});
     }
   } else if (kind === 'star') {
@@ -2925,7 +2965,7 @@ function paintDecal(kind, text, marking) {
       ctx.fillText(text || '', 128, 128);
     };
     drawText();
-    if (document.fonts && !document.fonts.check("bold 16px 'ABC Monument Grotesk'")) {
+    if (typeof document !== 'undefined' && document.fonts && !document.fonts.check("bold 16px 'ABC Monument Grotesk'")) {
       document.fonts.ready.then(drawText).catch(() => {});
     }
   }
@@ -3046,10 +3086,11 @@ function* bakeSharedCanvasesSteps(entry, quality) {
   yield;
   const heightCanvas = paintHeight(makeCanvas(sz.map, sz.map), vis, rng, entry.feats, seed);
   yield;
-  const normalSrc = yield* heightToNormalSteps(heightCanvas, vis.zimmerit ? 2.6 : 2.6);
-  yield;
+  // W10: resize BEFORE the Sobel (resizing clears) and let it write straight
+  // into the shared normal canvas — no intermediate full-size copy.
   entry.normalCanvas.width = entry.normalCanvas.height = sz.map;
-  entry.normalCanvas.getContext('2d').drawImage(normalSrc, 0, 0, sz.map, sz.map);
+  yield* heightToNormalSteps(heightCanvas, vis.zimmerit ? 2.6 : 2.6, entry.normalCanvas);
+  yield;
   entry.roughCanvas.width = entry.roughCanvas.height = sz.map;
   paintRoughness(entry.roughCanvas, rng, entry.feats);
   yield;
@@ -3078,7 +3119,7 @@ function acquireSharedTextures(spec, aniso, quality = 'high', selection = null) 
       camoCanvas: makeCanvas(4, 4),
       normalCanvas: makeCanvas(4, 4),
       roughCanvas: makeCanvas(4, 4),
-      trackCanvas: paintTrack(mulberry32(seed + 17)),
+      trackCanvas: sharedTrackCanvas(seed),
     };
     bakeSharedCanvases(entry, quality);
     entry.camoTex = canvasTex(entry.camoCanvas, { aniso, repeat: true });
@@ -3168,7 +3209,7 @@ export async function prebakeSharedTextures(spec, aniso, quality = 'ai', tick = 
     camoCanvas: makeCanvas(4, 4),
     normalCanvas: makeCanvas(4, 4),
     roughCanvas: makeCanvas(4, 4),
-    trackCanvas: paintTrack(mulberry32(seed + 17)),
+    trackCanvas: sharedTrackCanvas(seed),
   };
   await run(bakeSharedCanvasesSteps(entry, quality));
   entry.camoTex = canvasTex(entry.camoCanvas, { aniso, repeat: true });
@@ -4464,6 +4505,87 @@ function supportsShadowHook(engineCtx) {
   return supported;
 }
 
+// ---------------------------------------------------------------------------
+// W10 surface response library — the fixed-response vehicle surfaces (tire
+// rubber, gear-shadow cast iron, optic glass, gunmetal, track steels, wood,
+// canvas) as one frozen data table. createTankMaterials spreads these
+// verbatim, so role tuning happens in one auditable place and identical
+// responses stay byte-stable across the fleet. Painted roles (hull / barrel /
+// wheels / fittings) stay inline at their construction sites: their values are
+// pattern-derived or carry long calibration comment histories.
+// ---------------------------------------------------------------------------
+export const SURFACE_LIBRARY = Object.freeze({
+  rubber: { color: 0x292a28, roughness: 0.96, metalness: 0.0 },
+  gearShadow: { color: 0x0b0c0a, roughness: 0.98, metalness: 0.0 },
+  opticGlass: { color: 0x2a3540, roughness: 0.12, metalness: 0.85 },
+  gunmetal: { color: 0x36342f, roughness: 0.9, metalness: 0.18, envMapIntensity: 0.22 },
+  trackSteel: { color: 0x353634, roughness: 0.95, metalness: 0.08, envMapIntensity: 0.08 },
+  spareTrackSteel: { color: 0x353634, roughness: 0.94, metalness: 0.08, envMapIntensity: 0.06 },
+  wood: { color: 0x6b543a, roughness: 0.88, metalness: 0.0 },
+  canvasCloth: { color: 0x42452f, roughness: 0.97, metalness: 0.0, envMapIntensity: 0.25 },
+});
+
+// ---------------------------------------------------------------------------
+// W10 decal library — refcounted per-context cache for marking canvases and
+// their materials. The old per-instance decalCache re-baked identical 256px
+// canvases for every fielded instance of a spec (duplicate picks are valid in
+// multiplayer) and never shared across vehicles at all. The key is what
+// paintDecal actually draws: fixed drawings ('star', 'cross', 'crossgrey',
+// 'soot') dedupe fleet-wide, 'insignia' by nation insignia, 'designation' by
+// marking code, 'number' by text. Materials carry the acquiring context's
+// shadow-hook registration, so the store is keyed per engineCtx (WeakMap —
+// dead contexts GC with their decals) instead of shared globally.
+// ---------------------------------------------------------------------------
+const DECAL_CACHE = new WeakMap(); // engineCtx -> Map(id -> { mat, tex, refs })
+let _decalFallbackStore = null;    // primitive/null engineCtx (defensive, tools)
+function decalStoreFor(engineCtx) {
+  if (engineCtx && (typeof engineCtx === 'object' || typeof engineCtx === 'function')) {
+    let store = DECAL_CACHE.get(engineCtx);
+    if (!store) { store = new Map(); DECAL_CACHE.set(engineCtx, store); }
+    return store;
+  }
+  if (!_decalFallbackStore) _decalFallbackStore = new Map();
+  return _decalFallbackStore;
+}
+function decalIdentity(kind, text, marking) {
+  if (kind === 'insignia') return `insignia|${marking.insignia}`;
+  if (kind === 'designation') return `designation|${marking.markingCode}`;
+  if (kind === 'number') return `number|${text || ''}`;
+  return kind; // star / cross / crossgrey / soot are fixed drawings
+}
+function acquireDecalMaterial(store, kind, text, marking, aniso, setup) {
+  const id = `${aniso}|${decalIdentity(kind, text, marking)}`;
+  let rec = store.get(id);
+  if (!rec) {
+    const tex = canvasTex(paintDecal(kind, text, marking), { aniso });
+    // number/designation decals re-bake on fonts.ready (paintDecal redraws
+    // the now-shared canvas); flip the GPU upload once per shared texture.
+    if (typeof document !== 'undefined' && document.fonts
+      && !document.fonts.check("bold 16px 'ABC Monument Grotesk'")) {
+      document.fonts.ready.then(() => { tex.needsUpdate = true; }).catch(() => {});
+    }
+    const mat = setup(new THREE.MeshStandardMaterial({
+      map: tex, transparent: true, roughness: 0.8, metalness: 0.1,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+      depthWrite: false,
+    }));
+    rec = { mat, tex, refs: 0 };
+    store.set(id, rec);
+  }
+  rec.refs++;
+  return { mat: rec.mat, id };
+}
+function releaseDecalMaterial(store, id, n = 1) {
+  const rec = store.get(id);
+  if (!rec) return;
+  rec.refs -= n;
+  if (rec.refs <= 0) {
+    rec.mat.dispose();
+    rec.tex.dispose();
+    store.delete(id);
+  }
+}
+
 /**
  * Build the full material set for one tank.
  * @param {object} spec TankSpec (reads spec.visual palette hints)
@@ -4563,7 +4685,7 @@ export function createTankMaterials(spec, engineCtx, camoSeed, quality = 'high',
   // camo_spotting r3: lifted off near-black so lighting models tire rings
   // instead of silhouetting them (Tiger bullseye critique).
   const rubber = track(setup(new THREE.MeshStandardMaterial({
-    color: 0x292a28, roughness: 0.96, metalness: 0.0,
+    ...SURFACE_LIBRARY.rubber,
   })));
   // Accessories must never read as raw #000 blockout: scheme-tinted fittings
   // and gunmetal hardware, both with roughness variation.
@@ -4586,7 +4708,7 @@ export function createTankMaterials(spec, engineCtx, camoSeed, quality = 'high',
   // Wheel-bay / sponson-underside ambient occlusion: near-black matte panels
   // that give running gear a shadowed pocket to read against (r5 hard gate).
   const shadow = track(setup(new THREE.MeshStandardMaterial({
-    color: 0x0b0c0a, roughness: 0.98, metalness: 0.0,
+    ...SURFACE_LIBRARY.gearShadow,
   })));
   const paintableRecs = [
     { m: wheels, kind: 'wheels' },
@@ -4607,8 +4729,7 @@ export function createTankMaterials(spec, engineCtx, camoSeed, quality = 'high',
     // r3: hue pulled off the blue-grey — 0x33383a leaned navy under the sky
     // env and cool key light; neutral warm gunmetal keeps fittings in the
     // same family as the dust/steel gear.
-    color: 0x36342f, roughness: 0.9, metalness: 0.18, roughnessMap: roughTex,
-    envMapIntensity: 0.22,
+    ...SURFACE_LIBRARY.gunmetal, roughnessMap: roughTex,
   })));
   // Individual track-link pads: worn dusty steel, clearly lighter than the
   // shadowed band behind them so the run reads as articulated links up close.
@@ -4633,8 +4754,7 @@ export function createTankMaterials(spec, engineCtx, camoSeed, quality = 'high',
   // under direct sun while the band texture stayed near-black — one run read
   // as two materials. Pads pulled down into the band's own tonal family.
   const trackLink = track(setup(new THREE.MeshStandardMaterial({
-    color: 0x353634, roughness: 0.95, metalness: 0.08, roughnessMap: roughTex,
-    envMapIntensity: 0.08,
+    ...SURFACE_LIBRARY.trackSteel, roughnessMap: roughTex,
   })));
   // Spare track links carried as stowage/armor: dark oily track steel — the
   // light-grey trackLink shade read as unpainted plastic sprue racked on the
@@ -4643,12 +4763,11 @@ export function createTankMaterials(spec, engineCtx, camoSeed, quality = 'high',
     // r3: roughness floor raised / metalness cut — with the multiplying
     // roughnessMap the 0.85 base dipped to sparkling flecks on idler/sprocket
     // recess faces (the T-90M "navy sparkle" read under the closeup key).
-    color: 0x353634, roughness: 0.94, metalness: 0.08, roughnessMap: roughTex,
-    envMapIntensity: 0.06,
+    ...SURFACE_LIBRARY.spareTrackSteel, roughnessMap: roughTex,
   })));
   // Optics / headlight lenses: smooth glass with a dark blue-grey tint.
   const glass = track(setup(new THREE.MeshStandardMaterial({
-    color: 0x2a3540, roughness: 0.12, metalness: 0.85,
+    ...SURFACE_LIBRARY.opticGlass,
   })));
   // Gun tube: painted in the vehicle scheme like the hull — crews paint the
   // tube, only the muzzle brake stays bare steel (routed to the dark bucket).
@@ -4669,11 +4788,9 @@ export function createTankMaterials(spec, engineCtx, camoSeed, quality = 'high',
   // placeholder primitive. OD canvas is duller, darker and green-biased.
   const usesSchemeTintedCanvas = spec.id === 't72b3m' || spec.id === 'bmpt_terminator2';
   const canvasCloth = track(setup(new THREE.MeshStandardMaterial({
-    color: usesSchemeTintedCanvas
-      ? new THREE.Color(cssRGB(canvasRgbOf(patVis)))
-      : 0x42452f,
-    roughness: 0.97, metalness: 0.0,
-    bumpMap: roughTex, bumpScale: 0.5, envMapIntensity: 0.25,
+    ...SURFACE_LIBRARY.canvasCloth,
+    ...(usesSchemeTintedCanvas ? { color: cssRGB(canvasRgbOf(patVis)) } : null),
+    bumpMap: roughTex, bumpScale: 0.5,
   })));
   // The T-72B3M family uses broad modeled canvas aprons and bustle packs.
   // Keep those surfaces map-free (the profile owns that rule), but tint the
@@ -4686,7 +4803,7 @@ export function createTankMaterials(spec, engineCtx, camoSeed, quality = 'high',
   }
   for (const rec of paintableRecs) shared.paintable.add(rec);
   const wood = track(setup(new THREE.MeshStandardMaterial({
-    color: 0x6b543a, roughness: 0.88, metalness: 0.0,
+    ...SURFACE_LIBRARY.wood,
     bumpMap: roughTex, bumpScale: 0.3,
   })));
   // Charred wreck: a baked scorched variant of the CAMO map (soot blotches +
@@ -4769,24 +4886,17 @@ vec4 burntTri( sampler2D m, vec3 p, vec3 n, float sc ) {
     map: trackTexR, bumpMap: trackTexR, bumpScale: 0.5, ...trackMatOpts })));
 
   const marking = vehicleMarkingRecord(spec);
-  const decalCache = new Map();
+  // W10: decals come from the per-context refcounted library (see
+  // acquireDecalMaterial). Shared materials are deliberately NOT on the
+  // per-instance disposables — disposing those would kill every other
+  // instance holding the same marking — so this instance records its own
+  // refcounts and dispose() releases exactly what it acquired.
+  const decalStore = decalStoreFor(engineCtx);
+  const decalRefs = new Map();
   const decal = (kind, text) => {
-    const key = `${marking.markingCode}:${kind}:${text || ''}`;
-    if (!decalCache.has(key)) {
-      const t = track(canvasTex(paintDecal(kind, text, marking), { aniso }));
-      // number decals re-bake on fonts.ready (paintDecal registered first, so
-      // its redraw runs before this) — push the fresh canvas to the GPU.
-      if (document.fonts && !document.fonts.check("bold 16px 'ABC Monument Grotesk'")) {
-        document.fonts.ready.then(() => { t.needsUpdate = true; }).catch(() => {});
-      }
-      const m = track(setup(new THREE.MeshStandardMaterial({
-        map: t, transparent: true, roughness: 0.8, metalness: 0.1,
-        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
-        depthWrite: false,
-      })));
-      decalCache.set(key, m);
-    }
-    return decalCache.get(key);
+    const { mat, id } = acquireDecalMaterial(decalStore, kind, text, marking, aniso, setup);
+    decalRefs.set(id, (decalRefs.get(id) || 0) + 1);
+    return mat;
   };
 
   // One semantic material vocabulary for builders, live audits and asset
@@ -4817,6 +4927,8 @@ vec4 burntTri( sampler2D m, vec3 p, vec3 n, float sc ) {
     trackLinkM: 0.165 * 4, // meters of track per full texture repeat (4 links)
     decal,
     dispose() {
+      for (const [id, n] of decalRefs) releaseDecalMaterial(decalStore, id, n);
+      decalRefs.clear(); // a second dispose() must not re-release shared decals
       for (const rec of paintableRecs) shared.paintable.delete(rec);
       for (const r of disposables) r.dispose();
       releaseSharedTextures(shared);
