@@ -4,10 +4,10 @@
 
 import * as THREE from 'three';
 import {
-  chooseTerrainLodBuild,
   initialTerrainLods,
   terrainLodForDistance,
 } from './terrainLodPolicy.js';
+import { createTerrainStreamScheduler } from './terrainStreamScheduler.js';
 import { SimplexNoise } from '../engine/simplexFast.js';
 import { applySourcedTerrain } from './sourcedTextures.js';
 import { buildHorizonRing } from './maps/horizon.js';
@@ -1476,6 +1476,7 @@ function _mustReplace(src, anchor, replacement) {
 const SPLAT_COMMON_FRAG = /* glsl */`
 varying vec3 vWPos;
 varying vec3 vWNormal;
+varying float vCavity; // matqual r1: baked per-vertex curvature occlusion
 uniform sampler2D uAlbG, uAlbD, uAlbR, uAlbM;
 uniform sampler2D uNrmG, uNrmD, uNrmR, uNrmM;
 uniform sampler2D uMask, uNoise;
@@ -1501,6 +1502,16 @@ vec2 gWallUVx; vec2 gWallUVz; float gWallW;
 float gTileMix; // r8 anti-tiling: stochastic rotation-blend weight (set in splatCompute)
 float gCliffJ;  // r8: per-cliff jitter field (set with the wall basis)
 vec4 splatSamp(sampler2D t, vec2 uv, float df, float mb) {
+  // matqual r1 FREQUENCY SEPARATION: past ~160 m df saturates at 1.0 and
+  // mix(nearS, farS, 1.0) IS farS — skip the near fetch entirely. Whole
+  // chunks beyond the detail-fade band take this branch coherently, so an
+  // establishing frame pays 1-2 fetches per layer sample instead of 3-6
+  // while the near field keeps every rich sample.
+  if (df > 0.995) {
+    vec4 farOnly = texture2D(t, uv * 0.2317 + vec2(0.5), mb + 1.6);
+    farOnly = mix(farOnly, texture2D(t, uv * 0.2317 + vec2(0.5), 6.0), min(0.30 + mb * 0.33, 0.74));
+    return farOnly;
+  }
   vec4 nearS = texture2D(t, uv, mb);
   if (df < 0.004) return nearS;
   // r5 terrain_environment: the far variant re-samples the SAME hand-painted
@@ -1627,6 +1638,13 @@ void splatCompute() {
   // between the road decals (ground-cover critique), not a faint stain
   float worn = smoothstep(0.55, 0.80, n2w + (n1w - 0.5) * 0.45);
   float fD = clamp(max(worn * 0.84, max(shoulder, mk.a * uTownWear * (0.35 + 0.65 * n1))), 0.0, 1.0);
+  // matqual r1 SOIL/GRASS BOUNDARY BREAKUP: the macro patch LAYOUT stays
+  // exactly the threshold the vegetation scatter twins via sampleSplatNoise
+  // (grass thins where dirt shows); only the transition band is raggedified
+  // with the ~4 m edge breaker, so a patch edge reads as interleaved
+  // turf/soil scallops instead of one smooth airbrush fade. n1hs already
+  // eases to its mean at range, so the dither dies out instead of aliasing.
+  fD = clamp(fD + (n1hs - 0.5) * 0.22 * fD * (1.0 - fD) * 4.0 * (1.0 - farM), 0.0, 1.0);
   float fM = mkB;
   // marsh/ice sheets only live on near-flat ground: without this the graded
   // banks around a frozen lake inherit the sheet's glossy blue ice response
@@ -1760,7 +1778,12 @@ void splatCompute() {
   }
   // wall-coherent low-freq noise: the planar n2 field is near-degenerate down
   // a vertical face (grazing-angle gradient = wavy banding along cliff tops)
-  float n2Wall = wallNoiseG(0.0031, vec2(0.41, 0.13));
+  // matqual r1: sampled LAZILY — fragments with projW ~ 0 (all flat ground,
+  // and every uStrata = 0 map entirely) never pay the two wall-plane fetches;
+  // the final macro term mixes toward planar n2 there anyway, so the lazy
+  // default is exact below the 0.004 gate.
+  float n2Wall = n2;
+  if (projW > 0.004 || uStrata > 0.001) n2Wall = wallNoiseG(0.0031, vec2(0.41, 0.13));
   if (steepW > 0.001) {
     vec4 aS = wallSamp(uAlbR, 0.155, df, mipB);
     vec4 nS = wallSamp(uNrmR, 0.155, df, mipB);
@@ -2038,6 +2061,12 @@ void splatCompute() {
     vec3 roadCol = a.rgb * uRoadTint + vec3(0.014, 0.010, 0.006);
     roadCol = mix(roadCol, vec3(dot(roadCol, vec3(0.34, 0.45, 0.21))), 0.26);
     a.rgb = mix(a.rgb, roadCol, dW);
+    // matqual r1: patchy regrading/compaction along the unpaved carriageway —
+    // slow tonal bands so a dirt road reads as graded earthworks with worn
+    // and freshly-graded stretches, not one uniformly painted stripe (paved
+    // streets keep their sett/patch variation in the uRoadTex branch below)
+    float roadPatch = texture2D(uNoise, uv * 0.019 + vec2(0.37, 0.83)).r;
+    a.rgb *= 1.0 + (roadPatch - 0.5) * 0.16 * roadCore * (1.0 - uRoadTex);
     // r6: paved rut wear 0.10 -> 0.30 — town streets need visible dark
     // wheel-wear lanes or the carriageway reads as one clean bright sheet
     // terrain_environment r2: the mask G channel mip-averages away past
@@ -2211,6 +2240,23 @@ void splatCompute() {
     }
     // <<< maps r1 -------------------------------------------------------------
   }
+  // matqual r1 WINTER SASTRUGI: wind-carved snow micro-ridges across the open
+  // snowfield of iceLake maps (uIceDrift gates them; 0 on every other biome
+  // skips the block entirely). Anisotropic waves along the map's wind axis
+  // (uRipple.xy), amplitude wandering on a ~160 m field so ridges merge and
+  // split like real sastrugi, faded out by ~220 m where per-texel normals
+  // mip away anyway. Gated off dirt/road/rock/steep faces and the ice sheet
+  // itself (the sheet keeps its own drift + pressure-ridge treatment).
+  if (uIceDrift > 0.001) {
+    float snowW = (1.0 - fD) * (1.0 - fMs) * (1.0 - roadCore) * (1.0 - fR) * (1.0 - projW);
+    float sasMod = texture2D(uNoise, uv * 0.0061 + vec2(0.71, 0.13)).g;
+    float sasPhase = dot(uv, uRipple.xy) * 1.9
+      + texture2D(uNoise, uv * 0.031 + vec2(0.47, 0.29)).r * 5.0;
+    float sas = sin(sasPhase) * smoothstep(0.38, 0.78, sasMod);
+    float sasW = uIceDrift * snowW * (1.0 - smoothstep(60.0, 220.0, effDist));
+    n.xy += uRipple.xy * sas * 0.30 * sasW;
+    a.rgb *= 1.0 + sas * 0.045 * sasW;
+  }
   // r7: the unconditional macro term reads the PLANAR n2 field — degenerate
   // down vertical faces, it printed full-height value stripes (taffy smear);
   // steep faces take the wall-coherent sample instead
@@ -2355,6 +2401,14 @@ void splatCompute() {
     }
   }
   // <<< gameplay_feel r4 -----------------------------------------------------
+  // matqual r1: baked curvature occlusion — hollows, ditches and scrapes
+  // shade darker while crests lift a touch, grounding the micro-landform
+  // relief the height field bakes in. Per-vertex data: no runtime sample
+  // cost, identical values at every LOD (all levels read the fine grid).
+  // Faded out by ~260 m: the coarse far-LOD vertex strides undersample the
+  // finest height octaves, so their occlusion would alias into soft blotches
+  // exactly where every other detail pass mips away.
+  a.rgb *= mix(vCavity, 1.0, smoothstep(90.0, 260.0, camDist));
   gSplatAlbedo = a.rgb;
   float iceW = clamp(fMs * uMarshGloss * 1.3, 0.0, 1.0) * (1.0 - driftW);
   float rough0 = clamp(a.a * (1.0 - roadCore * 0.12) * (1.0 + rut * 0.1)
@@ -2381,7 +2435,11 @@ void splatCompute() {
   // sun lobe on dirt/snow at grazing angles, making the ground look wet even
   // when its albedo and normal detail were correct. Ice and open water keep
   // their authored response through iceW; every dry texel is >= 0.92.
-  gSplatRough = max(rough0, 0.92 * (1.0 - iceW) + shoreW * -0.04);
+  // matqual r1: roughness CHARACTER above that floor — dusty worn patches and
+  // drifted powder run slightly rougher than turf/crust, restoring per-zone
+  // variation the flat 0.92 clamp used to erase without any texel dropping
+  // below the matte floor.
+  gSplatRough = max(rough0, (0.92 + fD * 0.05 + driftW * 0.06) * (1.0 - iceW) + shoreW * -0.04);
   gSplatNrm = n.xyz * 2.0 - 1.0;
   gSplatFar = farM;
   // steep faces beyond gameplay range: their per-texel normal shading is the
@@ -2499,9 +2557,9 @@ function createSplatMaterial(engineCtx, layout, splatCfg, mapId = 'verdant', lan
       };
     }
     shader.vertexShader = _mustReplace(shader.vertexShader, '#include <common>',
-      '#include <common>\nvarying vec3 vWPos;\nvarying vec3 vWNormal;');
+      '#include <common>\nvarying vec3 vWPos;\nvarying vec3 vWNormal;\nattribute float aCavity;\nvarying float vCavity;');
     shader.vertexShader = _mustReplace(shader.vertexShader, '#include <worldpos_vertex>',
-      '#include <worldpos_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvWNormal = normalize(mat3(modelMatrix) * objectNormal);');
+      '#include <worldpos_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvWNormal = normalize(mat3(modelMatrix) * objectNormal);\nvCavity = aCavity;');
     shader.fragmentShader = _mustReplace(shader.fragmentShader, '#include <common>',
       '#include <common>\n' + SPLAT_COMMON_FRAG);
     shader.fragmentShader = _mustReplace(shader.fragmentShader, '#include <map_fragment>',
@@ -2512,7 +2570,7 @@ function createSplatMaterial(engineCtx, layout, splatCfg, mapId = 'verdant', lan
       SPLAT_NORMAL_FRAG);
   };
   engineCtx.setupShadowMaterial(mat, splatHook);
-  mat.customProgramCacheKey = () => 'world-terrain-splat-v21';
+  mat.customProgramCacheKey = () => 'world-terrain-splat-v22';
   return mat;
 }
 
@@ -2541,7 +2599,8 @@ const SKIRT_DROP = 6.5;
 // values at the same world coords). Bonus: 9.8k height evaluations per chunk
 // instead of 12.1k — boot gets slightly faster.
 const FINE_SEGS = 96; // must equal LOD_SEGS[0]; strides 1/2/4 stay integral
-function buildFineGrid(hf, cx0, cz0) {
+// exported for terrainMaterial.selftest.mjs (pure geometry, node-runnable)
+export function buildFineGrid(hf, cx0, cz0) {
   const stepF = CHUNK_SIZE / FINE_SEGS;
   const pn = FINE_SEGS + 3; // +1 vertex row, +2 padding rows
   const hgrid = new Float64Array(pn * pn);
@@ -2551,7 +2610,8 @@ function buildFineGrid(hf, cx0, cz0) {
   return { hgrid, pn, stepF };
 }
 
-function buildChunkGeometry(hf, cx0, cz0, segs, fine) {
+// exported for terrainMaterial.selftest.mjs (pure geometry, node-runnable)
+export function buildChunkGeometry(hf, cx0, cz0, segs, fine) {
   const n = segs + 1, step = CHUNK_SIZE / segs;
   const stride = FINE_SEGS / segs;
   const hgrid = fine?.hgrid || null;
@@ -2561,6 +2621,8 @@ function buildChunkGeometry(hf, cx0, cz0, segs, fine) {
   const vcount = n * n + perim;
   const pos = new Float32Array(vcount * 3);
   const nrm = new Float32Array(vcount * 3);
+  // matqual r1: baked curvature occlusion, one float per vertex
+  const cav = new Float32Array(vcount);
   const inv2e = 1 / (2 * stepF);
   let vi = 0;
   for (let gz = 0; gz < n; gz++) for (let gx = 0; gx < n; gx++) {
@@ -2575,6 +2637,12 @@ function buildChunkGeometry(hf, cx0, cz0, segs, fine) {
     const nx = (hl - hr) * inv2e, nz = (hd - hu) * inv2e;
     const il = 1 / Math.sqrt(nx * nx + 1 + nz * nz);
     nrm[vi * 3] = nx * il; nrm[vi * 3 + 1] = il; nrm[vi * 3 + 2] = nz * il;
+    // matqual r1: curvature occlusion from the SAME four neighbor samples the
+    // normal already reads — hollows (neighbors higher) darken toward 0.62,
+    // crests lift toward 1.06. Every LOD samples the shared fine grid at the
+    // same world coords, so all detail levels shade identical concavity;
+    // zero extra height queries at build time, zero runtime texture samples.
+    cav[vi] = clamp(1.0 - ((hl + hr + hd + hu) * 0.25 - h) * 1.6, 0.62, 1.06);
     vi++;
   }
   // perimeter vertex indices in ring order (S, E, N, W edges)
@@ -2600,6 +2668,7 @@ function buildChunkGeometry(hf, cx0, cz0, segs, fine) {
     // outward + strong down bias: crack-revealed skirts read as shaded seams
     const oy = -0.55, oil = 1 / Math.hypot(ox, oy, oz);
     nrm[dst * 3] = ox * oil; nrm[dst * 3 + 1] = oy * oil; nrm[dst * 3 + 2] = oz * oil;
+    cav[dst] = cav[src]; // skirts inherit their top vertex occlusion
   }
   const idx = new Uint32Array(segs * segs * 6 + perim * 6);
   let ii = 0;
@@ -2617,6 +2686,7 @@ function buildChunkGeometry(hf, cx0, cz0, segs, fine) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  geo.setAttribute('aCavity', new THREE.BufferAttribute(cav, 1));
   geo.setIndex(new THREE.BufferAttribute(idx, 1));
   geo.computeBoundingSphere();
   return geo;
@@ -2718,8 +2788,17 @@ function* terrainBuildSteps(heightField, engineCtx, cfg, streamOpts = null) {
     initialFineGridCount,
     streamedGeometryCount: 0,
   };
-  let streamFrame = 0;
-  const streamJob = { index: -1, level: -1, distanceM: 0, urgent: false };
+  // Budgeted streaming: chunk construction is sliced across frames by
+  // terrainStreamScheduler instead of landing whole in one combat update
+  // (worst update 13.9 ms -> 2.8 ms on tools/terrain-stream-benchmark --node).
+  // Evicted stale levels release their GPU buffers here — the scheduler only
+  // drops JS references on its own.
+  const stream = streamFarLods ? createTerrainStreamScheduler({
+    chunks,
+    heightField,
+    statsTarget: streamStats,
+    onDispose: (_chunk, _level, geometry) => geometry.dispose?.(),
+  }) : null;
   group.userData.updateLOD = (camPos) => {
     for (const c of chunks) {
       const d = Math.hypot(camPos.x - c.cx, camPos.z - c.cz);
@@ -2729,27 +2808,7 @@ function* terrainBuildSteps(heightField, engineCtx, cfg, streamOpts = null) {
         c.mesh.geometry = c.lods[want];
       }
     }
-    // One geometry every four rendered updates spreads the remaining visual
-    // detail over following seconds instead of replacing the old load stall
-    // with a burst on the first playable frame.
-    if (!streamFarLods || (++streamFrame & 3) !== 0) return;
-    const job = chooseTerrainLodBuild(chunks, camPos.x, camPos.z, streamJob);
-    if (!job) return;
-    const c = chunks[job.index];
-    if (!c.fine && job.level < 2) {
-      c.fine = buildFineGrid(heightField, c.cx0, c.cz0);
-    }
-    c.lods[job.level] = buildChunkGeometry(
-      heightField, c.cx0, c.cz0, LOD_SEGS[job.level], c.fine,
-    );
-    if (c.lods.every(Boolean)) c.fine = null;
-    streamStats.streamedGeometryCount++;
-    const d = Math.hypot(camPos.x - c.cx, camPos.z - c.cz);
-    const want = terrainLodForDistance(d, c.level);
-    if (want === job.level) {
-      c.level = want;
-      c.mesh.geometry = c.lods[want];
-    }
+    if (stream) stream.update(camPos.x, camPos.z);
   };
   group.userData.streamingStats = streamStats;
   return group;
