@@ -15,6 +15,9 @@ import { getDeviceTier, texSize, getPreset } from '../engine/quality.js';
 // WA3: per-cell lifecycle consumer (pure/Node-safe; same 8x8 x 128 m grid as
 // the grass chunks — see the tracker setup next to _partitionBuilt below).
 import { createCellLifecycle, CELL_STATES } from './cellLifecycle.js';
+// SA-12: species silhouette/variation tables live in the Node-safe pure-data
+// module so they stay headless-testable (see treeModels.selftest.mjs).
+import { OAK_SHAPES, PALM_VAR, BIRCH_VAR, PINE_VAR, GRASS_TUFTS } from './treeModels.js';
 
 export function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
   t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
@@ -160,11 +163,11 @@ function makeBarkTexture(seed) {
   ctx.fillStyle = '#aea89f'; // near-neutral: species vertex tints own the hue (birch stays pale)
   ctx.fillRect(0, 0, s, s);
   // broad plate tone variation
-  for (let b = 0; b < 46; b++) {
+  for (let b = 0; b < 52; b++) {
     const x = rng() * s, y = rng() * s;
-    const w = 14 + rng() * 30, h = 30 + rng() * 70;
-    ctx.globalAlpha = 0.16 + rng() * 0.18;
-    const l = 0.58 + (rng() - 0.5) * 0.26;
+    const w = 12 + rng() * 32, h = 28 + rng() * 74;
+    ctx.globalAlpha = 0.18 + rng() * 0.18;
+    const l = 0.56 + (rng() - 0.5) * 0.28;
     _cc.setHSL(0.075 + (rng() - 0.5) * 0.02, 0.07 + rng() * 0.05, l);
     ctx.fillStyle = _cc.getStyle();
     for (const ox of [-s, 0, s]) ctx.fillRect(x - w / 2 + ox, y - h / 2, w, h);
@@ -172,18 +175,18 @@ function makeBarkTexture(seed) {
   ctx.globalAlpha = 1;
   // vertical wandering fissures: dark cracks with a lit right edge
   ctx.lineCap = 'round';
-  for (let f = 0; f < 30; f++) {
+  for (let f = 0; f < 34; f++) {
     let x = rng() * s;
-    const wob = 2 + rng() * 5;
-    const wdt = 1.4 + rng() * 2.6;
-    const dark = 0.30 + rng() * 0.12;
+    const wob = 2.5 + rng() * 5.5;
+    const wdt = 1.4 + rng() * 2.8;
+    const dark = 0.28 + rng() * 0.12;
     const pts = [];
-    for (let y = -8; y <= s + 8; y += 12) pts.push([x + Math.sin(y * 0.05 + rng() * 6) * wob + (rng() - 0.5) * 3, y]);
-    for (const [pass, styleL, w2, ox0] of [[0, dark, wdt + 1.6, 0], [1, 0.86, wdt * 0.6, wdt * 0.9]]) {
+    for (let y = -8; y <= s + 8; y += 10) pts.push([x + Math.sin(y * 0.05 + rng() * 6) * wob + (rng() - 0.5) * 3, y]);
+    for (const [pass, styleL, w2, ox0] of [[0, dark, wdt + 1.8, 0], [1, 0.88, wdt * 0.6, wdt * 0.95]]) {
       _cc.setHSL(0.07, pass ? 0.06 : 0.10, styleL);
       ctx.strokeStyle = _cc.getStyle();
       ctx.lineWidth = w2;
-      ctx.globalAlpha = pass ? 0.5 : 0.9;
+      ctx.globalAlpha = pass ? 0.55 : 0.92;
       for (const ox of [-s, 0, s]) {
         ctx.beginPath();
         ctx.moveTo(pts[0][0] + ox + ox0, pts[0][1]);
@@ -194,12 +197,12 @@ function makeBarkTexture(seed) {
   }
   ctx.globalAlpha = 1;
   // short horizontal scar checks breaking the pure verticality
-  for (let k = 0; k < 60; k++) {
-    const x = rng() * s, y = rng() * s, len = 4 + rng() * 12;
-    _cc.setHSL(0.07, 0.08, 0.40 + rng() * 0.16);
+  for (let k = 0; k < 65; k++) {
+    const x = rng() * s, y = rng() * s, len = 4 + rng() * 14;
+    _cc.setHSL(0.07, 0.08, 0.38 + rng() * 0.18);
     ctx.strokeStyle = _cc.getStyle();
     ctx.lineWidth = 1 + rng();
-    ctx.globalAlpha = 0.5;
+    ctx.globalAlpha = 0.52;
     for (const ox of [-s, 0, s]) {
       ctx.beginPath();
       ctx.moveTo(x + ox, y);
@@ -217,46 +220,42 @@ function makeBarkTexture(seed) {
   albedo.colorSpace = THREE.SRGBColorSpace;
   albedo.wrapS = albedo.wrapT = THREE.RepeatWrapping;
   albedo.anisotropy = 8;
-  return { albedo, normal: _nrmFromHeight(hgt, s, 2.2) };
+  return { albedo, normal: _nrmFromHeight(hgt, s, 2.3) };
 }
 
 // Two tuft variants: 0 = lush meadow tuft, 1 = drier mixed tuft. Dense at the
 // root line, ragged at the top so minified mips fade the card edges instead of
 // exposing a translucent rectangle.
 function makeGrassCardTexture(rng, variant, tone = null) {
-  // Grass never occupies enough screen space to justify a 256 px procedural
-  // atlas. A simpler 128 px silhouette minifies more cleanly and quarters the
-  // texture traffic without changing the authored meadow palette.
   const s = 128;
   const c = document.createElement('canvas');
   c.width = c.height = s;
   const ctx = c.getContext('2d');
   ctx.clearRect(0, 0, s, s);
-  // r7: fewer, dimmer dry blades (the bright dry tips read as white speckle
-  // dust over the dark carpet in player_view) + livelier green tips so near
-  // tufts read as lit 3D turf instead of murky moss
   const dryChance = variant === 0 ? 0.08 : 0.26;
-  const nBlades = variant === 0 ? 22 : 18;
+  const nBlades = variant === 0 ? 24 : 20;
+  // Dense dark root underlay: anchors blades seamlessly to terrain soil
+  const rootGrad = ctx.createLinearGradient(0, s - 14, 0, s);
+  rootGrad.addColorStop(0, 'rgba(40, 52, 22, 0)');
+  rootGrad.addColorStop(1, variant === 0 ? 'rgba(32, 42, 16, 0.75)' : 'rgba(48, 44, 24, 0.75)');
+  ctx.fillStyle = rootGrad;
+  ctx.fillRect(0, s - 14, s, 14);
+
   for (let b = 0; b < nBlades; b++) {
     const dry = rng() < dryChance;
     const bx = 4 + rng() * (s - 8);
     const bw = 3 + rng() * 4;
     const tall = rng();
-    const tipX = bx + (rng() - 0.5) * (variant === 0 ? 45 : 65);
-    const tipY = s - (0.35 + 0.62 * tall) * s;
+    const tipX = bx + (rng() - 0.5) * (variant === 0 ? 44 : 64);
+    const tipY = s - (0.36 + 0.62 * tall) * s;
     const cpX = bx + (tipX - bx) * (0.25 + rng() * 0.3);
     const cpY = s - (s - tipY) * (0.45 + rng() * 0.2);
     const grad = ctx.createLinearGradient(0, s, 0, tipY);
     if (dry) {
-      grad.addColorStop(0, css(0.105, 0.28, 0.15 + rng() * 0.05));
-      grad.addColorStop(1, css(0.115, 0.32, 0.30 + rng() * 0.07));
+      grad.addColorStop(0, css(0.105, 0.28, 0.14 + rng() * 0.05));
+      grad.addColorStop(0.6, css(0.112, 0.30, 0.24 + rng() * 0.06));
+      grad.addColorStop(1, css(0.118, 0.34, 0.32 + rng() * 0.08));
     } else {
-      // r2: tips desaturated + narrowed (0.46/0.38+0.13 -> 0.40/0.35+0.08) —
-      // the hot lime blade tips read as radioactive speckle against the dark
-      // blade bases in the near field
-      // r6: slightly brighter, wider tip range — the carpet read as uniform
-      // dark moss mush at 5-20 m (critique); distinct lit blade tips are the
-      // detail signal that survives at gameplay range
       grad.addColorStop(0, css(0.24, 0.40, 0.12 + rng() * 0.04));
       grad.addColorStop(0.6, css(0.225, 0.42, 0.26 + rng() * 0.06));
       grad.addColorStop(1, css(0.19 + rng() * 0.05, 0.42, 0.37 + rng() * 0.10));
@@ -269,8 +268,7 @@ function makeGrassCardTexture(rng, variant, tone = null) {
     ctx.closePath();
     ctx.fill();
   }
-  // A few broad color accents survive minification without the old high-
-  // frequency flower speckle.
+  // Subtle floral / clover accents on lush variant
   if (variant === 0) {
     for (let f = 0; f < 3; f++) {
       const fx = 6 + rng() * (s - 12), fy = s - (0.45 + 0.4 * rng()) * s;
@@ -288,25 +286,14 @@ function makeGrassCardTexture(rng, variant, tone = null) {
 
 // Broadleaf foliage card: dozens of small leaf-ellipse clumps, centre-heavy so
 // card silhouettes stay ragged; brighter toward the top (sun side).
-// r6 terrain_environment: 256 -> 512 atlas with ~2.3x BIGGER individual
-// leaves, a dark under-canopy pass beneath every clump and per-leaf tip
-// highlights — the old texel-scale leaf mush averaged into "flat acrylic
-// noise" on every card by 15 m (the diorama-prop critique). Distinct readable
-// leaf shapes are what survive minification as foliage.
 function makeLeafClusterTexture(rng, tone = null) {
-  // MOBILE r1: tier-scaled atlas (painter is K-relative)
   const s = texSize(512), K = s / 256;
   const c = document.createElement('canvas');
   c.width = c.height = s;
   const ctx = c.getContext('2d');
   ctx.clearRect(0, 0, s, s);
   const cx = s / 2, cy = s / 2;
-  // r8: three distinct clump FAMILIES on the one atlas (sun-bleached yellow-
-  // green tips / mid olive / dark blue-green shadow foliage) with varied leaf
-  // sizes — the single-family clumps read as "one repeated leaf texture"
-  // stamped across every crown (critique). Family mix keyed per clump so
-  // cards cut from different atlas regions carry visibly different foliage.
-  for (let k = 0; k < 115; k++) {
+  for (let k = 0; k < 118; k++) {
     const a = rng() * Math.PI * 2;
     const rr = Math.pow(rng(), 0.62) * 0.45 * s;
     const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr;
@@ -314,9 +301,6 @@ function makeLeafClusterTexture(rng, tone = null) {
     const famRoll = rng();
     let hue, sat, l;
     if (famRoll < 0.30) {        // sun-bleached tips
-      // lighting_post r2: cap the bleached family — 0.48 HSL-lightness
-      // clipped to lime-white under the 4.5 sun key; ~0.41 rolls off inside
-      // the grade shoulder.
       hue = 0.170 + rng() * 0.035; sat = 0.21 + rng() * 0.07;
       l = 0.22 + sun * 0.12 + rng() * 0.07;
     } else if (famRoll < 0.78) { // mid olive body
@@ -326,9 +310,7 @@ function makeLeafClusterTexture(rng, tone = null) {
       hue = 0.26 + rng() * 0.045; sat = 0.15 + rng() * 0.06;
       l = 0.12 + sun * 0.10 + rng() * 0.07;
     }
-    const sizeMul = 0.7 + rng() * 0.9; // per-clump leaf scale spread
-    // shadow understorey blob under the clump: leaves read as lit shapes ON
-    // a dark interior instead of paint daubs on transparency
+    const sizeMul = 0.7 + rng() * 0.9;
     {
       const ur = (9 + rng() * 8) * K * sizeMul;
       const gr = ctx.createRadialGradient(x, y + 3 * K, 0, x, y + 3 * K, ur);
@@ -342,17 +324,12 @@ function makeLeafClusterTexture(rng, tone = null) {
     const nl = 6 + (rng() * 7) | 0;
     for (let j = 0; j < nl; j++) {
       const lx = x + (rng() - 0.5) * 15 * K, ly = y + (rng() - 0.5) * 15 * K;
-      // r6: leaves ~2.3x bigger in atlas space — bold readable shapes
       const lw = (3.6 + rng() * 5.2) * sizeMul * K, lh = (2.2 + rng() * 3.1) * sizeMul * K;
       const rot = rng() * Math.PI;
-      // r2: PER-LEAF value/hue spread (was one flat fill per clump — the
-      // "acrylic paint daub" tell) + a lit sliver on the upper edge of ~half
-      // the leaves so crowns carry leaf-scale speckle and specular breakup
       const ll = l * (0.74 + rng() * 0.60);
       ctx.save();
       ctx.translate(lx, ly);
       ctx.rotate(rot);
-      // leaf: pointed-ellipse body with a faint dark keel line
       ctx.fillStyle = css(hue + (rng() - 0.5) * 0.022, sat, ll);
       ctx.beginPath();
       ctx.ellipse(0, 0, lw, lh, 0, 0, Math.PI * 2);
@@ -363,7 +340,7 @@ function makeLeafClusterTexture(rng, tone = null) {
         ctx.ellipse(-lw * 0.18, -lh * 0.30, lw * 0.55, lh * 0.42, 0, 0, Math.PI * 2);
         ctx.fill();
       }
-      if (rng() < 0.55) { // central vein keel — leaf-scale structure at 512px
+      if (rng() < 0.55) {
         ctx.strokeStyle = css(hue + 0.01, sat * 0.9, ll * 0.55);
         ctx.lineWidth = 0.9 * K * 0.5;
         ctx.beginPath();
@@ -374,8 +351,6 @@ function makeLeafClusterTexture(rng, tone = null) {
       ctx.restore();
     }
   }
-  // r2: punch small sky-holes through the foliage mass — solid card interiors
-  // were the flat-splat giveaway; alpha gaps let light break through crowns
   ctx.globalCompositeOperation = 'destination-out';
   for (let hle = 0; hle < 70; hle++) {
     const a = rng() * Math.PI * 2;
@@ -389,7 +364,7 @@ function makeLeafClusterTexture(rng, tone = null) {
   return finishAlphaTexture(c, ctx, 70, 78, 40, true, tone);
 }
 
-// Conifer foliage card: fanned needle sprays, muted olive-green.
+// Conifer foliage card: fanned needle sprays along central woody twig stems.
 function makeNeedleSprayTexture(rng, tone = null) {
   const s = 256;
   const c = document.createElement('canvas');
@@ -398,21 +373,43 @@ function makeNeedleSprayTexture(rng, tone = null) {
   ctx.clearRect(0, 0, s, s);
   const cx = s / 2, cy = s / 2;
   ctx.lineCap = 'round';
-  for (let k = 0; k < 95; k++) {
+  for (let k = 0; k < 98; k++) {
     const a = rng() * Math.PI * 2;
     const rr = Math.pow(rng(), 0.6) * 0.44 * s;
     const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr;
     const sun = 1 - y / s;
     const dir = rng() * Math.PI * 2;
-    const n = 8 + (rng() * 8) | 0;
-    ctx.strokeStyle = css(0.30 + rng() * 0.035, 0.18 + rng() * 0.08, 0.15 + sun * 0.12 + rng() * 0.07);
-    ctx.lineWidth = 1.5 + rng() * 0.9;
-    for (let j = 0; j < n; j++) {
-      const na = dir + (rng() - 0.5) * 1.5;
-      const len = 9 + rng() * 12;
+    const len = 10 + rng() * 14;
+    const endX = x + Math.cos(dir) * len;
+    const endY = y + Math.sin(dir) * len + len * 0.18;
+
+    // Woody twig spine
+    ctx.strokeStyle = css(0.08, 0.22, 0.18 + sun * 0.08);
+    ctx.lineWidth = 1.6 + rng() * 0.8;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(endX, endY);
+    ctx.stroke();
+
+    // Layered fanned needle pairs radiating along spine
+    const nPairs = 6 + ((rng() * 6) | 0);
+    for (let j = 0; j < nPairs; j++) {
+      const t = j / Math.max(1, nPairs - 1);
+      const px = x + (endX - x) * t, py = y + (endY - y) * t;
+      const nLen = (7 + rng() * 9) * (1 - t * 0.35);
+      const na1 = dir + 0.45 + (rng() - 0.5) * 0.35;
+      const na2 = dir - 0.45 + (rng() - 0.5) * 0.35;
+      const hue = 0.30 + rng() * 0.035;
+      const sat = 0.18 + rng() * 0.08;
+      const lum = 0.14 + sun * 0.13 + t * 0.06 + rng() * 0.06;
+
+      ctx.strokeStyle = css(hue, sat, lum);
+      ctx.lineWidth = 1.4 + rng() * 0.7;
       ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x + Math.cos(na) * len, y + Math.sin(na) * len + len * 0.25);
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + Math.cos(na1) * nLen, py + Math.sin(na1) * nLen + nLen * 0.2);
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + Math.cos(na2) * nLen, py + Math.sin(na2) * nLen + nLen * 0.2);
       ctx.stroke();
     }
   }
@@ -430,30 +427,21 @@ function makePalmFrondTexture(rng, tone = null) {
   const ctx = c.getContext('2d');
   ctx.clearRect(0, 0, s, s);
   const bx = s / 2;
-  // two passes: dark under-layer slightly wider, lit top layer
   for (let pass = 0; pass < 2; pass++) {
-    const n = 42;
+    const n = 44;
     for (let i = 0; i < n; i++) {
       const t = i / (n - 1);
       const ry = s - 4 - (s - 12) * t;
       const rx = bx + Math.sin(t * 2.6) * 5;
-      // feather envelope: widest just below mid, tapering to the tip
       const env = Math.sin(Math.min(1, t * 1.12) * Math.PI);
       const len = (14 + env * 88) * (pass === 0 ? 1.08 : 1.0);
       const dry = t > 0.78 ? (t - 0.78) * 3.6 : 0;
       const droop = 18 + t * 26;
       for (const side of [-1, 1]) {
-        for (let l = 0; l < 4; l++) { // overlapping leaflets per station
-          // r9: thicker, one extra leaflet per station — the frond silhouette
-          // must stay a CONTIGUOUS feather through minification; the old thin
-          // strokes mip-averaged below the alpha test by ~150 m and whole
-          // crowns degenerated into sparse scribble stars (critique: "jagged
-          // green starburst scribbles")
+        for (let l = 0; l < 4; l++) {
           const lw = 7.2 - t * 2.6 - l * 0.9;
           if (lw <= 1.0) continue;
           const jit = (rng() - 0.5) * 7;
-          // r6: sat 0.40 -> 0.30, hue pulled toward olive — the frond sheet
-          // itself fed the lime-plastic read, not just the vertex tint
           const lum = pass === 0
             ? 0.13 + rng() * 0.05
             : 0.19 + t * 0.11 + rng() * 0.07 + dry * 0.10;
@@ -472,7 +460,6 @@ function makePalmFrondTexture(rng, tone = null) {
       }
     }
   }
-  // central rib on top
   ctx.strokeStyle = css(0.13, 0.34, 0.30);
   ctx.lineWidth = 4.2;
   ctx.beginPath();
@@ -490,20 +477,16 @@ function makeTwigTexture(rng, tone = null) {
   const ctx = c.getContext('2d');
   ctx.clearRect(0, 0, s, s);
   ctx.lineCap = 'round';
-  // r9: soft twig-HAZE underlay first — real winter birch crowns read as a
-  // purple-brown gauze of thousands of sub-pixel twigs, not as separable
-  // black scribbles on the sky. Translucent blobs + a dense pass of fine
-  // strokes give the card body; the branch skeleton draws on top.
   for (let b = 0; b < 18; b++) {
     const x = s / 2 + (rng() - 0.5) * 130, y = s / 2 + (rng() - 0.5) * 130;
     const r = 16 + rng() * 30;
     const gr = ctx.createRadialGradient(x, y, 0, x, y, r);
-    gr.addColorStop(0, 'rgba(88,84,86,0.22)'); // cool grey — brown read autumnal
+    gr.addColorStop(0, 'rgba(88,84,86,0.22)');
     gr.addColorStop(1, 'rgba(88,84,86,0)');
     ctx.fillStyle = gr;
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
   }
-  for (let f = 0; f < 150; f++) { // fine-twig strokes: the haze texture
+  for (let f = 0; f < 155; f++) {
     const x = s / 2 + (rng() - 0.5) * 150, y = s / 2 + (rng() - 0.5) * 150;
     const a = rng() * Math.PI * 2, len = 8 + rng() * 16;
     ctx.strokeStyle = css(0.045 + rng() * 0.03, 0.05 + rng() * 0.05, 0.26 + rng() * 0.16);
@@ -519,9 +502,6 @@ function makeTwigTexture(rng, tone = null) {
   function branch(x, y, a, len, w, depth) {
     if (depth <= 0 || len < 5) return;
     const nx = x + Math.cos(a) * len, ny = y + Math.sin(a) * len;
-    // r9: lifted from near-black (0.14-0.24 -> 0.22-0.34) — pure-dark strokes
-    // against snow albedo read as glitch scribbles at any distance; sat cut
-    // toward grey so the crown reads winter-purple-grey, not autumn brown
     ctx.strokeStyle = css(0.05 + rng() * 0.02, 0.08, 0.22 + rng() * 0.12);
     ctx.lineWidth = w;
     ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(nx, ny); ctx.stroke();
@@ -793,10 +773,11 @@ function buildBroadleafCards(rng, nCards, sizeMul, pal = {}, shape = {}) {
   return mergeParts(parts);
 }
 
-function buildPineTrunk(rng, pal = {}) {
+function buildPineTrunk(rng, pal = {}, vr = {}) {
   const parts = [];
-  const trunkH = 5.9 + rng() * 0.6;
-  // r2: 9 segs + root flare + lifted tint (bark map compensation) — see oak
+  // SA-12: vr comes from PINE_VAR (treeModels.js) — stature per variant;
+  // empty vr keeps the legacy classic-cone proportions bit-identical.
+  const trunkH = (vr.h0 ?? 5.9) + rng() * (vr.hr ?? 0.6);
   const trunk = new THREE.CylinderGeometry(0.10, 0.26, trunkH, 9, 1);
   trunk.translate(0, trunkH / 2, 0);
   _c.setHSL(0.06, 0.30, 0.19 + rng() * 0.05, THREE.SRGBColorSpace);
@@ -805,13 +786,27 @@ function buildPineTrunk(rng, pal = {}) {
   flare.translate(0, 0.22, 0);
   _c.setHSL(0.06, 0.28, 0.17 + rng() * 0.04, THREE.SRGBColorSpace);
   parts.push(paintFlat(flare, _c.clone(), 0));
-  // r6 terrain_environment: OPAQUE snow lobes riding the tier tops (winter
-  // maps, pal.snow) — the whitened needle cards alone still averaged toward
-  // green at range; real load is a solid white mass sitting ON the boughs.
-  // Same trick as the birch branch-riding lobes (bark material, lifted tint).
+
+  // Dead branch stubs along the lower trunk: natural forestry tell of mature conifers
+  const nStubs = 3 + ((rng() * 3) | 0);
+  for (let s = 0; s < nStubs; s++) {
+    const sy = 1.1 + (s / nStubs) * 1.3 + rng() * 0.2;
+    const sa = (s / nStubs) * Math.PI * 2 + rng() * 0.9;
+    const sLen = 0.26 + rng() * 0.22;
+    const stub = new THREE.CylinderGeometry(0.02, 0.04, sLen, 4, 1);
+    stub.translate(0, sLen / 2, 0);
+    stub.rotateZ(1.2 + rng() * 0.3); // slight downward angle
+    stub.rotateY(sa);
+    stub.translate(0, sy, 0);
+    _c.setHSL(0.06, 0.24, 0.16 + rng() * 0.04, THREE.SRGBColorSpace);
+    parts.push(paintFlat(stub, _c.clone(), 0.05));
+  }
+
+  // Opaque snow lobes riding the tier tops (winter maps, pal.snow); the band
+  // follows the variant crown tip so every stature loads snow correctly.
   const snow = pal.snow ?? 0;
   if (snow > 0.25) {
-    const topY = 6.4;
+    const topY = vr.topY ?? 6.4;
     for (let y = 2.1; y < topY - 0.4; y += 0.62 + rng() * 0.5) {
       const t = (y - 1.2) / (topY - 1.2);
       const rr = (1.0 - t) * 1.35 + 0.22;
@@ -842,16 +837,19 @@ function buildPineTrunk(rng, pal = {}) {
   return mergeParts(parts);
 }
 
-function buildPineCards(rng, tierStep, sizeMul, pal = {}) {
+function buildPineCards(rng, tierStep, sizeMul, pal = {}, vr = {}) {
   // lighting_post r3: pine defaults 0.325/0.23 -> 0.30/0.18 — pines sat
   // brighter + more cyan than oaks (hue0 0.235); pull both into one band
   const hue0 = pal.cardHue ?? 0.30, sat0 = pal.cardSat ?? 0.18;
   const l0 = pal.cardL0 ?? 0.15; // content_breadth r4: palette luminance floor
-  const topY = 6.4;
+  // SA-12: crown tip + tier spread come from PINE_VAR; defaults are the
+  // legacy classic cone, so empty vr reproduces the previous geometry.
+  const topY = vr.topY ?? 6.4;
+  const rMul = vr.rMul ?? 1;
   const parts = [];
   for (let y = 1.55; y < topY - 0.3; y += tierStep * (0.85 + rng() * 0.3)) {
     const t = (y - 1.2) / (topY - 1.2);
-    const rr = (1.0 - t) * 1.65 + 0.30;
+    const rr = ((1.0 - t) * 1.65 + 0.30) * rMul;
     const m = Math.max(4, Math.round(2.8 + rr * 2.7)); // denser tiers: no see-through crowns
     const a0 = rng() * Math.PI * 2;
     for (let k = 0; k < m; k++) {
@@ -1037,11 +1035,7 @@ function buildPalmGeometry(rng, pal = {}, vr = {}) {
 // LATTICE of real forking limbs that carries the winter silhouette, an
 // upright-ellipsoid twig-haze card cloud (taller than wide — birch brooms,
 // not mushrooms), and small branch-riding snow lobes only. No crown cap.
-const BIRCH_VAR = [
-  { h0: 4.3, hr: 0.9, crw: 1.15, nBr: 11 }, // young slender
-  { h0: 6.0, hr: 1.3, crw: 1.55, nBr: 14 }, // classic
-  { h0: 7.5, hr: 1.6, crw: 2.00, nBr: 17 }, // old broad
-];
+// SA-12: BIRCH_VAR moved to treeModels.js (imported above).
 function buildBirchGeometry(rng, pal = {}, vr = {}) {
   const trunkParts = [];
   const H = (vr.h0 ?? 5.6) + rng() * (vr.hr ?? 1.6);
@@ -1247,9 +1241,13 @@ function buildOakFarGeometry(rng, pal = {}, fvi = 0) {
   return { trunk: mergeParts(trunkParts), canopy: mergeParts(canopyParts) };
 }
 
-function buildPineFarGeometry(rng, pal = {}) {
+function buildPineFarGeometry(rng, pal = {}, vr = {}) {
   const cp = pal.canopy || {};
   const hue = cp.hue ?? 0.315, sat = cp.sat ?? 0.26, l0 = cp.l0 ?? 0.215, l1 = cp.l1 ?? 0.33;
+  // SA-12: scale the far tier stack to the PINE_VAR stature so the LOD-in
+  // transition keeps silhouette parity with the near card crown per variant.
+  const hScale = (vr.topY ?? 6.4) / 6.4;
+  const rMul = vr.rMul ?? 1;
   const trunkParts = [], canopyParts = [];
   const trunk = new THREE.CylinderGeometry(0.22, 0.40, 2.2, 5, 1); // r6: see oak far trunk
   trunk.translate(0, 1.1, 0);
@@ -1260,11 +1258,11 @@ function buildPineFarGeometry(rng, pal = {}) {
   // instance ("dozens of identical stacked cones" critique)
   const nTier = 3 + ((rng() * 2) | 0);
   const baseY = 1.2 + rng() * 0.5;
-  const topYf = 5.6 + rng() * 0.9;
+  const topYf = (5.6 + rng() * 0.9) * hScale;
   for (let ti = 0; ti < nTier; ti++) {
     const tt = ti / (nTier - 1);
     const y = baseY + (topYf - baseY) * tt * (0.9 + rng() * 0.2) - 0.5;
-    const r = ((1 - tt) * 1.35 + 0.45) * (0.8 + rng() * 0.45);
+    const r = ((1 - tt) * 1.35 + 0.45) * (0.8 + rng() * 0.45) * rMul;
     const h = 1.6 + (1 - tt) * 1.2 + rng() * 0.5;
     // PERF (performance_budget r3): 8x2 closed cone -> 7x1 open cone (40 ->
     // 21 tris). The base cap is never visible from gameplay camera heights
@@ -1279,9 +1277,9 @@ function buildPineFarGeometry(rng, pal = {}) {
   // r5: a few branch-tuft satellites poking through the tier line so the far
   // pine silhouette is ragged like the near card LOD, not a lathe object
   for (let b = 0; b < 4; b++) {
-    const a = rng() * Math.PI * 2, ty = 1.8 + rng() * 3.4;
-    const t = (ty - 1.2) / 5.4;
-    const rr = (1.0 - t) * 1.5 + 0.35;
+    const a = rng() * Math.PI * 2, ty = (1.8 + rng() * 3.4) * hScale;
+    const t = (ty / hScale - 1.2) / 5.4;
+    const rr = ((1.0 - t) * 1.5 + 0.35) * rMul;
     const tuft = new THREE.IcosahedronGeometry(0.38 + rng() * 0.3, 0);
     jitterRadial(tuft, rng, 0.4);
     tuft.scale(1.3, 0.7, 1.3);
@@ -1423,27 +1421,80 @@ function buildBirchFarGeometry(rng, pal = {}) {
   return { trunk: mergeParts(trunkParts), canopy: mergeParts(canopyParts) };
 }
 
-// squat card clump for hedgerow/field bushes.
-// r2 terrain_environment: the roadside shrubs were the loudest "flat acrylic
-// splat" tell at 10-40 m — more, smaller cards (16 vs 11) for a ragged
-// silhouette, a LOW normal up-bias (0.75) so the sides of the clump actually
-// shade around the volume, a deeper core->rim AO ramp, and a vertical
-// understory gradient so the skirt sits dark against the lit crown.
-function buildBushCards(rng, pal = {}) {
-  const hue0 = pal.cardHue ?? 0.24, sat0 = pal.cardSat ?? 0.26;
+// Species-differentiated card clumps for hedgerow bushes, arid scrub, conifer mounds, and winter brush.
+function buildBushCards(rng, pal = {}, species = 'oak') {
+  const isArid = species === 'palm' || (pal.cardHue !== undefined && pal.cardHue < 0.18);
+  const isPine = species === 'pine';
+  const isBirch = species === 'birch';
+  const hue0 = pal.cardHue ?? (isArid ? 0.14 : isPine ? 0.30 : isBirch ? 0.08 : 0.24);
+  const sat0 = pal.cardSat ?? (isArid ? 0.16 : isPine ? 0.18 : isBirch ? 0.06 : 0.24);
   const parts = [];
-  const cy = 0.55;
-  for (let i = 0; i < 16; i++) {
-    let dx = rng() * 2 - 1, dy = rng() * 2 - 1, dz = rng() * 2 - 1;
-    const dl = Math.hypot(dx, dy, dz) || 1;
-    dx /= dl; dy /= dl; dz /= dl;
-    const rad = Math.pow(0.3 + 0.7 * rng(), 0.8);
-    const w = 0.72 + rng() * 0.55;
-    _e.set(rng() * Math.PI, rng() * Math.PI * 2, rng() * Math.PI, 'YXZ');
-    const vGrad = 0.78 + 0.42 * clamp(dy * 0.5 + 0.5, 0, 1); // lit top, shaded skirt
-    const shade = (0.34 + 0.62 * rad) * vGrad * (0.9 + rng() * 0.2);
-    parts.push(foliageCard(w, w * 0.8, dx * rad * 0.85, cy + dy * rad * 0.38, dz * rad * 0.85,
-      _e, shade, hue0 + (rng() - 0.5) * 0.055, sat0 + rng() * 0.06, 0.22, 0, cy, 0, 0.75, 0.45));
+  const cy = 0.52;
+
+  if (isArid) {
+    // Arid shrub / Desert scrub / Chaparral:
+    // Dense, woody-centered hemispherical mound with tough compact cards,
+    // low normal up-bias (0.65) for strong sun/shade relief on bright sand/rock
+    const nCards = 18;
+    for (let i = 0; i < nCards; i++) {
+      let dx = rng() * 2 - 1, dy = rng() * 2 - 1, dz = rng() * 2 - 1;
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      dx /= dl; dy /= dl; dz /= dl;
+      const rad = Math.pow(0.25 + 0.75 * rng(), 0.75);
+      const w = 0.65 + rng() * 0.50;
+      _e.set(rng() * Math.PI, rng() * Math.PI * 2, rng() * Math.PI, 'YXZ');
+      const vGrad = 0.75 + 0.45 * clamp(dy * 0.5 + 0.5, 0, 1);
+      const shade = (0.38 + 0.58 * rad) * vGrad * (0.92 + rng() * 0.18);
+      parts.push(foliageCard(w, w * 0.78, dx * rad * 0.95, cy + dy * rad * 0.32, dz * rad * 0.95,
+        _e, shade, hue0 + (rng() - 0.5) * 0.045, sat0 + rng() * 0.05, 0.20, 0, cy, 0, 0.65, 0.40));
+    }
+  } else if (isPine) {
+    // Conifer scrub / Dwarf pine / Juniper:
+    // Low spreading horizontal whorl cards with dark center and tiered boughs
+    const nCards = 16;
+    for (let i = 0; i < nCards; i++) {
+      const a = (i / nCards) * Math.PI * 2 + (rng() - 0.5) * 0.5;
+      const r = 0.35 + rng() * 0.55;
+      const py = cy + (rng() - 0.5) * 0.28;
+      const w = 0.75 + rng() * 0.45;
+      _e.set(-Math.PI / 2 + 0.4 + rng() * 0.3, -a + Math.PI / 2, (rng() - 0.5) * 0.3, 'YXZ');
+      const shade = (0.42 + 0.54 * (r / 0.9)) * (0.9 + rng() * 0.2);
+      parts.push(foliageCard(w, w * 0.7, Math.cos(a) * r, py, Math.sin(a) * r,
+        _e, shade, hue0 + (rng() - 0.5) * 0.035, sat0 + rng() * 0.05, 0.18, 0, cy, 0, 0.80, 0.35));
+    }
+  } else if (isBirch) {
+    // Winter twig / Rime scrub:
+    // Upright twig lattice with fine branching and top-weighted frost
+    const nCards = 20;
+    const snow = pal.snow ?? 0;
+    for (let i = 0; i < nCards; i++) {
+      let dx = rng() * 2 - 1, dy = rng() * 2 - 1, dz = rng() * 2 - 1;
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      dx /= dl; dy /= dl; dz /= dl;
+      const rad = Math.pow(0.25 + 0.75 * rng(), 0.8);
+      const w = 0.60 + rng() * 0.45;
+      _e.set(rng() * Math.PI, rng() * Math.PI * 2, rng() * Math.PI, 'YXZ');
+      const sk = snow * Math.max(0, dy) * (0.6 + rng() * 0.4);
+      const shade = (0.45 + 0.55 * rad) * (1 + sk * 0.35);
+      parts.push(foliageCard(w, w * 0.9, dx * rad * 0.8, cy + dy * rad * 0.42, dz * rad * 0.8,
+        _e, shade, hue0 + (0.585 - hue0) * sk, sat0 * (1 - sk * 0.8) + 0.02 * sk, 0.35, 0, cy, 0, 0.85, 0.25));
+    }
+  } else {
+    // Lush Deciduous / Hedgerow bush (Oak):
+    // Domed mass with dark understory skirt and curved leaf mass cards
+    const nCards = 18;
+    for (let i = 0; i < nCards; i++) {
+      let dx = rng() * 2 - 1, dy = rng() * 2 - 1, dz = rng() * 2 - 1;
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      dx /= dl; dy /= dl; dz /= dl;
+      const rad = Math.pow(0.28 + 0.72 * rng(), 0.8);
+      const w = 0.75 + rng() * 0.55;
+      _e.set(rng() * Math.PI, rng() * Math.PI * 2, rng() * Math.PI, 'YXZ');
+      const vGrad = 0.78 + 0.42 * clamp(dy * 0.5 + 0.5, 0, 1);
+      const shade = (0.36 + 0.60 * rad) * vGrad * (0.9 + rng() * 0.2);
+      parts.push(foliageCard(w, w * 0.82, dx * rad * 0.88, cy + dy * rad * 0.38, dz * rad * 0.88,
+        _e, shade, hue0 + (rng() - 0.5) * 0.055, sat0 + rng() * 0.06, 0.22, 0, cy, 0, 0.75, 0.50));
+    }
   }
   return mergeParts(parts);
 }
@@ -1610,8 +1661,11 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
         float wFade = 1.0 - smoothstep(60.0, 110.0, dCam);
         float sway = uv.y * uv.y * wFade;
         float phase = giw.x * 0.35 + giw.z * 0.28;
-        transformed.x += sway * (0.12 * sin(uWindTime * 1.6 + phase) + 0.05 * sin(uWindTime * 3.7 + phase * 2.3));
-        transformed.z += sway * 0.08 * cos(uWindTime * 1.3 + phase);
+        float gust = sin(uWindTime * 0.52 + phase * 0.32) * 0.30 + 0.70;
+        float swayX = (sin(uWindTime * 1.55 + phase) * 0.11 + sin(uWindTime * 3.4 + phase * 2.1) * 0.04) * gust;
+        float swayZ = (cos(uWindTime * 1.25 + phase * 0.9) * 0.075 + sin(uWindTime * 4.1 + phase * 1.7) * 0.025) * gust;
+        transformed.x += sway * swayX;
+        transformed.z += sway * swayZ;
       }`);
     useAttributeNormal(shader);
     mipAlphaGuard(shader); // aa-r1: distance-stable blade coverage
@@ -1638,10 +1692,6 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
   // silhouette supplies the entire read, so a crossed second plane is waste.
   const makeTuftFarGeometry = (w, h) => makeTuftGeometry(w, h, 1, 1.5);
 
-  const grassTex = [
-    makeGrassCardTexture(mulberry32(seed + 41), 0, veg.grassTexTone),
-    makeGrassCardTexture(mulberry32(seed + 42), 1, veg.grassTexTone),
-  ];
   function makeGrassMaterial(tex, farDist) {
     // Lambert is materially cheaper for a rough, non-metallic alpha card and
     // preserves the lighting/shadow response that is actually visible here.
@@ -1657,16 +1707,20 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
     return mat;
   }
   const grassVariants = [];
-  for (let gv = 0; gv < 2; gv++) {
+  for (let gv = 0; gv < GRASS_TUFTS.length; gv++) {
     // r7: taller tuft cards (0.60/0.48 -> 0.74/0.58) — WoT-scale near grass
     // must clearly break the ground plane beside the tracks, not read as a
-    // 2 cm moss carpet
-    const w = gv === 0 ? 0.92 : 1.14, h = gv === 0 ? 0.74 : 0.58;
+    // 2 cm moss carpet. SA-12: the w/h profiles live in GRASS_TUFTS
+    // (treeModels.js) so the clump variation is table-driven + selftested;
+    // texture variant + seed base follow the same index (seed+41/42 and
+    // lush/dry painter variants for gv 0/1 — unchanged from the inline pair).
+    const { w, h } = GRASS_TUFTS[gv];
+    const tex = makeGrassCardTexture(mulberry32(seed + 41 + gv), gv, veg.grassTexTone);
     grassVariants.push({
       geo: makeTuftGeometry(w, h),
       geoFar: makeTuftFarGeometry(w, h), // performance_budget r5 (see builder)
-      matMid: makeGrassMaterial(grassTex[gv], grassFadeEnd),
-      matNear: makeGrassMaterial(grassTex[gv], CARPET_FAR),
+      matMid: makeGrassMaterial(tex, grassFadeEnd),
+      matNear: makeGrassMaterial(tex, CARPET_FAR),
     });
   }
 
@@ -2054,8 +2108,11 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
         // tip arc is sub-pixel out there; the freeze only stops per-frame
         // cutout-depth churn (GTAO boil) and far-treeline silhouette crawl.
         float amp = aFlex * 0.14 * (1.0 - smoothstep(140.0, 220.0, distance(tiw.xyz, uCamPos)));
-        transformed.x += amp * (sin(uWindTime * 1.15 + ph) + 0.45 * sin(uWindTime * 2.63 + ph * 1.7));
-        transformed.z += amp * 0.7 * cos(uWindTime * 0.97 + ph * 1.3);
+        float treeGust = sin(uWindTime * 0.42 + ph * 0.38) * 0.28 + 0.72;
+        float swayX = (sin(uWindTime * 1.12 + ph) + 0.38 * sin(uWindTime * 2.48 + ph * 1.65)) * treeGust;
+        float swayZ = (0.72 * cos(uWindTime * 0.94 + ph * 1.25) + 0.24 * sin(uWindTime * 2.05 + ph * 1.85)) * treeGust;
+        transformed.x += amp * swayX;
+        transformed.z += amp * swayZ;
         vec4 tvw = instanceMatrix * vec4(transformed, 1.0);
         // gameplay_feel r2: occlusion fade only near the camera->tank sight
         // capsule — canopy crossing open sky stays solid (no dither
@@ -2345,30 +2402,25 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
   // proportions, so stands read as "the same 2-3 trees repeated". Broadleafs
   // now span round / tall-columnar / wide-spreading crowns; palms span
   // squat-thick / classic / tall-slender with matching trunk gauges.
-  const OAK_SHAPES = [
-    { cy: 4.35, rx: 2.35, ry: 1.75, rz: 2.35, trunkH: 3.1, n: 58 }, // round classic
-    // r4: columnar crown widened + more cards (1.85/52 -> 2.05/62) — at the
-    // frame edge the sparse narrow variant read as "a bare pole with a tiny
-    // blob canopy" (player_view right edge, critique)
-    { cy: 5.05, rx: 2.05, ry: 2.30, rz: 2.05, trunkH: 3.8, n: 62 }, // tall columnar
-    { cy: 3.80, rx: 3.05, ry: 1.40, rz: 3.05, trunkH: 2.6, n: 66 }, // wide spreading
-  ];
-  const PALM_VAR = [
-    { h0: 4.5, hr: 1.0, rMul: 1.40, lean0: 0.72, leanR: 0.5 }, // squat, thick, leaning
-    { h0: 5.6, hr: 1.4, rMul: 1.15, lean0: 0.50, leanR: 0.5 }, // classic (thicker)
-    { h0: 7.0, hr: 1.6, rMul: 0.95, lean0: 0.32, leanR: 0.4 }, // tall slender
-  ];
+  // SA-12: OAK_SHAPES / PALM_VAR / BIRCH_VAR / PINE_VAR live in the Node-safe
+  // treeModels.js module (imported above) and are regression-tested there.
   // species registry: texture + near/far geometry builders, seed bases keep
   // the classic verdant set bit-identical to the pre-config build
   const SPECIES = {
     pine: {
       texSeed: 52, nearSeed: 61, farSeed: 71,
       tex: (r, pal) => makeNeedleSprayTexture(r, pal.texTone || null),
-      near: (k, pal) => ({
-        trunk: buildPineTrunk(mulberry32(seed + 61 + k * 7), pal),
-        cards: buildPineCards(mulberry32(seed + 63 + k * 7), 0.60, 1.0, pal),
-      }),
-      far: (r, pal) => buildPineFarGeometry(r, pal),
+      // SA-12: k selects PINE_VAR — classic conical / narrow spire / broad
+      // skirt — so conifer stands mix three distinct statures near and far
+      // (matching the oak/palm/birch silhouette tables).
+      near: (k, pal) => {
+        const pv = PINE_VAR[k % PINE_VAR.length];
+        return {
+          trunk: buildPineTrunk(mulberry32(seed + 61 + k * 7), pal, pv),
+          cards: buildPineCards(mulberry32(seed + 63 + k * 7), 0.60, 1.0, pal, pv),
+        };
+      },
+      far: (r, pal, k) => buildPineFarGeometry(r, pal, PINE_VAR[k % PINE_VAR.length]),
     },
     oak: {
       texSeed: 51, nearSeed: 65, farSeed: 73,
@@ -2931,7 +2983,10 @@ function* vegetationBuildSteps(heightField, engineCtx, seed, cfg, deferFarGrass)
   // ---- bushes (hedgerow / field-edge cover, purely visual) ----
   {
     const bushPal = palOf(bushSpecies);
-    const bushGeos = [buildBushCards(mulberry32(seed + 31), bushPal), buildBushCards(mulberry32(seed + 32), bushPal)];
+    const bushGeos = [
+      buildBushCards(mulberry32(seed + 31), bushPal, bushSpecies),
+      buildBushCards(mulberry32(seed + 32), bushPal, bushSpecies),
+    ];
     const bushPlacements = [[], []];
     function addBush(x, z) {
       if (Math.max(Math.abs(x), Math.abs(z)) > 470) return;

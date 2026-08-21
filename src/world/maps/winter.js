@@ -6,6 +6,7 @@ const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 export default {
   id: 'winter',
   name: 'Frosthollow',
+  sub: 'Snow Farms · Birch Stands · Frozen Lake',
   blurb: 'Snowbound farmland, bare birch stands and a frozen lake',
 
   terrain: {

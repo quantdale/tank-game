@@ -32,6 +32,7 @@ for (let i = 0; i < 108; i++) {
 export default {
   id: 'urban',
   name: 'Steinburg',
+  sub: 'Town Grid · Paved Streets · Rubble Blocks',
   blurb: 'Dense town grid — paved streets, rowhouse blocks, rubble cover',
 
   terrain: {

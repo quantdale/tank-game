@@ -19,10 +19,21 @@ assert.equal(MAP_IDS.length, 16, 'the battlefield roster contains sixteen maps')
 assert.equal(new Set(MAP_IDS).size, MAP_IDS.length, 'map ids are unique');
 assert.deepEqual(MAP_IDS.slice(-8), EXPANSION, 'the eight-map expansion stays registered');
 
+const HORIZON_STYLES = ['rolling', 'alpine', 'mesa', 'escarpment'];
+
 for (const mapId of MAP_IDS) {
   const config = getMapConfig(mapId);
   assert.equal(config.id, mapId, `${mapId}: config id matches registry`);
-  assert.ok(config.name && config.blurb, `${mapId}: player-facing copy exists`);
+  assert.ok(config.name && config.blurb && config.sub, `${mapId}: player-facing copy exists`);
+  const subSegments = config.sub.split('·').map((segment) => segment.trim());
+  assert.equal(subSegments.length, 3,
+    `${mapId}: map-card summary names exactly three landmark layers`);
+  assert.ok(subSegments.every((segment) => segment.length >= 3),
+    `${mapId}: map-card summary segments are substantive`);
+  assert.ok(HORIZON_STYLES.includes(config.horizon?.style),
+    `${mapId}: horizon silhouette style is supported (unknown styles silently fall back to rolling)`);
+  assert.ok(config.minimap?.base?.length === 3 && config.minimap?.hard?.length === 3 &&
+    config.minimap?.soft?.length === 3, `${mapId}: minimap palette fully specified`);
   assert.ok(config.terrain && config.vegetation && config.props && config.sky,
     `${mapId}: complete biome configuration`);
   assert.equal(config.spawns.enemies.length, 7, `${mapId}: seven enemy spawn pads`);

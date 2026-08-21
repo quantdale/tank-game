@@ -32,6 +32,7 @@ const RIVER = [
 export default {
   id: 'autumn',
   name: 'Amberford',
+  sub: 'Broadleaf Valley · River Ford · Hill Farms',
   blurb: 'Fall-gold broadleaf valley, a fording river and hillside farms',
 
   terrain: {

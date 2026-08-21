@@ -6,6 +6,7 @@ const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 export default {
   id: 'desert',
   name: 'Sirocco Wadi',
+  sub: 'Dunes · Red Mesas · Adobe Crossroads',
   blurb: 'Sun-baked dunes, red mesas and an adobe crossroads village',
 
   terrain: {

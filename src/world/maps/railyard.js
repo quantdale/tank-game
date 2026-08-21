@@ -27,6 +27,7 @@ const PLAN = [
 export default {
   id: 'railyard',
   name: 'Cinder Junction',
+  sub: 'Rail Depot · Warehouses · Gravel Flats',
   blurb: 'Brownfield rail depot — warehouses, container ranks, gravel flats',
 
   terrain: {

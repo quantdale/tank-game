@@ -10,6 +10,7 @@ const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 export default {
   id: 'coastal',
   name: 'Saltmere Bay',
+  sub: 'Turquoise Bay · Dune Strand · Fishing Village',
   blurb: 'Turquoise bay, dune-backed strand and a whitewashed fishing village',
 
   terrain: {

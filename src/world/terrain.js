@@ -770,7 +770,7 @@ let _splatFields = null; // { a, b: Float32Array } — see splatFields()
 // delta on these smooth fields only flips statistically-marginal tuft
 // placements; grass<->dirt correlation is exact-by-construction now.
 const SPLAT_FIELD_S = 256;
-function splatFields() {
+export function splatFields() {
   if (_splatFields) return _splatFields;
   const s = SPLAT_FIELD_S;
   const noi = new SimplexNoise({ random: mulberry32(3011) });
@@ -843,7 +843,7 @@ function drawWrapped(ctx, s, fn) {
 
 // Painted grass layer: noise macro base + thousands of individual blade
 // strokes so the near field reads as turf, not single-frequency speckle.
-function makeGrassLayer(seed, anisotropy, tone = null) {
+export function makeGrassLayer(seed, anisotropy, tone = null) {
   const s = texSize(256); // loading-speed r1: sourced 1K set replaces this fallback
   const noi = new SimplexNoise({ random: mulberry32(seed) });
   const rng = mulberry32(seed ^ 0x7f4a);
@@ -928,7 +928,7 @@ function makeGrassLayer(seed, anisotropy, tone = null) {
 
 // Painted dirt layer: clods + drawn pebbles + cracks — real macro structure
 // for the sub-10 m ground and the road gravel pass.
-function makeDirtLayer(seed, anisotropy, tone = null) {
+export function makeDirtLayer(seed, anisotropy, tone = null) {
   const s = texSize(256); // loading-speed r1: sourced 1K set replaces this fallback
   const noi = new SimplexNoise({ random: mulberry32(seed) });
   const rng = mulberry32(seed ^ 0x2e91);
@@ -1021,7 +1021,7 @@ function makeDirtLayer(seed, anisotropy, tone = null) {
 // dark meandering pressure-crack lines, faint wind-blown snow drift streaks.
 // Roughness (packed in alpha) is LOW on clear ice, high on the drifts, so the
 // sheet picks up sun/sky specular and reads as ice, not mud.
-function makeIceLayer(seed, anisotropy) {
+export function makeIceLayer(seed, anisotropy) {
   const s = texSize(256); // loading-speed r1: distant/fallback terrain tile
   const noi = new SimplexNoise({ random: mulberry32(seed) });
   const rng = mulberry32(seed ^ 0x1cE5);
@@ -1142,7 +1142,7 @@ function makeIceLayer(seed, anisotropy) {
 // streaks. Roughness (packed in alpha) runs LOW on open water — the splat
 // shader's marsh-gloss + fresnel terms give it the specular water identity —
 // and high on the foam streaks so they read matte.
-function makeSeaLayer(seed, anisotropy, tone = null) {
+export function makeSeaLayer(seed, anisotropy, tone = null) {
   const s = texSize(256); // loading-speed r1: distant/fallback terrain tile
   const noi = new SimplexNoise({ random: mulberry32(seed) });
   const rng = mulberry32(seed ^ 0x5EA1);
@@ -1213,7 +1213,7 @@ function makeSeaLayer(seed, anisotropy, tone = null) {
 // the bed boundaries and only granular (never swirly) fine texture. The
 // splat shader's wall projection maps v to world height, so the beds land
 // horizontal on every cliff face regardless of orientation.
-function makeSandstoneLayer(seed, anisotropy, tone = null) {
+export function makeSandstoneLayer(seed, anisotropy, tone = null) {
   const s = texSize(256); // loading-speed r1: distant/fallback terrain tile
   const noi = new SimplexNoise({ random: mulberry32(seed) });
   const rng = mulberry32(seed ^ 0x5a4d);
@@ -1285,7 +1285,7 @@ function makeSandstoneLayer(seed, anisotropy, tone = null) {
   };
 }
 
-function makeGroundLayer(seed, kind, anisotropy, tone = null, roughMul = 1) {
+export function makeGroundLayer(seed, kind, anisotropy, tone = null, roughMul = 1) {
   const s = texSize(256); // loading-speed r1: sourced 1K set replaces this fallback
   const noi = new SimplexNoise({ random: mulberry32(seed) });
   const px = new Uint8ClampedArray(s * s * 4);
@@ -1336,7 +1336,7 @@ function makeGroundLayer(seed, kind, anisotropy, tone = null, roughMul = 1) {
 // R = road core, G = wheel ruts, B = marsh wetness, A = village worn ground.
 // 2 texels/m: the rut lanes and road borders actually resolve instead of
 // smearing into 1-texel airbrush mush.
-function makeMaskTexture(seedNoi, layout, landformW = null) {
+export function makeMaskTexture(seedNoi, layout, landformW = null) {
   const _VILLAGE = layout.village;
   const _MARSHES = [...layout.marshes, ...layout.lakes]; // lakes share the wet/ice channel
   // MOBILE r1: tier-scaled mask (features derive from T = s/MAP_SIZE, so the
@@ -1448,7 +1448,7 @@ function makeMaskTexture(seedNoi, layout, landformW = null) {
   return t;
 }
 
-function makeShaderNoiseTexture(seed) {
+export function makeShaderNoiseTexture(seed) {
   // seed stays 3011: the RG channels quantize the SAME Float32 fields the
   // CPU twin (sampleSplatNoise) samples — shared bake, see splatFields().
   const s = SPLAT_FIELD_S;
@@ -1476,7 +1476,7 @@ function _mustReplace(src, anchor, replacement) {
   return out;
 }
 
-const SPLAT_COMMON_FRAG = /* glsl */`
+export const SPLAT_COMMON_FRAG = /* glsl */`
 varying vec3 vWPos;
 varying vec3 vWNormal;
 varying float vCavity; // matqual r1: baked per-vertex curvature occlusion
@@ -2412,7 +2412,6 @@ void splatCompute() {
   // finest height octaves, so their occlusion would alias into soft blotches
   // exactly where every other detail pass mips away.
   a.rgb *= mix(vCavity, 1.0, smoothstep(90.0, 260.0, camDist));
-  gSplatAlbedo = a.rgb;
   float iceW = clamp(fMs * uMarshGloss * 1.3, 0.0, 1.0) * (1.0 - driftW);
   float rough0 = clamp(a.a * (1.0 - roadCore * 0.12) * (1.0 + rut * 0.1)
     * (1.0 - fMs * uMarshGloss * (1.0 - driftW)), 0.05, 1.0);
@@ -2434,6 +2433,12 @@ void splatCompute() {
   // stops the sun's GGX lobe washing the whole sheet bright (uSea=0: 0.14)
   rough0 = max(rough0, iceW * mix(0.14, 0.32, uSea));
   rough0 = max(rough0, gSeaFoam * 0.88); // maps r1: foam is matte (0 off sea maps)
+  // Puddle and dampness response: organic moisture in concave hollows, ruts, and shores
+  float dampness = clamp(shoreW * 0.85 + rut * 0.40 * (1.0 - uRoadTex)
+    + max(0.0, (0.97 - vCavity) * 2.0) * (1.0 - smoothstep(40.0, 160.0, camDist)) * (1.0 - smoothstep(0.08, 0.22, slope)),
+    0.0, 1.0) * (1.0 - iceW) * (1.0 - uSandMacro * 0.85);
+  a.rgb *= 1.0 - dampness * 0.18;
+  gSplatAlbedo = a.rgb;
   // Dry terrain stays truly matte. The previous 0.78 floor left a broad GGX
   // sun lobe on dirt/snow at grazing angles, making the ground look wet even
   // when its albedo and normal detail were correct. Ice and open water keep
@@ -2442,7 +2447,12 @@ void splatCompute() {
   // drifted powder run slightly rougher than turf/crust, restoring per-zone
   // variation the flat 0.92 clamp used to erase without any texel dropping
   // below the matte floor.
-  gSplatRough = max(rough0, (0.92 + fD * 0.05 + driftW * 0.06) * (1.0 - iceW) + shoreW * -0.04);
+  float dryRough = (0.92 + fD * 0.05 + driftW * 0.06 + (n1hs - 0.5) * 0.04) * (1.0 - iceW) + shoreW * -0.04;
+  // matqual r2: the damp blend must run AFTER the dry max — wet earth loses
+  // the matte floor and pulls toward its satin ~0.28 response. Inside the max
+  // (max(rough0, mixed)) the 0.8+ texture-alpha roughness always won and the
+  // wet gloss was unreachable.
+  gSplatRough = mix(max(rough0, dryRough), 0.28 + (n1hs - 0.5) * 0.08, dampness);
   gSplatNrm = n.xyz * 2.0 - 1.0;
   gSplatFar = farM;
   // steep faces beyond gameplay range: their per-texel normal shading is the
@@ -2452,7 +2462,7 @@ void splatCompute() {
 }
 `;
 
-const SPLAT_NORMAL_FRAG = /* glsl */`
+export const SPLAT_NORMAL_FRAG = /* glsl */`
 {
   vec3 dN = gSplatNrm;
   vec3 gN = normalize(vWNormal);
@@ -2467,7 +2477,7 @@ const SPLAT_NORMAL_FRAG = /* glsl */`
 }
 `;
 
-function createSplatMaterial(engineCtx, layout, splatCfg, mapId = 'verdant', landformW = null) {
+export function createSplatMaterial(engineCtx, layout, splatCfg, mapId = 'verdant', landformW = null) {
   const S = splatCfg || {};
   // r6 terrain_environment: the mesa/rim landform weight rides the MASK's
   // BLUE channel on maps that provide landformW (desert — it has no marshes

@@ -6,6 +6,7 @@
 export default {
   id: 'verdant',
   name: 'Verdant Fields',
+  sub: 'Grassland · Road Junction · Hedgerow Village',
   blurb: 'Rolling grassland, hedgerows and a road-junction village',
 
   terrain: {

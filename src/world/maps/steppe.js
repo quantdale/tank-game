@@ -9,6 +9,7 @@ const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
 export default {
   id: 'steppe',
   name: 'Tarkhan Steppe',
+  sub: 'Open Grassland · Shallow Folds · Windbreaks',
   blurb: 'Golden grassland — long sightlines, shallow folds, windbreak lines',
 
   terrain: {
