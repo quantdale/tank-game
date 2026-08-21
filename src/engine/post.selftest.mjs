@@ -4,6 +4,7 @@ import {
   FsrUpscalePass,
   LateFxPass,
   SceneAAPass,
+  TAAPass,
   sceneResolveCopyEliminated,
   setComposerDepthAttachments,
 } from './post.js';
@@ -317,6 +318,71 @@ function depthRt(name, w = 64, h = 32) {
   assert.ok(stockInits.includes('SceneAAPass.color'),
     'stock mode still warms the scene target');
   assert.ok(stockInits.includes('SceneAAPass.lateColor'));
+}
+
+{
+  // TAAPass routing & lifecycle test:
+  // - Default disabled state (zero overhead when off)
+  // - Enabling routes ping-pong accumulation draw
+  // - forceConverge resets seed timestamp
+  const camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.5, 2000);
+  const taa = new TAAPass(camera);
+  assert.equal(taa.enabled, false, 'TAA must be default OFF behind feature gate');
+  assert.equal(taa.blendK, 0.1);
+
+  taa.setSize(800, 600);
+  assert.equal(taa.historyTarget1.width, 800);
+  assert.equal(taa.historyTarget1.height, 600);
+  assert.ok(Math.abs(taa.material.uniforms.uTexel.value.x - 1 / 800) < 1e-9);
+
+  // Disabled render: no draw calls
+  const renderer = passRenderer();
+  taa.render(renderer, depthRt('composer.write'), depthRt('composer.read'));
+  assert.equal(renderer.calls.length, 0, 'disabled TAA pass performs no draws');
+
+  // Enabled render: renders into history and write buffer
+  taa.enabled = true;
+  taa.sceneDepthTexture = { name: 'SceneAAPass.depth' };
+  taa.render(renderer, depthRt('composer.write'), depthRt('composer.read'));
+  const draws = renderer.calls.filter((c) => c.kind === 'draw');
+  assert.ok(draws.length >= 1, 'enabled TAA pass performs accumulation draw');
+
+  // forceConverge reset
+  taa.forceConverge();
+  assert.equal(taa.lastMs, -1e9, 'forceConverge resets seed timestamp');
+  taa.dispose();
+}
+
+{
+  // SceneAAPass camera jitter test:
+  // - When taaEnabled is false: camera projection matrix is untouched
+  // - When taaEnabled is true: projection matrix is jittered during render,
+  //   cleanly unjittered after render, and advances jitterIndex
+  const sceneTarget = depthRt('SceneAAPass.color');
+  const camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.5, 2000);
+  camera.updateProjectionMatrix();
+  const initialProj8 = camera.projectionMatrix.elements[8];
+  const initialProj9 = camera.projectionMatrix.elements[9];
+
+  const pass = new SceneAAPass(new THREE.Scene(), camera, sceneTarget);
+  pass.directResolve = true;
+  pass.onSceneRendered = () => {};
+  const renderer = passRenderer();
+
+  // 1. Off state (default)
+  pass.render(renderer, depthRt('composer.write'), depthRt('composer.read'));
+  assert.equal(pass.jitterIndex, 0);
+  assert.equal(camera.projectionMatrix.elements[8], initialProj8);
+  assert.equal(camera.projectionMatrix.elements[9], initialProj9);
+
+  // 2. On state
+  pass.taaEnabled = true;
+  pass.setSize(1920, 1080);
+  pass.render(renderer, depthRt('composer.write'), depthRt('composer.read'));
+  assert.equal(pass.jitterIndex, 1, 'jitterIndex advances after jittered render');
+  assert.ok(Math.abs(camera.projectionMatrix.elements[8] - initialProj8) < 1e-12,
+    'projection matrix must be unjittered after scene pass completion');
+  assert.ok(Math.abs(camera.projectionMatrix.elements[9] - initialProj9) < 1e-12);
 }
 
 console.log('post self-test passed');

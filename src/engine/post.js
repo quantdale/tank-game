@@ -61,6 +61,14 @@ import {
   reconstructionSharpness,
 } from './renderScalePolicy.js';
 import { LATE_FX_LAYER } from '../fx/particles.js';
+import {
+  JITTER_PHASE_COUNT,
+  TAA_BLEND_K,
+  applyCameraJitter,
+  jitterPhase,
+  jitterPhaseY,
+  removeCameraJitter,
+} from './temporal/taaCore.js';
 
 // r5 bloom retune ("muzzle flash is three enormous structureless gaussian
 // bloom blobs"): strength 0.34 → 0.20 and radius 0.4 → 0.28 so bloom is a
@@ -1334,6 +1342,179 @@ export function setComposerDepthAttachments(targets, enable) {
  *
  * Exported for the Node self-test (no GL required to exercise the routing).
  */
+// --- TAA / TAAU Phase B Accumulation Pass -----------------------------------
+const TAA_ACCUMULATE_FRAG = /* glsl */ `
+  precision highp float;
+  uniform sampler2D tCurrent;
+  uniform sampler2D tHistory;
+  uniform sampler2D tDepth;
+  uniform mat4 uInvViewProj;
+  uniform mat4 uPrevViewProj;
+  uniform vec2 uTexel;
+  uniform float uBlendK;
+  uniform float uSeed;
+  uniform float uResponsiveMask;
+  varying vec2 vUv;
+
+  vec3 rgbToYCoCg( vec3 c ) {
+    return vec3(
+      0.25 * c.r + 0.5 * c.g + 0.25 * c.b,
+      0.5 * c.r - 0.5 * c.b,
+      -0.25 * c.r + 0.5 * c.g - 0.25 * c.b
+    );
+  }
+
+  vec3 yCoCgToRgb( vec3 y ) {
+    return vec3(
+      y.x + y.y - y.z,
+      y.x + y.z,
+      y.x - y.y - y.z
+    );
+  }
+
+  void main() {
+    vec4 currentTexel = texture2D( tCurrent, vUv );
+    vec3 cCenter = currentTexel.rgb;
+    float depth = texture2D( tDepth, vUv ).x;
+
+    // 5-tap neighborhood gathering in YCoCg space
+    vec3 yCenter = rgbToYCoCg( cCenter );
+    vec3 yN = rgbToYCoCg( texture2D( tCurrent, vUv + vec2( 0.0, uTexel.y ) ).rgb );
+    vec3 yS = rgbToYCoCg( texture2D( tCurrent, vUv - vec2( 0.0, uTexel.y ) ).rgb );
+    vec3 yE = rgbToYCoCg( texture2D( tCurrent, vUv + vec2( uTexel.x, 0.0 ) ).rgb );
+    vec3 yW = rgbToYCoCg( texture2D( tCurrent, vUv - vec2( uTexel.x, 0.0 ) ).rgb );
+
+    vec3 yMin = min( yCenter, min( min( yN, yS ), min( yE, yW ) ) );
+    vec3 yMax = max( yCenter, max( max( yN, yS ), max( yE, yW ) ) );
+
+    // Reprojection: current depth + inverse VP -> world -> previous VP
+    vec4 world = uInvViewProj * vec4( vUv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0 );
+    world /= world.w;
+    vec4 pc = uPrevViewProj * world;
+    vec2 prevUv = ( pc.xy / pc.w ) * 0.5 + 0.5;
+
+    bool off = depth >= 1.0 || pc.w <= 0.0 ||
+      any( lessThan( prevUv, vec2( 0.0 ) ) ) || any( greaterThan( prevUv, vec2( 1.0 ) ) );
+
+    // Sample history
+    vec3 rawHist = texture2D( tHistory, prevUv ).rgb;
+    vec3 yHist = rgbToYCoCg( rawHist );
+
+    // YCoCg AABB line-clipping from history towards center
+    vec3 dir = yCenter - yHist;
+    vec3 t0 = ( yMin - yHist ) / ( dir + vec3( equal( dir, vec3( 0.0 ) ) ) * 1e-6 );
+    vec3 t1 = ( yMax - yHist ) / ( dir + vec3( equal( dir, vec3( 0.0 ) ) ) * 1e-6 );
+    vec3 tNear = min( t0, t1 );
+    float minT = max( 0.0, max( tNear.x, max( tNear.y, tNear.z ) ) );
+    minT = clamp( minT, 0.0, 1.0 );
+    vec3 clippedY = yHist + dir * minT;
+    vec3 histRgb = yCoCgToRgb( clippedY );
+
+    // Motion & responsive gating
+    vec2 motionTexels = abs( vUv - prevUv ) / max( uTexel, vec2( 1e-6 ) );
+    bool motionReject = max( motionTexels.x, motionTexels.y ) > 3.0;
+
+    float k = ( off || motionReject || uSeed > 0.5 ) ? 1.0 : max( uBlendK, uResponsiveMask );
+    vec3 finalColor = mix( histRgb, cCenter, k );
+    gl_FragColor = vec4( finalColor, currentTexel.a );
+  }
+`;
+
+export class TAAPass extends Pass {
+  constructor(camera, options = {}) {
+    super();
+    this.camera = camera;
+    this.enabled = false;
+    this.needsSwap = true;
+    this.blendK = options.blendK ?? TAA_BLEND_K;
+    this.historyTarget1 = new THREE.WebGLRenderTarget(1, 1, {
+      type: THREE.HalfFloatType,
+      depthBuffer: false,
+      stencilBuffer: false,
+    });
+    this.historyTarget1.texture.name = 'TAA.history1';
+    this.historyTarget2 = this.historyTarget1.clone();
+    this.historyTarget2.texture.name = 'TAA.history2';
+    this.sceneDepthTexture = null;
+    this.lastMs = -1e9;
+    this.prevViewProj = new THREE.Matrix4();
+    this.invViewProj = new THREE.Matrix4();
+    this.material = new THREE.ShaderMaterial({
+      name: 'TAAPass.Accumulate',
+      uniforms: {
+        tCurrent: { value: null },
+        tHistory: { value: null },
+        tDepth: { value: null },
+        uInvViewProj: { value: this.invViewProj },
+        uPrevViewProj: { value: this.prevViewProj },
+        uTexel: { value: new THREE.Vector2(1, 1) },
+        uBlendK: { value: this.blendK },
+        uSeed: { value: 1.0 },
+        uResponsiveMask: { value: 0.0 },
+      },
+      vertexShader: CopyShader.vertexShader,
+      fragmentShader: TAA_ACCUMULATE_FRAG,
+      depthTest: false,
+      depthWrite: false,
+      blending: THREE.NoBlending,
+      toneMapped: false,
+    });
+    this.quad = new FullScreenQuad(this.material);
+  }
+
+  setSize(width, height) {
+    const w = Math.max(1, Math.round(width));
+    const h = Math.max(1, Math.round(height));
+    this.historyTarget1.setSize(w, h);
+    this.historyTarget2.setSize(w, h);
+    this.material.uniforms.uTexel.value.set(1 / w, 1 / h);
+    this.lastMs = -1e9;
+  }
+
+  forceConverge() {
+    this.lastMs = -1e9;
+  }
+
+  render(renderer, writeBuffer, readBuffer) {
+    if (!this.enabled) return;
+    const cam = this.camera;
+    this.invViewProj.multiplyMatrices(cam.matrixWorld, cam.projectionMatrixInverse);
+
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const seed = now - this.lastMs > 250;
+    if (seed) {
+      this.prevViewProj.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+    }
+    this.lastMs = now;
+
+    this.material.uniforms.tCurrent.value = readBuffer.texture;
+    this.material.uniforms.tHistory.value = this.historyTarget1.texture;
+    this.material.uniforms.tDepth.value = this.sceneDepthTexture;
+    this.material.uniforms.uSeed.value = seed ? 1.0 : 0.0;
+    this.material.uniforms.uBlendK.value = this.blendK;
+
+    renderer.setRenderTarget(this.historyTarget2);
+    this.quad.render(renderer);
+
+    this.material.uniforms.tCurrent.value = this.historyTarget2.texture;
+    renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
+    this.quad.render(renderer);
+
+    const tmp = this.historyTarget1;
+    this.historyTarget1 = this.historyTarget2;
+    this.historyTarget2 = tmp;
+
+    this.prevViewProj.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+  }
+
+  dispose() {
+    this.historyTarget1.dispose();
+    this.historyTarget2.dispose();
+    this.material.dispose();
+    this.quad.dispose();
+  }
+}
+
 export class SceneAAPass extends RenderPass {
   constructor(scene, camera, target) {
     super(scene, camera);
@@ -1343,6 +1524,10 @@ export class SceneAAPass extends RenderPass {
     this.directResolve = false;
     /** @type {?((depthTexture: THREE.DepthTexture) => void)} */
     this.onSceneRendered = null;
+    this.taaEnabled = false;
+    this.jitterIndex = 0;
+    this.renderWidth = target ? target.width : 1;
+    this.renderHeight = target ? target.height : 1;
     this.copyMaterial = new THREE.ShaderMaterial({
       name: 'SceneAAPass.Copy',
       uniforms: THREE.UniformsUtils.clone(CopyShader.uniforms),
@@ -1359,6 +1544,8 @@ export class SceneAAPass extends RenderPass {
 
   setSize(width, height) {
     this.sceneTarget.setSize(width, height);
+    this.renderWidth = width;
+    this.renderHeight = height;
   }
 
   setSamples(samples) {
@@ -1377,11 +1564,26 @@ export class SceneAAPass extends RenderPass {
       // Layer 30 is transparent combat media and must wait until the opaque
       // scene depth is resolved. It is deliberately absent from this pass.
       this.camera.layers.disable(LATE_FX_LAYER);
+      // TAA sub-pixel jitter: apply Halton (2,3) phase offset to perspective projection
+      const applyJitter = this.taaEnabled && this.camera && this.camera.isPerspectiveCamera;
+      let jx = 0;
+      let jy = 0;
+      if (applyJitter) {
+        jx = jitterPhase(this.jitterIndex);
+        jy = jitterPhaseY(this.jitterIndex);
+        applyCameraJitter(this.camera.projectionMatrix.elements, jx, jy, this.renderWidth, this.renderHeight);
+        this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
+      }
       // WA8: direct mode rasterizes into the composer's own read buffer —
       // the copy below would only re-write identical values.
       renderer.setRenderTarget(this.directResolve ? readBuffer : this.sceneTarget);
       renderer.clear(renderer.autoClearColor, renderer.autoClearDepth, renderer.autoClearStencil);
       renderer.render(this.scene, this.camera);
+      if (applyJitter) {
+        removeCameraJitter(this.camera.projectionMatrix.elements, jx, jy, this.renderWidth, this.renderHeight);
+        this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
+        this.jitterIndex = (this.jitterIndex + 1) % JITTER_PHASE_COUNT;
+      }
 
       if (this.directResolve) {
         // The scene IS the resolved frame; publish its depth for the
@@ -1570,12 +1772,20 @@ export function createPost(renderer, scene, camera) {
   const lateFx = new LateFxPass(scene, camera, sceneTarget, lateTarget, softState);
   sceneDepthRepointers.push((d) => { lateFx.sceneDepthTexture = d; });
   if (softState) sceneDepthRepointers.push((d) => { softState.uSceneDepth.value = d; });
+
+  const taaPass = new TAAPass(camera);
+  sceneDepthRepointers.push((d) => { taaPass.sceneDepthTexture = d; });
+  let taaEnabled = Boolean(preset.taa || (typeof window !== 'undefined' && window.__TAA_ENABLED === true));
+  sceneAA.taaEnabled = taaEnabled;
+  taaPass.enabled = taaEnabled;
+
   const publishAAState = () => {
     renderer.domElement.dataset.sceneMsaaSamples = String(msaaSamples);
-    renderer.domElement.dataset.postAa = 'smaa-high+fsr1';
+    renderer.domElement.dataset.postAa = taaEnabled ? 'taa+smaa-high+fsr1' : 'smaa-high+fsr1';
   };
   publishAAState();
   composer.addPass(sceneAA); // 1. scene raster (+ resolve copy when MSAA > 0)
+  composer.addPass(taaPass); // 1.5. temporal anti-aliasing accumulation (default-OFF)
 
   // 2. depth-driven aerial perspective — one distance curve for every
   // material (see AerialShader above). Runs in linear HDR space, pre-bloom.
@@ -2194,6 +2404,7 @@ export function createPost(renderer, scene, camera) {
     const internalW = Math.max(1, Math.round(w * renderScale));
     const internalH = Math.max(1, Math.round(h * renderScale));
     aerial.uniforms.uInvSize.value.set(1 / internalW, 1 / internalH);
+    taaPass.setSize(internalW, internalH);
     gradeTarget.setSize(internalW, internalH);
     smaaTarget.setSize(internalW, internalH);
     const native = renderer.getDrawingBufferSize(_nativeSize);
@@ -2366,6 +2577,9 @@ export function createPost(renderer, scene, camera) {
     applyAoSampling(preset);
     msaaSamples = samplesForPreset(preset);
     sceneAA.setSamples(msaaSamples);
+    taaEnabled = Boolean(preset.taa || (typeof window !== 'undefined' && window.__TAA_ENABLED === true));
+    sceneAA.taaEnabled = taaEnabled;
+    taaPass.enabled = taaEnabled;
     publishAAState();
     // wa8: a preset crossing the MSAA 0 <-> N boundary flips the scene pass
     // between direct raster and the stock resolve copy.
@@ -2505,8 +2719,25 @@ export function createPost(renderer, scene, camera) {
     // Probe/measurement hooks for paired quality and depth-composite runs.
     upscaler,
     sceneAA,
+    taaPass,
     lateFx,
     aerial,
+
+    /** Active TAA state (default OFF behind feature gate). */
+    get taaEnabled() { return taaEnabled; },
+
+    /** Feature gate setter for TAA experiment. */
+    setTaaEnabled(enabled) {
+      taaEnabled = Boolean(enabled);
+      sceneAA.taaEnabled = taaEnabled;
+      taaPass.enabled = taaEnabled;
+      publishAAState();
+    },
+
+    /** QA hook to force immediate TAA history convergence across captures. */
+    forceConverge() {
+      taaPass.forceConverge();
+    },
 
     /** Scene-only hardware AA. Display-space SMAA + FSR1 follow it. */
     get msaaSamples() { return msaaSamples; },
