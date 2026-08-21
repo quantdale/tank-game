@@ -3632,12 +3632,29 @@ const spotFrame = {
     : true),
   player: null,
 };
+// W15 PERF (wave-2 WA1): getConcealment ran every HUD frame only to feed the
+// already change-gated camo/eye indicator. Re-solve at ~7 Hz (and whenever
+// the focus entity changes — player <-> killcam/spectator observer); between
+// solves spotFrame.player holds the same REUSED snapshot object spotting.js
+// hands out (its sole production caller is this function), so the cache is a
+// pointer hold, not a copy. Spotting TRUTH (isSpotted for minimap/diamonds/
+// AI) stays per-frame live; only this display snapshot can lag <=140 ms.
+const SPOT_CONCEAL_INTERVAL_MS = 140;
+let spotConcealLastMs = -Infinity;
+let spotConcealFocus = null;
 function refreshSpotFrame(focus = game.player) {
   spotFrame.receiver = focus || null;
   if (game.spotting && focus && focus.state) {
-    spotFrame.player = game.spotting.getConcealment(focus, game.timeS);
+    const nowMs = performance.now();
+    if (focus !== spotConcealFocus || nowMs - spotConcealLastMs >= SPOT_CONCEAL_INTERVAL_MS) {
+      spotFrame.player = game.spotting.getConcealment(focus, game.timeS);
+      spotConcealFocus = focus;
+      spotConcealLastMs = nowMs;
+    }
   } else {
     spotFrame.player = null;
+    spotConcealFocus = null;
+    spotConcealLastMs = -Infinity;
   }
   frameInfo.spotting = spotFrame;
 }
@@ -3664,7 +3681,22 @@ function refreshSpotFrame(focus = game.player) {
 //     strobes the warning on honest lays.
 const _mpbA = new THREE.Vector3();
 const _mpbB = new THREE.Vector3();
-function muzzlePathBlockDist(muzzle, aimPoint, dispersionRadM) {
+// W15 PERF (wave-2 WA1): the graze probe is the second worldRaycast of every
+// reticle solve. The live HUD passes _mpbGrazeCache so it re-solves only when
+// the muzzle, aim point or dispersion moved beyond a sub-reticle epsilon, or
+// at a ~30 Hz hard cap while everything sits still; the CENTER ray above
+// stays per-frame (instant red tint). Headless gates (debugAimState /
+// debugAimAtNearest) pass no cache and always recast fresh — their r3
+// contract is that a gate never trusts stale frameInfo geometry.
+const MPB_GRAZE_INTERVAL_MS = 33;
+const MPB_GRAZE_EPS_M = 0.25;
+const MPB_GRAZE_DISP_EPS = 0.05;
+const _mpbGrazeCache = {
+  solvedMs: -Infinity,
+  mx: 0, my: 0, mz: 0, ax: 0, ay: 0, az: 0, disp: -1,
+  dist: null,
+};
+function muzzlePathBlockDist(muzzle, aimPoint, dispersionRadM, grazeCache) {
   _mpbB.copy(aimPoint).sub(muzzle);
   const pathLen = _mpbB.length();
   if (pathLen <= 12) return null;
@@ -3672,6 +3704,20 @@ function muzzlePathBlockDist(muzzle, aimPoint, dispersionRadM) {
   const blk = worldRaycast(muzzle, _mpbB, pathLen - 1.5);
   if (blk) return blk.dist;
   if (dispersionRadM > 0.1) {
+    const c = grazeCache;
+    const nowMs = c ? performance.now() : 0;
+    if (c &&
+        nowMs - c.solvedMs < MPB_GRAZE_INTERVAL_MS &&
+        Math.abs(dispersionRadM - c.disp) <= MPB_GRAZE_DISP_EPS &&
+        Math.abs(muzzle.x - c.mx) <= MPB_GRAZE_EPS_M &&
+        Math.abs(muzzle.y - c.my) <= MPB_GRAZE_EPS_M &&
+        Math.abs(muzzle.z - c.mz) <= MPB_GRAZE_EPS_M &&
+        Math.abs(aimPoint.x - c.ax) <= MPB_GRAZE_EPS_M &&
+        Math.abs(aimPoint.y - c.ay) <= MPB_GRAZE_EPS_M &&
+        Math.abs(aimPoint.z - c.az) <= MPB_GRAZE_EPS_M) {
+      return c.dist;
+    }
+    let dist = null;
     _mpbA.copy(aimPoint);
     // 0.65 of the reticle radius ~= the 1.3-sigma line: flags lays where
     // ~10%+ of the cone dies mid-path (measured residual class: settled
@@ -3683,8 +3729,16 @@ function muzzlePathBlockDist(muzzle, aimPoint, dispersionRadM) {
     if (len2 > 12) {
       _mpbB.multiplyScalar(1 / len2);
       const graze = worldRaycast(muzzle, _mpbB, len2 * 0.85);
-      if (graze) return graze.dist;
+      if (graze) dist = graze.dist;
     }
+    if (c) {
+      c.solvedMs = nowMs;
+      c.mx = muzzle.x; c.my = muzzle.y; c.mz = muzzle.z;
+      c.ax = aimPoint.x; c.ay = aimPoint.y; c.az = aimPoint.z;
+      c.disp = dispersionRadM;
+      c.dist = dist;
+    }
+    return dist;
   }
   return null;
 }
@@ -3701,6 +3755,31 @@ function playerGunCenterRay(p, aimPoint, outOrigin, outDir, outTarget) {
   outTarget.copy(outOrigin).addScaledVector(outDir, rangeM);
   return rangeM;
 }
+
+// W15 PERF (wave-2 WA1): plate-level pen re-query throttle. The enemy loop's
+// queryAimArmor traced every bounding-gated plate stack per render frame even
+// for a settled lay on a parked target. The last solve is reused while
+// (a) <30 Hz since it was stored, (b) the gun-ray origin/direction and shell
+// slot are unchanged within sub-reticle epsilons, and (c) every live enemy's
+// tankPoseFromState inputs (pos/yaw/pitch/roll/turretYaw/gunPitch) sit inside
+// the same epsilons — any real motion or roster change re-solves same-frame.
+// The terrain pen-ray stays per-frame; a crest sliding over the cached plate
+// forces a fresh solve on the occluded frames. `q` is a fresh queryAimArmor
+// result (armor.js clones every hit point) and stays valid until replaced.
+const AIM_ARMOR_INTERVAL_MS = 33;
+const AIM_ARMOR_POS_EPS_M = 0.05;
+const AIM_ARMOR_ANG_EPS_RAD = 0.01; // ~0.57 deg hull/turret/gun rotation
+const AIM_ARMOR_DIR_MIN_DOT = 0.99999; // ~0.26 deg gun-ray swing
+const _aimArmorEnts = []; // reused signature records, grown to the roster once
+const _aimArmorCache = {
+  solvedMs: -Infinity,
+  shellSlot: -1,
+  ox: 0, oy: 0, oz: 0,
+  dx: 0, dy: 0, dz: 0,
+  count: -1,
+  q: null,
+  targetId: null,
+};
 
 function computeAimInfo() {
   const p = game.player;
@@ -3734,7 +3813,8 @@ function computeAimInfo() {
   // obstruction sits short of its requested range.
   // r4: raycast margin 6 m -> 1.5 m + dispersion-cone graze test — see
   // muzzlePathBlockDist. The old margin made hull-down crests invisible.
-  aim.blockedDistM = muzzlePathBlockDist(_rayO, _v2, aim.dispersionRadM);
+  // W15 PERF: the live solve passes the graze cache; headless gates recast.
+  aim.blockedDistM = muzzlePathBlockDist(_rayO, _v2, aim.dispersionRadM, _mpbGrazeCache);
   // gameplay_feel r7 (round critique MAJOR): the "PATH BLOCKED N m" TEXT
   // fired constantly during ordinary cross-country driving — every time
   // server-aim rested on a nearby rise (parked verdant 32 m, desert 10-11 m
@@ -3767,24 +3847,77 @@ function computeAimInfo() {
   let bestDist = gunWorldHit ? gunWorldHit.dist : 800;
   let bestInfo = null;
   let bestTargetId = null;
+  // W15 PERF: signature pass — compare the live enemy set against the cached
+  // solve and refresh the scratch records in one allocation-free sweep.
+  const ac = _aimArmorCache;
+  const armorNowMs = performance.now();
+  let armorCached =
+    armorNowMs - ac.solvedMs < AIM_ARMOR_INTERVAL_MS &&
+    ac.shellSlot === p.combat.shellSlot &&
+    Math.abs(_rayO.x - ac.ox) <= AIM_ARMOR_POS_EPS_M &&
+    Math.abs(_rayO.y - ac.oy) <= AIM_ARMOR_POS_EPS_M &&
+    Math.abs(_rayO.z - ac.oz) <= AIM_ARMOR_POS_EPS_M &&
+    _rayD.x * ac.dx + _rayD.y * ac.dy + _rayD.z * ac.dz >= AIM_ARMOR_DIR_MIN_DOT;
+  let sigN = 0;
   for (const ent of game.tanks) {
     if (ent.isPlayer || ent.team === p.team || !ent.state || !ent.combat || ent.combat.destroyed) continue;
-    _v1.copy(ent.state.pos);
-    _v1.y += ent.spec.dims.heightM * 0.5;
-    _v1.sub(_rayO);
-    const proj = _v1.dot(_rayD);
-    if (proj < 0 || proj > bestDist + ent.spec.armor.boundingRadiusM) continue;
-    const r = ent.spec.armor.boundingRadiusM * AIM_STICKY_INFLATE;
-    if (_v1.lengthSq() - proj * proj > r * r) continue;
-    const q = queryAimArmor(
-      _rayO, _rayD, Math.min(800, bestDist + ent.spec.armor.boundingRadiusM),
-      tankPoseFromState(ent.state, _aimPose), ent.spec.armor,
-    );
-    if (q && q.distM < bestDist) {
-      bestDist = q.distM;
-      bestInfo = q;
-      bestTargetId = ent.id;
+    const rec = _aimArmorEnts[sigN] || (_aimArmorEnts[sigN] = { id: null });
+    const s = ent.state;
+    if (armorCached) {
+      armorCached = rec.id === ent.id &&
+        Math.abs(s.pos.x - rec.x) <= AIM_ARMOR_POS_EPS_M &&
+        Math.abs(s.pos.y - rec.y) <= AIM_ARMOR_POS_EPS_M &&
+        Math.abs(s.pos.z - rec.z) <= AIM_ARMOR_POS_EPS_M &&
+        Math.abs(s.yaw - rec.yaw) <= AIM_ARMOR_ANG_EPS_RAD &&
+        Math.abs(s.visualPitch - rec.pitch) <= AIM_ARMOR_ANG_EPS_RAD &&
+        Math.abs(s.visualRoll - rec.roll) <= AIM_ARMOR_ANG_EPS_RAD &&
+        Math.abs(s.turretYaw - rec.turretYaw) <= AIM_ARMOR_ANG_EPS_RAD &&
+        Math.abs(s.gunPitch - rec.gunPitch) <= AIM_ARMOR_ANG_EPS_RAD;
     }
+    rec.id = ent.id;
+    rec.x = s.pos.x; rec.y = s.pos.y; rec.z = s.pos.z;
+    rec.yaw = s.yaw; rec.pitch = s.visualPitch; rec.roll = s.visualRoll;
+    rec.turretYaw = s.turretYaw; rec.gunPitch = s.gunPitch;
+    sigN++;
+  }
+  if (sigN !== ac.count) armorCached = false;
+  if (armorCached && ac.q && ac.q.distM >= bestDist) {
+    armorCached = false; // this frame's terrain ray now covers the cached plate
+  }
+  if (armorCached) {
+    if (ac.q) {
+      bestInfo = ac.q;
+      bestTargetId = ac.targetId;
+      bestDist = ac.q.distM;
+    }
+  } else {
+    for (const ent of game.tanks) {
+      if (ent.isPlayer || ent.team === p.team || !ent.state || !ent.combat || ent.combat.destroyed) continue;
+      _v1.copy(ent.state.pos);
+      _v1.y += ent.spec.dims.heightM * 0.5;
+      _v1.sub(_rayO);
+      const proj = _v1.dot(_rayD);
+      if (proj < 0 || proj > bestDist + ent.spec.armor.boundingRadiusM) continue;
+      const r = ent.spec.armor.boundingRadiusM * AIM_STICKY_INFLATE;
+      if (_v1.lengthSq() - proj * proj > r * r) continue;
+      const q = queryAimArmor(
+        _rayO, _rayD, Math.min(800, bestDist + ent.spec.armor.boundingRadiusM),
+        tankPoseFromState(ent.state, _aimPose), ent.spec.armor,
+      );
+      if (q && q.distM < bestDist) {
+        bestDist = q.distM;
+        bestInfo = q;
+        bestTargetId = ent.id;
+      }
+    }
+    // store the solve for the epsilon gate above
+    ac.solvedMs = armorNowMs;
+    ac.shellSlot = p.combat.shellSlot;
+    ac.ox = _rayO.x; ac.oy = _rayO.y; ac.oz = _rayO.z;
+    ac.dx = _rayD.x; ac.dy = _rayD.y; ac.dz = _rayD.z;
+    ac.count = sigN;
+    ac.q = bestInfo;
+    ac.targetId = bestTargetId;
   }
   if (bestInfo) {
     aim.gunMarker.copy(bestInfo.point);
@@ -4387,6 +4520,11 @@ function tick(nowMs) {
   if (world && !worldDormant) {
     world.setSniperFade(rig.mode === 'SNIPER' ? 1 : 0, false, camera.fov, rig.aimDist);
   }
+  // W15 PERF (wave-2 WA1): the single per-tick camera forward solve. It runs
+  // AFTER the last camera mover of the frame (rig / killcam / showroom above)
+  // and is reused by world.update below AND by the audio listener in step 8 —
+  // nothing between here and there rotates the camera (world/fx/HUD only read
+  // it), so the old second getWorldDirection re-derived the same matrix.
   camera.getWorldDirection(_fwd);
   let occlFocus = null;
   const cameraFocus = game.player || (networkSpectator ? rig.spectateTargetEnt : null);
@@ -4436,7 +4574,7 @@ function tick(nowMs) {
   }
 
   // 8. audio
-  camera.getWorldDirection(_fwd);
+  // W15 PERF: reuses _fwd from the step-4 solve — see the note there.
   // World audio uses a HYBRID listener, matching vehicle games: azimuth comes
   // from the camera (so looking around still pans correctly), while distance
   // comes from the occupied vehicle. The old camera-position distance made a
@@ -5362,6 +5500,9 @@ async function warmNetworkOpeningEffects() {
   const wn = new THREE.Vector3(0, 1, 0);
   const wd = new THREE.Vector3(0, 0, 1);
   try {
+    // WA2: resolve the W11 atlas decode before the sync fallback bake
+    // (no-op when the garage quiet-idle kick already installed them).
+    await fx.preloadTextures?.();
     if (fx.warmTextures) fx.warmTextures();
     fx.warmOpeningEffects(wp, wd, wn, 120);
     await nextFrame();
