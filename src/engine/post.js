@@ -18,6 +18,12 @@
  * Bloom thresholds against the linear HDR buffer — sun, muzzle flash and fire
  * exceed 1.0 and bloom naturally.
  *
+ * PERF structure: past OutputGradePass the LDR tail runs through reusable
+ * 8-bit display-space targets (grade → SMAA → FSR1) instead of the HalfFloat
+ * composer buffers, SMAA's edge/weight intermediates are 8-bit, and the AO
+ * composition is one fused multiply draw — an equivalent image that moves
+ * fewer full-frame bytes (see the PERF notes at each site).
+ *
  * aa-r1 (owner: "glass and other vegetation is still anti aliasing a lot"):
  * SMAA is an edge-PATTERN filter — it reconstructs geometric silhouettes but
  * deliberately ignores isolated pixels, so the two loudest motion offenders
@@ -46,6 +52,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
 import { getPreset, onPresetChange, reportSustainedOverload } from './quality.js';
 import {
+  aoSampleCount,
   baseDynamicScale,
   dynamicScaleFloor,
   internalPixelRatio,
@@ -520,11 +527,16 @@ const FSR_RCAS_FRAG = /* glsl */ `
     gl_FragColor = vec4( mix( c, sharpColor, uSharpness ), 1.0 );
   }`;
 
-class FsrUpscalePass extends Pass {
+/** FSR 1 spatial upscale (EASU + RCAS), adapted to a Three ShaderMaterial.
+ * Exported for the Node self-test (no GL required to exercise the routing). */
+export class FsrUpscalePass extends Pass {
   constructor() {
     super();
     this.needsSwap = false;
     this.outputSize = new THREE.Vector2(1, 1);
+    // When set, EASU/RCAS read this render target instead of the composer's
+    // ping-pong buffer (the 8-bit SMAA output — see the display-tail block).
+    this.externalSource = null;
     this.intermediate = new THREE.WebGLRenderTarget(1, 1, {
       // EASU runs after output conversion/grade/SMAA, so the input is display-space
       // 0..1. RGBA8 halves native-resolution bandwidth/memory vs half-float
@@ -557,10 +569,11 @@ class FsrUpscalePass extends Pass {
     this.intermediate.setSize(w, h);
   }
   render(renderer, writeBuffer, readBuffer) {
-    const inW = readBuffer.width, inH = readBuffer.height;
+    const srcRT = this.externalSource || readBuffer;
+    const inW = srcRT.width, inH = srcRT.height;
     const outW = this.outputSize.x, outH = this.outputSize.y;
     const upscale = inW !== outW || inH !== outH;
-    let source = readBuffer.texture;
+    let source = srcRT.texture;
     let sourceW = inW, sourceH = inH;
     if (upscale) {
       this.easuMaterial.uniforms.tDiffuse.value = source;
@@ -1506,7 +1519,7 @@ export function createPost(renderer, scene, camera) {
   // inspection profile. This makes contact grounding cheap enough to remain
   // enabled on more 120 Hz frames instead of the governor dropping it whole.
   const applyAoSampling = (p) => {
-    const samples = p.aoScale >= 0.99 ? 16 : 8;
+    const samples = aoSampleCount(p.aoScale);
     gtao.updateGtaoMaterial({ ...GTAO_PARAMS, samples });
     gtao.updatePdMaterial({ ...GTAO_PD_PARAMS, samples });
     renderer.domElement.dataset.aoSamples = String(samples);
@@ -1652,19 +1665,38 @@ export function createPost(renderer, scene, camera) {
     });
     let emaPrev = gtao.pdRenderTarget.clone();
     let emaCur = gtao.pdRenderTarget.clone();
+    // PERF (full-frame copy): stock OUTPUT.Default spends two fullscreen
+    // draws — a CopyShader blit of readBuffer into writeBuffer followed by
+    // the GTAOBlendShader multiply pass over the copy. The pair is exactly
+    // `out.rgb = scene.rgb * mix(vec3(1), ao.rgb, intensity)` (and
+    // `out.a = scene.a * ao.a`), so one NoBlending draw reproduces it
+    // bit-for-bit while dropping a full-res RGBA16F read+write per
+    // AO-enabled frame (~75 MB/frame at the retina High raster).
+    const aoCompositeMaterial = new THREE.ShaderMaterial({
+      name: 'GTAO.FusedComposite',
+      uniforms: {
+        tDiffuse: { value: null },
+        tAO: { value: null },
+        uIntensity: { value: 1 },
+      },
+      vertexShader: CopyShader.vertexShader,
+      fragmentShader: `
+        uniform sampler2D tDiffuse;
+        uniform sampler2D tAO;
+        uniform float uIntensity;
+        varying vec2 vUv;
+        void main() {
+          vec4 base = texture2D( tDiffuse, vUv );
+          vec4 ao = texture2D( tAO, vUv );
+          gl_FragColor = vec4( base.rgb * mix( vec3( 1.0 ), ao.rgb, uIntensity ), base.a * ao.a );
+        }`,
+      depthTest: false,
+      depthWrite: false,
+      blending: THREE.NoBlending,
+      toneMapped: false,
+    });
     let emaLastMs = -1e9; // >250 ms without an AO render → history is stale
     const prevViewProj = emaMat.uniforms.uPrevViewProj.value;
-    const emaLastCameraWorld = new THREE.Matrix4();
-    const emaLastProjection = new THREE.Matrix4();
-    let emaPoseValid = false;
-    const cameraMatrixMoved = (current, previous) => {
-      const a = current.elements;
-      const b = previous.elements;
-      for (let i = 0; i < 16; i++) {
-        if (Math.abs(a[i] - b[i]) > 1e-7) return true;
-      }
-      return false;
-    };
     const origSetSize = gtao.setSize.bind(gtao);
     const syncEmaSize = () => {
       emaPrev.setSize(gtao.pdRenderTarget.width, gtao.pdRenderTarget.height);
@@ -1672,7 +1704,6 @@ export function createPost(renderer, scene, camera) {
       emaMat.uniforms.uTexel.value.set(
         1 / gtao.pdRenderTarget.width, 1 / gtao.pdRenderTarget.height);
       emaLastMs = -1e9; // reseed — old history is the wrong resolution
-      emaPoseValid = false;
     };
     gtao.setSize = (w, h) => {
       const s = preset.aoScale || 1;
@@ -1696,9 +1727,6 @@ export function createPost(renderer, scene, camera) {
         .multiplyMatrices(cam.matrixWorld, cam.projectionMatrixInverse);
       const now = performance.now();
       const seed = now - emaLastMs > 250;
-      const cameraMoved = !emaPoseValid
-        || cameraMatrixMoved(cam.matrixWorld, emaLastCameraWorld)
-        || cameraMatrixMoved(cam.projectionMatrix, emaLastProjection);
       if (seed) {
         prevViewProj.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
       }
@@ -1706,25 +1734,28 @@ export function createPost(renderer, scene, camera) {
       emaMat.uniforms.tNow.value = this.pdRenderTarget.texture;
       emaMat.uniforms.tPrev.value = emaPrev.texture;
       emaMat.uniforms.uSeed.value = seed ? 1 : 0;
-      // Temporal history suppresses half-resolution AO boil while the view is
-      // moving. Once the camera is still, the current AO is deterministic;
-      // resolve it immediately instead of letting old darkness crawl/fade for
-      // several more frames after the player stops looking around.
-      emaMat.uniforms.uBlendK.value = cameraMoved ? AO_TAA_K : 1.0;
+      // ao-boil r4: blend EVERY frame. The r3 "resolve immediately once the
+      // camera is still" fast path assumed a world-static scene, but the wind
+      // hooks displace foliage vertices every frame (vegetation.update does
+      // uWindTime += dt unconditionally), so a parked camera under trees kept
+      // rewriting the shared scene depth and fed RAW half-res boil into the
+      // multiply at k=1.0. With exact world-space reprojection a static
+      // signal needs no fast path: history == current inside the rectification
+      // bound, so mix(hist, now, k) == now after one frame — no crawl, no lag.
+      // Only genuinely NEW occlusion (a hull driving under a canopy) takes
+      // ~1/k frames to darken; at k=0.15 that is ~230 ms of soft edge.
+      emaMat.uniforms.uBlendK.value = AO_TAA_K;
       this._renderPass(renderer2, emaMat, emaCur, 0xffffff, 1.0);
       // this frame's view-projection becomes next frame's reprojection source
       prevViewProj.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
-      emaLastCameraWorld.copy(cam.matrixWorld);
-      emaLastProjection.copy(cam.projectionMatrix);
-      emaPoseValid = true;
-      // Default composition, verbatim from GTAOPass.prototype.render (r185)
-      // with the blend input rerouted to the reprojected history.
-      this.copyMaterial.uniforms.tDiffuse.value = readBuffer.texture;
-      this.copyMaterial.blending = THREE.NoBlending;
-      this._renderPass(renderer2, this.copyMaterial, this.renderToScreen ? null : writeBuffer);
-      this.blendMaterial.uniforms.intensity.value = this.blendIntensity;
-      this.blendMaterial.uniforms.tDiffuse.value = emaCur.texture;
-      this._renderPass(renderer2, this.blendMaterial, this.renderToScreen ? null : writeBuffer);
+      // Default composition, fused from GTAOPass.prototype.render (r185):
+      // the stock copy + multiply-blend pair collapsed into one draw with
+      // identical per-channel math (see aoCompositeMaterial above), fed by
+      // the reprojected history.
+      aoCompositeMaterial.uniforms.tDiffuse.value = readBuffer.texture;
+      aoCompositeMaterial.uniforms.tAO.value = emaCur.texture;
+      aoCompositeMaterial.uniforms.uIntensity.value = this.blendIntensity;
+      this._renderPass(renderer2, aoCompositeMaterial, this.renderToScreen ? null : writeBuffer);
       const t = emaPrev; emaPrev = emaCur; emaCur = t;
     };
     gtao.enabled = preset.aoScale > 0;
@@ -1800,6 +1831,47 @@ export function createPost(renderer, scene, camera) {
   // browser's bilinear blur and the old post-upscale FXAA-style low-pass.
   const upscaler = new FsrUpscalePass();
   composer.addPass(upscaler);
+
+  // PERF (HalfFloat bandwidth): everything after OutputGradePass is final
+  // display-space sRGB in 0..1 — SMAA is designed for exactly that LDR
+  // signal and FSR1 receives it — so routing the tail through the composer's
+  // HalfFloat ping-pong buffers doubled its read/write bandwidth for zero
+  // information. Two reusable 8-bit targets now carry grade → SMAA → FSR:
+  //   gradeTarget: OutputGradePass output (SMAA edge/blend source)
+  //   smaaTarget:  SMAA blend output (FSR EASU/RCAS source)
+  // The wrappers only re-address each pass' documented writeBuffer/readBuffer
+  // arguments; a renderToScreen fallback still bypasses them untouched. The
+  // output canvas is 8-bit, so these values quantized there regardless.
+  const gradeTarget = new THREE.WebGLRenderTarget(size.x, size.y, {
+    type: THREE.UnsignedByteType,
+    depthBuffer: false,
+    stencilBuffer: false,
+  });
+  gradeTarget.texture.name = 'PostTail.grade';
+  const smaaTarget = new THREE.WebGLRenderTarget(size.x, size.y, {
+    type: THREE.UnsignedByteType,
+    depthBuffer: false,
+    stencilBuffer: false,
+  });
+  smaaTarget.texture.name = 'PostTail.smaa';
+  // SMAA's own intermediates are HalfFloat in stock three: the edge buffer
+  // holds binary flags and the weight buffer holds 0..1 blends derived from
+  // the 8-bit area/search textures. Retype both to 8-bit while they are
+  // still untouched 1x1 allocations — one dispose() just redirects the first
+  // GPU allocation and halves both passes' bandwidth.
+  for (const rt of [smaa._edgesRT, smaa._weightsRT]) {
+    rt.texture.type = THREE.UnsignedByteType;
+    rt.dispose();
+  }
+  const origGradeRender = grade.render.bind(grade);
+  grade.render = (renderer2, writeBuffer, readBuffer, deltaTime, maskActive) => {
+    origGradeRender(renderer2, gradeTarget, readBuffer, deltaTime, maskActive);
+  };
+  const origSmaaRender = smaa.render.bind(smaa);
+  smaa.render = (renderer2, writeBuffer, readBuffer, deltaTime, maskActive) => {
+    origSmaaRender(renderer2, smaaTarget, gradeTarget, deltaTime, maskActive);
+  };
+  upscaler.externalSource = smaaTarget;
 
   // --- Quality-aware sizing --------------------------------------------------
   // The composer's pixel ratio is the renderer's, CAPPED by the preset
@@ -1982,10 +2054,13 @@ export function createPost(renderer, scene, camera) {
     // Keep the screen-space helpers in step with both internal/native sizes.
     // The firefly clamp taps the COMPOSER buffer (the aerial pass' own input);
     // FSR is the to-screen pass — the governor may shrink the chain, while
-    // reconstruction always lands on exact native canvas pixels.
-    aerial.uniforms.uInvSize.value.set(
-      1 / Math.max(1, Math.round(w * renderScale)),
-      1 / Math.max(1, Math.round(h * renderScale)));
+    // reconstruction always lands on exact native canvas pixels. The 8-bit
+    // display tail (grade/SMAA outputs) tracks the same internal raster.
+    const internalW = Math.max(1, Math.round(w * renderScale));
+    const internalH = Math.max(1, Math.round(h * renderScale));
+    aerial.uniforms.uInvSize.value.set(1 / internalW, 1 / internalH);
+    gradeTarget.setSize(internalW, internalH);
+    smaaTarget.setSize(internalW, internalH);
     const native = renderer.getDrawingBufferSize(_nativeSize);
     upscaler.setOutputSize(native.x, native.y);
   }

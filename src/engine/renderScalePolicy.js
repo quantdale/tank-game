@@ -44,6 +44,17 @@ export function overloadReliefLever(performanceTrim, maxTrim, dynamicScale, floo
   return 'tier';
 }
 
+/**
+ * Fresh GTAO taps per frame. Presets below full-res AO run temporally
+ * accumulated half-resolution AO (post.js AO_TAA), so eight fresh taps
+ * converge to the same grounding the 16-tap inspection profile gives
+ * full-res Ultra; aoScale >= 0.99 keeps all sixteen.
+ * @param {number} aoScale @returns {number}
+ */
+export function aoSampleCount(aoScale) {
+  return Number(aoScale) >= 0.99 ? 16 : 8;
+}
+
 /** RCAS recovery grows with enlargement, capped before halos become dominant. */
 export function reconstructionSharpness(inputToOutputScale) {
   const scale = Math.min(1, Math.max(0, Number(inputToOutputScale) || 0));

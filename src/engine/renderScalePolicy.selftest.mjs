@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  aoSampleCount,
   baseDynamicScale,
   cappedPixelRatio,
   dynamicScaleFloor,
@@ -65,5 +66,13 @@ assert.ok(Math.abs(reconstructionSharpness(0.75) - 0.28) < 1e-12,
   'High retains the proven 0.28 RCAS recovery at a 75% input ratio');
 assert.equal(reconstructionSharpness(0.5), 0.4,
   'larger Medium/Low reconstructions receive stronger but capped recovery');
+
+assert.equal(aoSampleCount(1), 16,
+  'full-res AO (ultra) keeps the 16-tap inspection profile');
+assert.equal(aoSampleCount(0.99), 16, 'the full-res boundary is inclusive');
+assert.equal(aoSampleCount(0.5), 8,
+  'half-res AO leans on temporal accumulation instead of fresh taps');
+assert.equal(aoSampleCount(0), 8,
+  'disabled AO still reports the accumulation profile (pass is skipped)');
 
 console.log('renderScalePolicy self-test passed');
