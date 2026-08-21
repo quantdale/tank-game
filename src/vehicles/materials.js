@@ -2415,6 +2415,23 @@ function paintCamo(canvas, visual, rng, feats, seed) {
   };
   for (const l of feats.hLines) if (l.weld) weldDash(true, l);
   for (const l of feats.vLines) if (l.weld) weldDash(false, l);
+  // SA-10 hero art ceiling: weld heat-tint — oxide bands (straw → violet →
+  // steel blue) straddle each bead where the arc cooled slowest. Very low
+  // alpha so it reads as metal discoloration under the paint, never as a
+  // painted stripe; honors the same gap plan as the bead stitches.
+  const heatTints = ['196,164,96', '148,104,142', '98,118,170'];
+  const htBand = Math.max(1.5, S / 520);
+  let htK = 0;
+  const heatTint = (horiz, l) => {
+    for (const [a, b] of lineSegs(l)) {
+      const col = heatTints[(htK++) % heatTints.length];
+      ctx.fillStyle = `rgba(${col},${0.05 + rng() * 0.04})`;
+      if (horiz) ctx.fillRect(px(a), px(l.p) - htBand, px(b - a), htBand * 2);
+      else ctx.fillRect(px(l.p) - htBand, px(a), htBand * 2, px(b - a));
+    }
+  };
+  for (const l of feats.hLines) if (l.weld) heatTint(true, l);
+  for (const l of feats.vLines) if (l.weld) heatTint(false, l);
   // bolts along lines: dome highlight + drop shadow
   const bolt = (x, y, r) => {
     ctx.fillStyle = 'rgba(8,8,6,0.5)';
@@ -2686,6 +2703,55 @@ function paintRoughness(canvas, rng, feats, base = 0.84) {
   ctx.fillStyle = 'rgba(235,235,235,0.5)';
   for (const l of feats.hLines) ctx.fillRect(0, px(l.p) - 1, S, Math.max(2, S / 480) + 2);
   for (const l of feats.vLines) ctx.fillRect(px(l.p) - 1, 0, Math.max(2, S / 480) + 2, S);
+  // SA-10 hero art ceiling: welds answer light differently from the field
+  // coat — the burnished bead core reads semi-gloss while the heat-tinted
+  // oxide band flanking it is micro-porous scale (rougher). Same feature plan
+  // and gap plan as the albedo stitches and height beads, so albedo, normal
+  // and roughness agree on where every weld sits.
+  const weldRough = (horiz, l) => {
+    const core = Math.max(2, S / 420);
+    const oxide = Math.max(3, S / 190);
+    const stitch = Math.max(1.5, S / 300);
+    for (const [a, b] of lineSegs(l)) {
+      ctx.fillStyle = 'rgba(244,244,244,0.38)';
+      if (horiz) {
+        ctx.fillRect(px(a), px(l.p) - oxide, px(b - a), oxide);
+        ctx.fillRect(px(a), px(l.p) + core, px(b - a), oxide);
+      } else {
+        ctx.fillRect(px(l.p) - oxide, px(a), oxide, px(b - a));
+        ctx.fillRect(px(l.p) + core, px(a), oxide, px(b - a));
+      }
+      for (let t = a * S; t < b * S; t += S / 160) {
+        if (inGap(l, t / S)) continue;
+        const g = ((0.52 + rng() * 0.14) * 255) | 0;
+        ctx.fillStyle = `rgba(${g},${g},${g},0.75)`;
+        if (horiz) ctx.fillRect(t, px(l.p), stitch, core);
+        else ctx.fillRect(px(l.p), t, core, stitch);
+      }
+    }
+  };
+  for (const l of feats.hLines) if (l.weld) weldRough(true, l);
+  for (const l of feats.vLines) if (l.weld) weldRough(false, l);
+  // SA-10 hero art ceiling: hatch/access rings see hands and tools — the
+  // machined annulus around each bolt circle wears smoother than the field
+  // paint. Short tangential streaks rather than a full ring so the wear
+  // reads as use-polish, never as a painted circle.
+  for (const ring of feats.rings) {
+    const cx = px(ring.x), cy = px(ring.y);
+    const r0 = px(ring.r);
+    for (let k = 0; k < ring.n; k++) {
+      const ang = (k / ring.n) * Math.PI * 2 + rng() * 0.22;
+      const rr = r0 * (1.15 + rng() * 0.55);
+      const g = ((0.5 + rng() * 0.16) * 255) | 0;
+      ctx.fillStyle = `rgba(${g},${g},${g},0.5)`;
+      const len = r0 * (0.9 + rng() * 1.2);
+      ctx.save();
+      ctx.translate(cx + Math.cos(ang) * rr, cy + Math.sin(ang) * rr);
+      ctx.rotate(ang + Math.PI / 2);
+      ctx.fillRect(-len / 2, -Math.max(0.7, S / 1400), len, Math.max(1.4, S / 500));
+      ctx.restore();
+    }
+  }
   // bare-metal chips + scuffs: smooth (dark)
   // camo_spotting r4: floor 0.30 -> 0.42 — with the multiplying hull base the
   // old dips fired sparkle pockets under the garage key.
@@ -4517,7 +4583,9 @@ function supportsShadowHook(engineCtx) {
 export const SURFACE_LIBRARY = Object.freeze({
   rubber: { color: 0x292a28, roughness: 0.96, metalness: 0.0 },
   gearShadow: { color: 0x0b0c0a, roughness: 0.98, metalness: 0.0 },
-  opticGlass: { color: 0x2a3540, roughness: 0.12, metalness: 0.85 },
+  // SA-10 hero art ceiling: coated gun optics — a polished lens answers the
+  // env with tight reflections; 0.12 read as smeared plastic at garage range.
+  opticGlass: { color: 0x2a3540, roughness: 0.07, metalness: 0.85 },
   gunmetal: { color: 0x36342f, roughness: 0.9, metalness: 0.18, envMapIntensity: 0.22 },
   trackSteel: { color: 0x353634, roughness: 0.95, metalness: 0.08, envMapIntensity: 0.08 },
   spareTrackSteel: { color: 0x353634, roughness: 0.94, metalness: 0.08, envMapIntensity: 0.06 },

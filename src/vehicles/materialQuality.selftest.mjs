@@ -27,7 +27,7 @@ class StubCanvas {
         fillStyle: '', strokeStyle: '', lineWidth: 1, lineCap: 'butt', lineJoin: 'miter',
         globalAlpha: 1, globalCompositeOperation: 'source-over', filter: 'none',
         font: '', textAlign: 'left', textBaseline: 'alphabetic',
-        save() {}, restore() {}, translate() {}, setTransform() {},
+        save() {}, restore() {}, translate() {}, rotate() {}, setTransform() {},
         beginPath() {}, closePath() {}, moveTo() {}, lineTo() {}, quadraticCurveTo() {},
         arc() {}, rect() {}, fill() {}, stroke() {},
         fillRect() {}, strokeRect() {}, clearRect() {}, fillText() {}, strokeText() {},
@@ -84,7 +84,8 @@ for (const role of ['rubber', 'gearShadow', 'opticGlass', 'gunmetal', 'trackStee
 }
 assert.deepEqual(SURFACE_LIBRARY.rubber, { color: 0x292a28, roughness: 0.96, metalness: 0.0 });
 assert.deepEqual(SURFACE_LIBRARY.gearShadow, { color: 0x0b0c0a, roughness: 0.98, metalness: 0.0 });
-assert.deepEqual(SURFACE_LIBRARY.opticGlass, { color: 0x2a3540, roughness: 0.12, metalness: 0.85 });
+// SA-10 hero art ceiling: coated gun optics sharpened (roughness 0.12 -> 0.07).
+assert.deepEqual(SURFACE_LIBRARY.opticGlass, { color: 0x2a3540, roughness: 0.07, metalness: 0.85 });
 assert.deepEqual(SURFACE_LIBRARY.gunmetal,
   { color: 0x36342f, roughness: 0.9, metalness: 0.18, envMapIntensity: 0.22 });
 assert.deepEqual(SURFACE_LIBRARY.trackSteel,
