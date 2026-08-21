@@ -10,7 +10,7 @@ const expected = {
   verdant: [3826, 473, 4114],
   desert: [1749, 550, 1255],
   winter: [3647, 527, 2890],
-  urban: [1757, 978, 606],
+  urban: [1759, 980, 606],
   coastal: [2234, 464, 1603],
   autumn: [3747, 477, 3997],
   steppe: [1327, 531, 514],
@@ -22,7 +22,7 @@ const expected = {
   monsoon: [5975, 674, 7754],
   alpine: [4879, 719, 3897],
   caldera: [2962, 844, 1868],
-  foundry: [2155, 587, 1167],
+  foundry: [2157, 589, 1167],
 };
 const stats = dedicatedCollisionManifestStats();
 assert.deepEqual(Object.keys(stats), MAP_IDS, 'manifest order and map registry stay in lockstep');
@@ -39,6 +39,16 @@ for (const [mapId, counts] of Object.entries(expected)) {
     `${mapId} dedicated movement preserves narrow hedgehog beam shapes`);
   assert.ok(hedgehogColliders.every((record) => record.shape2?.kind === 'obb'),
     `${mapId} dedicated shell collision preserves narrow hedgehog beam shapes`);
+  // SA-06: every record must carry its exact footprint shape. A bare AABB
+  // record collides as a full square column — the invisible-force-field class
+  // (the town monument regressed to exactly that and stopped hulls/shells a
+  // metre from its slender shaft).
+  for (const record of mapWorld.getObstacles()) {
+    assert.ok(record.shape2, `${mapId} movement record carries an exact footprint shape`);
+  }
+  for (const record of mapWorld.getColliders()) {
+    assert.ok(record.shape2, `${mapId} shell-collision record carries an exact footprint shape`);
+  }
 }
 
 const world = createDedicatedWorldCollision('verdant');

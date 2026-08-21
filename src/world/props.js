@@ -3222,8 +3222,22 @@ ${snowCap ? `
     scaleUV(tip, 1, 1);
     tip.translate(ox, oy + 4.75, oz);
     buckets.stone.push(tip);
-    obstacles.push({ min: [ox - 1.3, oy, oz - 1.3], max: [ox + 1.3, oy + 5.1, oz + 1.3] });
-    colliders.push({ min: [ox - 1.3, oy, oz - 1.3], max: [ox + 1.3, oy + 5.1, oz + 1.3] });
+    // SA-06: the old single raw AABB collided as one 2.6 m square column all
+    // the way to the 5.1 m tip — air beside the slender 0.72 m shaft stopped
+    // hulls and shells a metre from visible stone (the same square-force-field
+    // class collision.selftest pins for rocks/buildings). Compound OBBs mirror
+    // the stepped silhouette: base slab, mid tier, then shaft+cone tip.
+    for (const tier of [
+      { hw: 1.22, y0: -0.06, y1: 0.46 },
+      { hw: 0.78, y0: 0.40, y1: 1.04 },
+      { hw: 0.44, y0: 0.98, y1: 5.12 },
+    ]) {
+      const rec = setObbShape({
+        min: [ox, oy + tier.y0, oz], max: [ox, oy + tier.y1, oz], kind: 'monument',
+      }, ox, oz, tier.hw + 0.02, tier.hw + 0.02, 0);
+      obstacles.push(rec);
+      colliders.push(cloneCollisionRecord(rec));
+    }
   }
 
   // --- ground-blend decals: dirt/AO ring under buildings + shell craters ---

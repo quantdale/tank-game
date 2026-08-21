@@ -10,15 +10,35 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MAP_IDS } from '../src/world/maps/index.js';
 
 const session = process.argv[2] || 'cot-manifest';
 const outputUrl = new URL('../server/world-collision-manifests.json', import.meta.url);
 
+// Windows: global npm CLIs are .cmd shims that Node refuses to spawn directly
+// (ENOENT by bare name, EINVAL for *.cmd without a shell). Resolve the shim's
+// package directory and spawn its native binary instead. Other platforms keep
+// spawning `agent-browser` from PATH.
+function resolveAgentBrowser() {
+  if (process.platform !== 'win32') return 'agent-browser';
+  const where = execFileSync('where.exe', ['agent-browser'], { encoding: 'utf8' });
+  const shim = where.split(/\r?\n/).map((line) => line.trim())
+    .find((line) => line.toLowerCase().endsWith('.cmd'));
+  if (!shim) throw new Error('agent-browser.cmd not found on PATH');
+  const exe = join(dirname(shim),
+    'node_modules', 'agent-browser', 'bin', 'agent-browser-win32-x64.exe');
+  if (!existsSync(exe)) throw new Error(`agent-browser native binary missing: ${exe}`);
+  return exe;
+}
+
+const AGENT_BROWSER = resolveAgentBrowser();
+
 function evaluate(script) {
-  const raw = execFileSync('agent-browser', [
+  const raw = execFileSync(AGENT_BROWSER, [
     '--session', session,
     '--json',
     'eval',
