@@ -249,6 +249,11 @@ const view = (page) => page.evaluate(() => {
   const c0 = await view(page);
   check(mode, 'ratchet scenario aims close (<50 m)', c0.aimDist < 50,
     `aimDist=${c0.aimDist.toFixed(1)} m, pitch=${deg(c0.camPitch).toFixed(2)} deg`);
+  // Scope cycles below drive the KEYBOARD sniper toggle lane; the desktop
+  // DEFAULT leaves it unbound (shift-freelook migration pins Shift=freeLook,
+  // input.selftest), so bind it like a player would from settings and
+  // restore it once the scope legs are done.
+  await page.evaluate(() => window.__DEBUG.input.setBinding('sniperToggle', 'ShiftLeft'));
   for (let cyc = 0; cyc < 3; cyc++) {
     await page.keyboard.press('ShiftLeft');
     await sleep(350);
@@ -275,6 +280,7 @@ const view = (page) => page.evaluate(() => {
     `pitch ${deg(d0.camPitch).toFixed(2)} -> ${deg(d1.camPitch).toFixed(2)} deg (aim was ${d0.aimDist.toFixed(0)} m)`);
   await page.keyboard.press('ShiftLeft');
   await sleep(350);
+  await page.evaluate(() => window.__DEBUG.input.setBinding('sniperToggle', null));
 
   // --- 3. RMB modes ---------------------------------------------------------
   // hold (default): hold enters sniper, release restores arcade + pitch
