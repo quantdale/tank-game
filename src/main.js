@@ -24,7 +24,7 @@
  */
 import * as THREE from 'three';
 import { createRenderer, onResize } from './engine/renderer.js';
-import { createOffscreenSceneWarmer } from './engine/offscreenWarm.js';
+import { createOffscreenSceneWarmer, compileParticleFamilies } from './engine/offscreenWarm.js';
 import {
   disposeObject3DResources, residentResourceLimits,
 } from './engine/resourceLifetime.js';
@@ -5824,6 +5824,19 @@ function* warmCombatPipelineSteps() {
       // rendered frame after the pools flip visible (program/texture
       // first-use lands in that frame's rAF wait, not in the emit itself).
       warmTrace.stages.fxMuzzleCall = Math.round(performance.now() - _fxT0);
+      // B14 (fx first-use staging): pay every particle pool's GPU program
+      // first-use HERE, inside this hidden warm slice — the pools flip
+      // visible on claim() and renderer.compile() traverses visible objects
+      // only, so without this sweep the next presented frame's rAF wait
+      // absorbed ALL families' links+uploads in one stall (measured
+      // fxMuzzleWait 0.7 s quiet → 21.8 s co-tenant). The sweep forces each
+      // pool visible for compile traversal only, restores visibility/mask
+      // exactly, and presents nothing; programs persist across the toggle.
+      try {
+        const _pc0 = performance.now();
+        compileParticleFamilies(renderer, fx.group, camera, scene);
+        warmTrace.stages.fxPoolCompile = Math.round(performance.now() - _pc0);
+      } catch (_) { /* warm only */ }
       // MOBILE-QA r11 (idle profiler): the volley ran as ONE generator slice
       // (~1.1 s of garage-idle jank — every family's lazy sprite/atlas bake
       // in a single task). Yields between effect families; call order and
@@ -5855,6 +5868,15 @@ function* warmCombatPipelineSteps() {
       fx.propCrush(wp, _v3, 7);
       yield;
       markWarmStage('fxFamilies'); // SA-11: attribute inside 'effects'
+      // B14: families emitted after the muzzle sweep claim their own pools
+      // late (impacts/destruct/props). Re-sweep so any straggler first-use
+      // also lands in this hidden slice instead of a presented frame —
+      // post-first-sweep this is nearly free (program cache hits).
+      try {
+        const _ps0 = performance.now();
+        compileParticleFamilies(renderer, fx.group, camera, scene);
+        warmTrace.stages.fxPoolCompile2 = Math.round(performance.now() - _ps0);
+      } catch (_) { /* warm only */ }
       // perf-r2e: one scar stamp per fielded visual — the impact-decal
       // system bakes its shared scar canvases (heightToNormal/roughness
       // getImageData work) per FAMILY on the first stamp, which used to be
