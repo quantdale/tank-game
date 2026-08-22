@@ -23,6 +23,7 @@ import {
   getMobilePresetChoice,
   getStoredChoice,
   getPreset,
+  reportSustainedOverload,
   resolveAutoTier,
   resolvePresetName,
   setPresetName,
@@ -271,9 +272,11 @@ console.log('--- graphics preset whitelists (stored NAME strings only) ---');
     'auto resolves to a concrete desktop tier');
   seed({ [K_AUTO_TIER]: 'low', [K_AUTO_POLICY]: 'clarity-r2' });
   assert.equal(resolveAutoTier(), 'low');
-  // Stale/missing policy receipt -> on a FRESH session (fresh module
-  // instance — the one-shot policy sweep is per-boot state) the persisted
-  // verdict is discarded and resolution falls back to the boot heuristic.
+  // Stale/missing policy receipt -> the persisted verdict is discarded and
+  // resolution falls back to the boot heuristic. A fresh module instance
+  // proves this from a cold boot; the B6 section below proves it also holds
+  // MID-SESSION on an instance whose reads already ran (per-read receipt
+  // validation, not a one-shot boot sweep).
   seed({});
   const baselineTier = resolveAutoTier(); // heuristic-only baseline
   seed({ [K_AUTO_TIER]: 'medium' });
@@ -327,6 +330,56 @@ console.log('--- graphics preset whitelists (stored NAME strings only) ---');
 }
 
 // ============================================================================
+console.log('--- B6 auto-tier staleness: per-read policy invalidation ---');
+{
+  // Baseline on this stubbed host: no GPU string / deviceMemory / cores, so
+  // heuristicAutoCap() is null and 'auto' resolves to 'high'.
+  seed({});
+  const baseline = resolveAutoTier();
+
+  // THE B6 REGRESSION: a stale-policy verdict written MID-SESSION — after
+  // this module instance has already served reads earlier in this file —
+  // must be discarded on the very next read instead of owning the rest of
+  // the session. The pre-fix sweep ran exactly once per boot
+  // (_autoPolicyHandled), so this exact sequence returned 'low' and kept it.
+  seed({ [K_AUTO_TIER]: 'low', [K_AUTO_POLICY]: 'clarity-r1' });
+  assert.equal(resolveAutoTier(), baseline,
+    'stale-policy verdict is discarded mid-session (same module instance)');
+  assert.equal(store.has(K_AUTO_TIER), false,
+    'stale verdict removed from storage as soon as it is seen');
+  assert.equal(store.get(K_AUTO_POLICY), 'clarity-r2',
+    'policy receipt repaired to the running build version');
+
+  // A MISSING receipt is equally stale (pre-receipt build or partial write).
+  seed({ [K_AUTO_TIER]: 'medium' });
+  assert.equal(resolveAutoTier(), baseline, 'receipt-less verdict discarded too');
+
+  // A verdict carrying the CURRENT receipt is honored: a legit governor
+  // demotion persisted by an earlier session still starts where it settled
+  // (cross-session persistence is the feature; only stale receipts die).
+  seed({ [K_AUTO_TIER]: 'medium', [K_AUTO_POLICY]: 'clarity-r2' });
+  assert.equal(resolveAutoTier(), 'medium', 'current-receipt verdict survives');
+  assert.equal(store.get(K_AUTO_TIER), 'medium', 'and stays in storage');
+
+  // reportSustainedOverload pairs every persisted verdict with the current
+  // receipt, so the governor's own mid-session writes can never read back
+  // as stale on a later read/boot. Desktop choice defaults to 'auto' here.
+  seed({});
+  const before = resolveAutoTier();
+  const stepped = reportSustainedOverload();
+  if (stepped) {
+    const order = ['low', 'medium', 'high'];
+    assert.equal(resolveAutoTier(), order[order.indexOf(before) - 1],
+      'overload step persists one notch below the resolved tier');
+    assert.equal(store.get(K_AUTO_POLICY), 'clarity-r2',
+      'governor write carries the policy receipt (B6 pairing)');
+    assert.equal(store.has(K_AUTO_TIER), true, 'verdict itself is persisted');
+  } else {
+    assert.fail('stub host resolves auto=high; overload step must be available');
+  }
+}
+
+// ============================================================================
 console.log('--- experimental TAA can never arm from stored state ---');
 {
   for (const name of [...PRESET_ORDER, ...MOBILE_PRESET_ORDER]) {
@@ -364,5 +417,5 @@ console.log('--- experimental TAA can never arm from stored state ---');
 
 store.clear();
 console.log('settingsPersistence.selftest: stored-state sanitization, binding stores, '
-  + 'preset whitelists/mobile pinning, reset-to-defaults, and the TAA persistence '
-  + 'gate all passed');
+  + 'preset whitelists/mobile pinning, reset-to-defaults, B6 auto-tier per-read '
+  + 'invalidation, and the TAA persistence gate all passed');

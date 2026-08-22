@@ -22,8 +22,12 @@ import {
 } from './renderScalePolicy.js';
 import {
   getBudgetCoordinator,
+  getPreset,
   onBudgetAdjustment,
+  resolveDeviceTier,
   resolveEffectiveQuality,
+  taaRequested,
+  texSize,
   PRESETS,
 } from './quality.js';
 
@@ -510,6 +514,65 @@ assert.deepEqual(RECOVERY_STAGES, [
       `${name} grass bands keep mid-fade beyond taper`);
     assert.ok(p.terrainStreamBudgetMs >= 0.5, `${name} keeps a workable stream budget`);
     assert.ok(p.shadowFarInstanceBudget >= 512, `${name} keeps a far-instance budget`);
+  }
+}
+
+// --- W2-E PRESET CERT: shipped-ladder facts -----------------------------------
+
+{
+  // SA-12 gate pinned across the whole shipped ladder: TAA is opt-in ONLY via
+  // an exact `taa === true` on a preset object — and no shipped preset defines
+  // the key at all, so persisted state (a whitelist-validated NAME string)
+  // can never flip the pass on. Truthy junk inherited onto a preset object
+  // ('yes', 1) must stay off; strict equality is the contract.
+  for (const [name, p] of Object.entries(PRESETS)) {
+    assert.equal(taaRequested(p), false, `${name} must not request TAA`);
+    assert.equal(p.taa, undefined, `${name} carries no taa key`);
+  }
+  assert.equal(taaRequested({ taa: 'yes' }), false, 'truthy junk string stays off');
+  assert.equal(taaRequested({ taa: 1 }), false, 'truthy junk number stays off');
+  assert.equal(taaRequested({ taa: true }), true, 'positive control: exact true enables TAA');
+
+  // dpr-2 effective internal composer ratios at each tier's NOMINAL dynamic
+  // scale (baseDynamicScale): the ladder the cert probe measures live.
+  const expectedDpr2 = {
+    ultra: 2.0,
+    high: 1.5,
+    medium: 1.0,
+    low: 1.0,
+    mobile: 1.0,
+    'mobile-low': 0.78,
+    'mobile-high': 1.1,
+  };
+  for (const [name, ratio] of Object.entries(expectedDpr2)) {
+    const p = PRESETS[name];
+    const got = internalPixelRatio(2, p, baseDynamicScale(2, p));
+    assert.ok(Math.abs(got - ratio) < 5e-3,
+      `${name} dpr2 internal ratio ${got} must sit at ${ratio}`);
+  }
+
+  // texSize mobile lever: Node has no `window`, but quality.js reads it
+  // lazily inside try/catch — a minimal mock plus ?tier=mobile pins the
+  // mobile device tier (and a tight gl cap through the capability probe).
+  const store = new Map();
+  globalThis.window = {
+    location: new URL('https://cert.local/?tier=mobile'),
+    localStorage: {
+      getItem: (k) => (store.has(k) ? store.get(k) : null),
+      setItem: (k, v) => store.set(k, String(v)),
+      removeItem: (k) => store.delete(k),
+    },
+  };
+  try {
+    resolveDeviceTier({ capabilities: { maxTextureSize: 600 } });
+    const p = getPreset();
+    assert.equal(getPreset().textureScale, 0.5, 'mobile texture lever halves');
+    assert.equal(p.textureCap, 2048, 'mobile texture cap is 2048');
+    assert.equal(texSize(1024), 512, 'mobile halves an authored 1024 albedo');
+    assert.equal(texSize(4096), 600,
+      'texSize clamps to the live gl MAX_TEXTURE_SIZE below the 2048 cap');
+  } finally {
+    delete globalThis.window;
   }
 }
 
