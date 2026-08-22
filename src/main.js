@@ -5477,7 +5477,36 @@ await bootStage('post', async () => {
   const t0 = performance.now();
   try { renderer.compile(scene, camera, scene); } catch (_) { /* first render is fallback */ }
   BOOT_TIMINGS.postCompile = Math.round(performance.now() - t0);
+  // W02 cold-boot: the scene compile above never covers the POST chain's own
+  // fullscreen-quad programs (aerial/GTAO/bloom/grade/SMAA/FSR/copy blits).
+  // They used to first-link serially inside post.render below — the measured
+  // ~18.9 s cold `postFirstRender` storm. Submit them all now (cheap, no link
+  // wait) so the parallel window that follows can link every family at once.
+  try {
+    const submitted = post.submitPrograms(renderer);
+    BOOT_TIMINGS.postSubmit = submitted.submitMs;
+    if (typeof window !== 'undefined') {
+      window.__POST_WARM_STATS = submitted;
+    }
+  } catch (_) { /* first render is fallback */ }
   await nextFrame();
+  // W02 cold-boot: breathe real frames until all programs report linked
+  // (KHR_parallel_shader_compile), then run deferred uniform discovery so
+  // the first composer render pays zero first-use uniform work. Without the
+  // extension this returns immediately and the legacy behavior below is the
+  // byte-identical fallback.
+  try {
+    const settled = await post.settleProgramLinks(renderer, nextFrame);
+    BOOT_TIMINGS.postLinkWait = settled.ms;
+    BOOT_TIMINGS.postLinkParallel = settled.parallel;
+    BOOT_TIMINGS.postLinkDiscovered = settled.discovered;
+    if (typeof window !== 'undefined' && window.__POST_WARM_STATS) {
+      window.__POST_WARM_STATS.linkWaitMs = settled.ms;
+      window.__POST_WARM_STATS.linkParallel = settled.parallel;
+      window.__POST_WARM_STATS.programsBeforeFirstRender =
+        (renderer.info.programs || []).length;
+    }
+  } catch (_) { /* first render is fallback */ }
   // SA-11 attribution marks: at ff4708af this stage read ~27 s on the Windows
   // cert host while postCompile was only ~0.14 s — split the remainder so
   // __BOOT_TIMINGS names whether the cascade pre-render or the first composer
@@ -5488,6 +5517,16 @@ await bootStage('post', async () => {
   const tFirstRender = performance.now();
   post.render(SIM_DT);
   BOOT_TIMINGS.postFirstRender = Math.round(performance.now() - tFirstRender);
+  // W02 cold-boot: prove the claim — the first composer render must now find
+  // ZERO unlinked/new post-chain programs (they were submitted and linked in
+  // the windows above). A nonzero delta means a family escaped the inventory.
+  try {
+    if (typeof window !== 'undefined' && window.__POST_WARM_STATS) {
+      window.__POST_WARM_STATS.firstRenderNewPrograms = Math.max(0,
+        (renderer.info.programs || []).length
+        - (window.__POST_WARM_STATS.programsBeforeFirstRender || 0));
+    }
+  } catch (_) { /* telemetry only */ }
   // W2-B: that first render only links passes that DREW on it. LateFx.Copy
   // (skips while soft FX are idle), FSR1.EASU (skips at 1:1 raster) and
   // SceneAA.Copy (MSAA-only resolve path) would otherwise first-link on a
