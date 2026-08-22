@@ -80,8 +80,10 @@ export function mountGitHubStars(root = document) {
     return Promise.resolve(cached.count);
   }
 
-  if (!activeRequest) {
-    activeRequest = fetchGitHubStars().finally(() => { activeRequest = null; });
-  }
+  // One GitHub request per page load, success or failure: a failed attempt
+  // (rate-limit 403, offline) must not re-fire on later mounts — boot screen
+  // and garage both mount star nodes, and retrying doubled the doomed
+  // requests into the paired 403s seen in every capture (campaign W2-D/B5).
+  if (!activeRequest) activeRequest = fetchGitHubStars();
   return activeRequest;
 }
