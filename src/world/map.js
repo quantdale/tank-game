@@ -321,6 +321,9 @@ function assembleWorld(engineCtx, config, heightField, terrain, vegetation, prop
      */
     cells,
     ambientFx,
+    // WA2 preset certification: live grass density bands (preset-resolved at
+    // vegetation build; read-only probe seam like vegetation._telemetry).
+    vegTelemetry: () => (vegetation._telemetry ? vegetation._telemetry() : null),
     group,
   };
 }

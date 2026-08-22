@@ -360,7 +360,6 @@ const LS_AUTO_POLICY = 'cot.gfxAutoTierPolicy';
 const AUTO_POLICY_VERSION = 'clarity-r2';
 const AUTO_ORDER = ['low', 'medium', 'high']; // ultra stays explicit opt-in
 let _gpuRendererString = '';
-let _autoPolicyHandled = false;
 
 /** Record the unmasked GL renderer string (createRenderer calls this once). */
 export function noteGpuRenderer(str) {
@@ -405,26 +404,34 @@ function heuristicAutoCap() {
   return null;
 }
 
-/** The persisted governor demotion ('medium'|'low'), if any. ?gfxreset clears. */
+/**
+ * The persisted governor demotion ('medium'|'low'), if any. ?gfxreset clears.
+ *
+ * B6 (campaign 2026-08-22): the policy receipt is validated on EVERY read,
+ * not once per boot. The old `_autoPolicyHandled` gate spent the whole
+ * discard sweep on the first boot-time call, so any verdict that reached
+ * storage afterwards WITHOUT carrying the current receipt — a second tab
+ * still running the previous build across a deploy, a restored or partial
+ * write — owned the rest of the session and could only be cleared by
+ * rebooting. Legit governor writes pair their verdict with the receipt
+ * (reportSustainedOverload), so they pass this gate unchanged and the
+ * intended cross-session persistence ("the next session starts where this
+ * one settled") keeps working.
+ */
 function storedAutoTier() {
   try {
     if (new URLSearchParams(window.location.search).has('gfxreset')) {
       window.localStorage.removeItem(LS_AUTO_TIER);
       window.localStorage.setItem(LS_AUTO_POLICY, AUTO_POLICY_VERSION);
-      _autoPolicyHandled = true;
       return null;
     }
   } catch (_) { /* headless */ }
   try {
-    // clarity-r2 fixes loading-screen frames being mistaken for gameplay.
-    // Discard one stale verdict written by the old policy so an affected
-    // player is not left permanently blurry even after installing the fix.
-    if (!_autoPolicyHandled) {
-      _autoPolicyHandled = true;
-      if (window.localStorage.getItem(LS_AUTO_POLICY) !== AUTO_POLICY_VERSION) {
-        window.localStorage.removeItem(LS_AUTO_TIER);
-        window.localStorage.setItem(LS_AUTO_POLICY, AUTO_POLICY_VERSION);
-      }
+    // clarity-r2 fixed loading-screen frames being mistaken for gameplay; a
+    // receipt mismatch means the verdict predates the running tier policy.
+    if (window.localStorage.getItem(LS_AUTO_POLICY) !== AUTO_POLICY_VERSION) {
+      window.localStorage.removeItem(LS_AUTO_TIER);
+      window.localStorage.setItem(LS_AUTO_POLICY, AUTO_POLICY_VERSION);
     }
     const v = window.localStorage.getItem(LS_AUTO_TIER);
     return AUTO_ORDER.includes(v) ? v : null;
@@ -457,7 +464,12 @@ export function reportSustainedOverload() {
   const i = AUTO_ORDER.indexOf(cur);
   if (i <= 0) return false;
   const next = AUTO_ORDER[i - 1];
-  try { window.localStorage.setItem(LS_AUTO_TIER, next); } catch (_) { /* ok */ }
+  try {
+    // B6: pair the verdict with the current policy receipt so this write can
+    // never read back as stale (storedAutoTier validates the pair per read).
+    window.localStorage.setItem(LS_AUTO_TIER, next);
+    window.localStorage.setItem(LS_AUTO_POLICY, AUTO_POLICY_VERSION);
+  } catch (_) { /* ok */ }
   try {
     console.info(`[quality] sustained overload at '${cur}' with no headroom — auto tier now '${next}' (pick a preset in Settings to override; ?gfxreset clears)`);
   } catch (_) { /* ok */ }
