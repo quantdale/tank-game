@@ -50,10 +50,17 @@
 // Usage:
 //   node tools/sniper-scope-probe.mjs [--headless] [--vehicle=m1a2]
 //        [--map=verdant] [--out=.qa-dev/sniper-scope/report.json]
-import { createServer } from 'vite';
-import puppeteer from 'puppeteer';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+//   --fov-stale: standalone W09-C leg — counts far-cascade stale-shadow frames
+//        across the sniper FOV lerp (writes its receipts to --out and exits
+//        before the lock/ladder legs).
+import { createServer } from "vite";
+import puppeteer from "puppeteer";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { createHash } from "node:crypto";
+
+/** Controlled early-finish sentinel for single-leg modes (--fov-stale). */
+class ProbeDone extends Error {}
 
 const arg = (name, fallback) => {
   const prefix = `--${name}=`;
@@ -64,10 +71,10 @@ const arg = (name, fallback) => {
   return fallback;
 };
 const hasFlag = (name) => process.argv.includes(`--${name}`);
-const HEADLESS = hasFlag('headless');
-const VEHICLE = arg('vehicle', 'm1a2');
-const MAP = arg('map', 'verdant');
-const OUT = resolve(arg('out', '.qa-dev/sniper-scope/report.json'));
+const HEADLESS = hasFlag("headless");
+const VEHICLE = arg("vehicle", "m1a2");
+const MAP = arg("map", "verdant");
+const OUT = resolve(arg("out", ".qa-dev/sniper-scope/report.json"));
 mkdirSync(dirname(OUT), { recursive: true });
 const SHOT_DIR = resolve(dirname(OUT));
 
@@ -77,13 +84,13 @@ const ENVIRONMENTAL_CONSOLE_RE = /ERR_CONNECTION_TIMED_OUT|net::ERR_|favicon/i;
 
 const failures = [];
 let checks = 0;
-function check(stage, name, cond, detail = '') {
+function check(stage, name, cond, detail = "") {
   checks++;
   const tag = `[${stage}] ${name}`;
-  if (cond) console.log(`  PASS ${tag}${detail ? ` (${detail})` : ''}`);
+  if (cond) console.log(`  PASS ${tag}${detail ? ` (${detail})` : ""}`);
   else {
-    failures.push(`${tag}${detail ? ` — ${detail}` : ''}`);
-    console.error(`  FAIL ${tag}${detail ? ` (${detail})` : ''}`);
+    failures.push(`${tag}${detail ? ` — ${detail}` : ""}`);
+    console.error(`  FAIL ${tag}${detail ? ` (${detail})` : ""}`);
   }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -97,7 +104,7 @@ const evidence = {
   path: null, // 'pointer-lock' | 'debug-fallback'
   lock: { attemptedClicks: 0, engaged: false },
   ladder: {}, // wheel leg receipts
-  scope: {},  // pixel-metric receipts
+  scope: {}, // pixel-metric receipts
   fps: null,
   screenshots: [],
   consoleErrorsAll: [],
@@ -110,12 +117,12 @@ try {
   // OWN server (campaign doc issue #5): never trust a pre-existing dev server.
   server = await createServer({
     root: process.cwd(),
-    logLevel: 'error',
+    logLevel: "error",
     server: {
       port: 5450 + Math.floor(Math.random() * 150), // W2-C band 5450-5599
       strictPort: false,
       hmr: false,
-      watch: { ignored: ['**/*'] },
+      watch: { ignored: ["**/*"] },
     },
   });
   await server.listen();
@@ -125,25 +132,25 @@ try {
     headless: HEADLESS,
     protocolTimeout: 420000,
     args: [
-      '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding',
-      '--disable-background-timer-throttling',
-      '--disable-features=CalculateNativeWinOcclusion',
-      '--window-position=40,40',
-      '--window-size=1380,860',
-      '--no-first-run',
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
+      "--disable-background-timer-throttling",
+      "--disable-features=CalculateNativeWinOcclusion",
+      "--window-position=40,40",
+      "--window-size=1380,860",
+      "--no-first-run",
     ],
   });
   const page = await browser.newPage();
   await page.setViewport({ width: 1365, height: 768, deviceScaleFactor: 1 });
-  page.on('console', (m) => {
-    if (m.type() === 'error') {
+  page.on("console", (m) => {
+    if (m.type() === "error") {
       const t = m.text().slice(0, 400);
       consoleErrors.push(t);
       if (!ENVIRONMENTAL_CONSOLE_RE.test(t)) evidence.consoleErrorsAll.push(t);
     }
   });
-  page.on('pageerror', (e) => {
+  page.on("pageerror", (e) => {
     const t = String(e).slice(0, 400);
     pageErrors.push(t);
     evidence.pageErrorsAll.push(t);
@@ -158,48 +165,242 @@ try {
   let t0 = Date.now();
   for (let attempt = 0; ; attempt++) {
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
-      await page.waitForFunction('window.__GAME_READY === true', { timeout: 420000, polling: 250 });
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
+      await page.waitForFunction("window.__GAME_READY === true", {
+        timeout: 420000,
+        polling: 250,
+      });
       break;
     } catch (err) {
       if (attempt >= 1) throw err;
-      console.warn(`[sniper-scope-probe] boot attempt failed (${String(err).slice(0, 120)}) — reloading`);
+      console.warn(
+        `[sniper-scope-probe] boot attempt failed (${String(err).slice(0, 120)}) — reloading`,
+      );
       pageErrors.length = 0;
       evidence.consoleErrorsAll.length = 0;
     }
   }
-  check('boot', '__GAME_READY sets', true, `${Date.now() - t0}ms`);
-  check('boot', "phase === 'garage'",
-    (await page.evaluate(() => window.__DEBUG?.game?.phase)) === 'garage');
+  check("boot", "__GAME_READY sets", true, `${Date.now() - t0}ms`);
+  check(
+    "boot",
+    "phase === 'garage'",
+    (await page.evaluate(() => window.__DEBUG?.game?.phase)) === "garage",
+  );
 
   // ---- solo battle entry (real loading path) ------------------------------
   await page.evaluate((v, m) => window.__DEBUG.selectGarageTank(v), VEHICLE);
   t0 = Date.now();
-  await page.evaluate(async (v, m) => {
-    await window.__DEBUG.beginSoloBattle({ specId: v, mapId: m });
-  }, VEHICLE, MAP);
+  await page.evaluate(
+    async (v, m) => {
+      await window.__DEBUG.beginSoloBattle({ specId: v, mapId: m });
+    },
+    VEHICLE,
+    MAP,
+  );
   await page.waitForFunction(
     'window.__DEBUG.game.phase === "battle" && window.__DEBUG.game.preBattleS <= 0',
     { timeout: 420000, polling: 500 },
   );
-  check('entry', 'battle open + countdown drained', true, `${Date.now() - t0}ms`);
+  check(
+    "entry",
+    "battle open + countdown drained",
+    true,
+    `${Date.now() - t0}ms`,
+  );
   // opening flyby owns the camera ~3 s; wait it out (input would skip it)
-  await page.waitForFunction('window.__DEBUG.rig.cinematicActive === false', {
-    timeout: 30000, polling: 250,
+  await page.waitForFunction("window.__DEBUG.rig.cinematicActive === false", {
+    timeout: 30000,
+    polling: 250,
   });
   await sleep(600);
+
+  // ---- W09-C: FOV-transition far-cascade staleness leg (--fov-stale) -------
+  // Regression receipt for lighting.updateFov() now forcing the rate-capped
+  // far cascades (W09a dossier item C): during a scope-entry FOV lerp the CSM
+  // ortho boxes move every frame; without the force, the far-pair shadow maps
+  // lag >=1 refresh cadence, so a STATIC far region keeps changing AFTER the
+  // fov settles. Metric: consecutive clipped-screenshot digest changes in the
+  // post-settle window (entry AND exit), vs an arcade static-baseline check.
+  if (hasFlag("fov-stale")) {
+    const vp2 = page.viewport();
+    const clip = {
+      x: Math.round(vp2.width * 0.54),
+      y: Math.round(vp2.height * 0.34),
+      width: Math.round(vp2.width * 0.38),
+      height: Math.round(vp2.height * 0.32),
+    };
+    const digestClip = async () =>
+      createHash("sha1")
+        .update(await page.screenshot({ clip, type: "png" }))
+        .digest("hex");
+    const snapFov = () => page.evaluate(() => window.__DEBUG.camera.fov);
+
+    await page.evaluate(() =>
+      window.__DEBUG.input.setBinding("sniperToggle", "ShiftLeft"),
+    );
+    const shiftTap = async () => {
+      await page.keyboard.down("ShiftLeft");
+      await sleep(90);
+      await page.keyboard.up("ShiftLeft");
+    };
+    try {
+      await page.waitForFunction('window.__DEBUG.rig.mode === "ARCADE"', {
+        timeout: 4000,
+        polling: 120,
+      });
+    } catch (_) {
+      /* already arcade */
+    }
+
+    // Arcade static baseline: an UNSTABLE region (sway/animation) invalidates
+    // absolute churn counts, so record it honestly.
+    const baseDigests = [];
+    for (let i = 0; i < 4; i++) {
+      baseDigests.push(await digestClip());
+      await sleep(400);
+    }
+    const baselineStable = new Set(baseDigests).size === 1;
+
+    /** Interleave clipped digests with fov samples across a mode toggle. */
+    const runTransition = async (dir) => {
+      const shots = [];
+      const fovSeries = [];
+      const t0 = Date.now();
+      const stopAt = t0 + 4200;
+      let tapped = false;
+      while (Date.now() < stopAt) {
+        const t = Date.now() - t0;
+        if (!tapped && t >= 200) {
+          await shiftTap();
+          tapped = true;
+        }
+        fovSeries.push({ t, fov: await snapFov() });
+        shots.push({ t, digest: await digestClip() });
+        await sleep(110);
+      }
+      // settle = last fov sample time where the value moved >0.05 afterwards
+      const f0 = fovSeries[0]?.fov ?? 60;
+      const fLast = fovSeries[fovSeries.length - 1]?.fov ?? f0;
+      let settleT = tapped ? (fovSeries[fovSeries.length - 1]?.t ?? 0) : 0;
+      for (let i = 0; i < fovSeries.length; i++) {
+        const rest = fovSeries.slice(i + 1);
+        const quiet =
+          rest.length > 2 && rest.every((s) => Math.abs(s.fov - fLast) < 0.05);
+        if (quiet) {
+          settleT = fovSeries[i].t;
+          break;
+        }
+      }
+      let stale = 0;
+      let transit = 0;
+      for (let i = 1; i < shots.length; i++) {
+        if (shots[i].digest === shots[i - 1].digest) continue;
+        if (shots[i].t >= settleT + 150 && shots[i - 1].t >= settleT) stale++;
+        else transit++;
+      }
+      return {
+        dir,
+        fovFrom: +f0.toFixed(2),
+        fovTo: +fLast.toFixed(2),
+        settleMsAfterTap: settleT,
+        samples: shots.length,
+        transitionDigestChanges: transit,
+        staleDigestChangesAfterSettle: stale,
+      };
+    };
+
+    evidence.fovStale = {
+      clip,
+      baselineDigests: baseDigests,
+      baselineStable,
+      fix: "lighting.updateFov -> forceRateCappedCascades (W09-C)",
+      transitions: [],
+    };
+    evidence.fovStale.transitions.push(await runTransition("entry")); // ARCADE->SNIPER x2
+    await sleep(500);
+    evidence.fovStale.transitions.push(await runTransition("exit")); // SNIPER->ARCADE
+    await page.evaluate(() =>
+      window.__DEBUG.input.setBinding("sniperToggle", null),
+    );
+
+    const [entry, exit] = evidence.fovStale.transitions;
+    if (!baselineStable) {
+      check(
+        "fov-stale",
+        "arcade far-region static baseline",
+        false,
+        "region animates independently of shadows — counts are advisory only",
+      );
+    } else {
+      check("fov-stale", "arcade far-region static baseline", true);
+    }
+    check(
+      "fov-stale",
+      "entry lerp moved fov (transition captured)",
+      Math.abs(entry.fovTo - entry.fovFrom) > 5,
+      `${entry.fovFrom} -> ${entry.fovTo}`,
+    );
+    check(
+      "fov-stale",
+      "region shadow-sensitive (changes during lerp)",
+      entry.transitionDigestChanges > 0,
+      `transit=${entry.transitionDigestChanges}`,
+    );
+    check(
+      "fov-stale",
+      "NO far-shadow churn after entry settle (W09-C fix)",
+      entry.staleDigestChangesAfterSettle === 0,
+      `stale=${entry.staleDigestChangesAfterSettle}`,
+    );
+    check(
+      "fov-stale",
+      "NO far-shadow churn after exit settle (W09-C fix)",
+      exit.staleDigestChangesAfterSettle === 0,
+      `stale=${exit.staleDigestChangesAfterSettle}`,
+    );
+
+    const fsOut = resolve(arg("out", ".qa-dev/sniper-scope/report.json"));
+    try {
+      writeFileSync(
+        fsOut,
+        JSON.stringify(
+          {
+            mode: "fov-stale",
+            startedAtIso: evidence.startedAtIso,
+            headless: HEADLESS,
+            vehicle: VEHICLE,
+            map: MAP,
+            hostNote:
+              "digest-metric (not fps): co-tenant load affects cadence, not validity",
+            ...evidence.fovStale,
+            checks,
+            failures,
+          },
+          null,
+          2,
+        ),
+      );
+    } catch (_) {}
+    console.log(
+      `[sniper-scope-probe] fov-stale leg complete — receipts: ${fsOut}`,
+    );
+    throw new ProbeDone("fov-stale leg done");
+  }
 
   // ---- pointer lock --------------------------------------------------------
   // The battle-start bus arms input.requestLock() itself; give it a moment,
   // then grab the lock through a trusted CDP canvas click (main.js mousedown
   // -> requestLock), like a player's post-entry click.
   try {
-    await page.waitForFunction('window.__DEBUG.input.isLocked() === true', {
-      timeout: 4000, polling: 100,
+    await page.waitForFunction("window.__DEBUG.input.isLocked() === true", {
+      timeout: 4000,
+      polling: 100,
     });
     evidence.lock.engaged = true;
     evidence.lock.autoEngaged = true;
-  } catch (_) { /* fall through to the click gesture */ }
+  } catch (_) {
+    /* fall through to the click gesture */
+  }
   const vp = page.viewport();
   const cx = Math.round(vp.width / 2);
   const cy = Math.round(vp.height * 0.55);
@@ -210,49 +411,69 @@ try {
     evidence.lock.attemptedClicks++;
     await page.mouse.click(cx, cy);
     try {
-      await page.waitForFunction('window.__DEBUG.input.isLocked() === true', {
-        timeout: 2600, polling: 100,
+      await page.waitForFunction("window.__DEBUG.input.isLocked() === true", {
+        timeout: 2600,
+        polling: 100,
       });
       evidence.lock.engaged = true;
-    } catch (_) { /* next attempt */ }
+    } catch (_) {
+      /* next attempt */
+    }
   }
   if (!evidence.lock.engaged) {
     // Arm the DURABLE denial latch deliberately (3 consecutive denials ->
     // lockDenied -> cursor-aim/fallback gates open, incl. onWheel's
     // lockDenied && target===canvas notch path). Public input seam only.
-    await page.evaluate(async () => {
-      const inp = window.__DEBUG.input;
-      for (let i = 0; i < 4 && !inp.isLocked(); i++) {
-        try { inp.requestLock(); } catch (_) {}
-        await new Promise((r) => setTimeout(r, 350));
-      }
-    }).catch(() => {});
+    await page
+      .evaluate(async () => {
+        const inp = window.__DEBUG.input;
+        for (let i = 0; i < 4 && !inp.isLocked(); i++) {
+          try {
+            inp.requestLock();
+          } catch (_) {}
+          await new Promise((r) => setTimeout(r, 350));
+        }
+      })
+      .catch(() => {});
     await sleep(500);
-    evidence.lock.latchArmed = await page.evaluate(() => window.__DEBUG.input.isCursorAim());
+    evidence.lock.latchArmed = await page.evaluate(() =>
+      window.__DEBUG.input.isCursorAim(),
+    );
   }
   const lockState = await page.evaluate(() => ({
     locked: window.__DEBUG.input.isLocked(),
     cursorAim: window.__DEBUG.input.isCursorAim(),
-    toast: !!document.querySelector('.cot-lock-toast'),
+    toast: !!document.querySelector(".cot-lock-toast"),
   }));
-  evidence.path = evidence.lock.engaged ? 'pointer-lock' : 'debug-fallback';
-  check('lock', 'pointer lock engaged (primary path)',
+  evidence.path = evidence.lock.engaged ? "pointer-lock" : "debug-fallback";
+  check(
+    "lock",
+    "pointer lock engaged (primary path)",
     evidence.lock.engaged && lockState.locked && !lockState.cursorAim,
-    `clicks=${evidence.lock.attemptedClicks} locked=${lockState.locked} cursorAim=${lockState.cursorAim}`);
+    `clicks=${evidence.lock.attemptedClicks} locked=${lockState.locked} cursorAim=${lockState.cursorAim}`,
+  );
 
   /** Wheel-in/out notches: trusted CDP mouseWheel with EXPLICIT deltas
    *  (object form — see delivery note above), else synthetic-on-canvas. */
-  const wheelIn = () => cdpWheelDelivered
-    ? page.mouse.wheel({ deltaX: 0, deltaY: -120 })
-    : syntheticWheelIn();
+  const wheelIn = () =>
+    cdpWheelDelivered
+      ? page.mouse.wheel({ deltaX: 0, deltaY: -120 })
+      : syntheticWheelIn();
   const wheelOut = async () => {
     if (cdpWheelDelivered) await page.mouse.wheel({ deltaX: 0, deltaY: 120 });
-    else await page.evaluate(() => {
-      const cv = document.querySelector('#app canvas') || document.querySelector('canvas');
-      cv.dispatchEvent(new WheelEvent('wheel', {
-        deltaY: 120, bubbles: true, cancelable: true,
-      }));
-    });
+    else
+      await page.evaluate(() => {
+        const cv =
+          document.querySelector("#app canvas") ||
+          document.querySelector("canvas");
+        cv.dispatchEvent(
+          new WheelEvent("wheel", {
+            deltaY: 120,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
   };
 
   /** Poll a rig predicate with generous wall-clock (fixed-step sim + rAF). */
@@ -260,33 +481,45 @@ try {
     try {
       await page.waitForFunction(expr, { timeout: timeoutMs, polling: 120 });
       return true;
-    } catch (_) { return false; }
+    } catch (_) {
+      return false;
+    }
   };
-  const rigSnap = () => page.evaluate(() => ({
-    mode: window.__DEBUG.rig.mode,
-    zoom: window.__DEBUG.rig.zoom,
-    fov: window.__DEBUG.camera.fov,
-    hudMode: window.__DEBUG.frameInfo.mode,
-  }));
+  const rigSnap = () =>
+    page.evaluate(() => ({
+      mode: window.__DEBUG.rig.mode,
+      zoom: window.__DEBUG.rig.zoom,
+      fov: window.__DEBUG.camera.fov,
+      hudMode: window.__DEBUG.frameInfo.mode,
+    }));
 
   // ---- in-page scope sampler ----------------------------------------------
   // Reads the .cot-ret 2D buffer directly (see header: the WebGL scene never
   // bakes into it), aggregating small regions so no bulk pixels cross CDP.
   await page.evaluate(() => {
     window.__SCOPE_SAMPLE = () => {
-      const cv = document.querySelector('.cot-ret');
+      const cv = document.querySelector(".cot-ret");
       if (!cv) return null;
-      const w = cv.width, h = cv.height;
-      const ctx = cv.getContext('2d');
+      const w = cv.width,
+        h = cv.height;
+      const ctx = cv.getContext("2d");
       const box = (x0, y0, x1, y1) => {
-        x0 = Math.max(0, Math.round(x0)); y0 = Math.max(0, Math.round(y0));
-        x1 = Math.min(w, Math.round(x1)); y1 = Math.min(h, Math.round(y1));
-        const bw = Math.max(1, x1 - x0), bh = Math.max(1, y1 - y0);
+        x0 = Math.max(0, Math.round(x0));
+        y0 = Math.max(0, Math.round(y0));
+        x1 = Math.min(w, Math.round(x1));
+        y1 = Math.min(h, Math.round(y1));
+        const bw = Math.max(1, x1 - x0),
+          bh = Math.max(1, y1 - y0);
         const d = ctx.getImageData(x0, y0, bw, bh).data;
-        let alphaSum = 0, green = 0, px = bw * bh;
+        let alphaSum = 0,
+          green = 0,
+          px = bw * bh;
         let fnv = 0x811c9dc5;
         for (let i = 0; i < d.length; i += 4) {
-          const a = d[i + 3], r = d[i], g = d[i + 1], b = d[i + 2];
+          const a = d[i + 3],
+            r = d[i],
+            g = d[i + 1],
+            b = d[i + 2];
           alphaSum += a;
           // green sight family (SNIPER_COL/arms/ticks/zoom plate): g dominant
           if (a > 60 && g > 110 && g > r + 18 && g > b + 18) green++;
@@ -295,9 +528,13 @@ try {
         }
         return { alphaAvg: +(alphaSum / px / 255).toFixed(4), green, fnv };
       };
-      const cxb = w / 2, cyb = h / 2, ARM = 170, SKIP = 12;
+      const cxb = w / 2,
+        cyb = h / 2,
+        ARM = 170,
+        SKIP = 12;
       return {
-        w, h,
+        w,
+        h,
         cornerTL: box(0, 0, 36, 36),
         cornerTR: box(w - 36, 0, w, 36),
         cornerBL: box(0, h - 36, 36, h),
@@ -313,15 +550,23 @@ try {
   });
   const sampleScope = () => page.evaluate(() => window.__SCOPE_SAMPLE());
   const cornersAvg = (s) =>
-    (s.cornerTL.alphaAvg + s.cornerTR.alphaAvg + s.cornerBL.alphaAvg + s.cornerBR.alphaAvg) / 4;
+    (s.cornerTL.alphaAvg +
+      s.cornerTR.alphaAvg +
+      s.cornerBL.alphaAvg +
+      s.cornerBR.alphaAvg) /
+    4;
   const armsGreen = (s) =>
-    (s.armV.green - s.armVcore.green) + (s.armH.green - s.armHcore.green);
+    s.armV.green - s.armVcore.green + (s.armH.green - s.armHcore.green);
 
   // ---- ARCADE baseline ------------------------------------------------------
   let snap = await rigSnap();
-  check('arcade', 'starts in ARCADE', snap.mode === 'ARCADE' && snap.hudMode === 'battle',
-    `mode=${snap.mode} hud=${snap.hudMode}`);
-  const arcadeShot = resolve(SHOT_DIR, 'arcade.png');
+  check(
+    "arcade",
+    "starts in ARCADE",
+    snap.mode === "ARCADE" && snap.hudMode === "battle",
+    `mode=${snap.mode} hud=${snap.hudMode}`,
+  );
+  const arcadeShot = resolve(SHOT_DIR, "arcade.png");
   await page.screenshot({ path: arcadeShot });
   evidence.screenshots.push(arcadeShot);
   const base = await sampleScope();
@@ -331,10 +576,18 @@ try {
     armsGreen: armsGreen(base),
     plateGreen: base.plate.green,
   };
-  check('arcade', 'arcade has NO corner vignette',
-    cornersAvg(base) < 0.06, `corners alpha avg ${cornersAvg(base).toFixed(3)}`);
-  check('arcade', 'arcade has NO zoom plate text',
-    base.plate.green < 8, `plate green px ${base.plate.green}`);
+  check(
+    "arcade",
+    "arcade has NO corner vignette",
+    cornersAvg(base) < 0.06,
+    `corners alpha avg ${cornersAvg(base).toFixed(3)}`,
+  );
+  check(
+    "arcade",
+    "arcade has NO zoom plate text",
+    base.plate.green < 8,
+    `plate green px ${base.plate.green}`,
+  );
 
   // ---- wheel ladder part 0: DELIVERY INSTRUMENTATION -----------------------
   // RMB hold proved the rig pipeline live; this leg separates "input.js wheel
@@ -345,13 +598,17 @@ try {
   // lockElement while locked) so the HANDLER logic is always fully exercised.
   await page.evaluate(() => {
     window.__WHEEL_LOG = [];
-    window.addEventListener('wheel', (e) => {
-      window.__WHEEL_LOG.push({
-        deltaY: e.deltaY,
-        isTrusted: e.isTrusted,
-        target: e.target && e.target.tagName,
-      });
-    }, { capture: true, passive: true });
+    window.addEventListener(
+      "wheel",
+      (e) => {
+        window.__WHEEL_LOG.push({
+          deltaY: e.deltaY,
+          isTrusted: e.isTrusted,
+          target: e.target && e.target.tagName,
+        });
+      },
+      { capture: true, passive: true },
+    );
   });
   const wheelLog = () => page.evaluate(() => window.__WHEEL_LOG.splice(0));
 
@@ -366,9 +623,16 @@ try {
   // Attempt B: raw CDP dispatchMouseEvent(mouseWheel) with explicit deltas.
   if (!log.some((e) => e.deltaY !== 0)) {
     const cdp = await page.createCDPSession();
-    await cdp.send('Input.dispatchMouseEvent', {
-      type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY: -120, button: 'none',
-    }).catch(() => {});
+    await cdp
+      .send("Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        x: cx,
+        y: cy,
+        deltaX: 0,
+        deltaY: -120,
+        button: "none",
+      })
+      .catch(() => {});
     await sleep(350);
     log = log.concat(await wheelLog());
     await cdp.detach().catch(() => {});
@@ -376,12 +640,19 @@ try {
   let cdpWheelDelivered = log.some((e) => e.deltaY !== 0);
   // Fallback that ALWAYS exercises the handler: synthetic event on the locked
   // canvas (onWheel's gate admits it: pointerLockElement === lockElement).
-  const syntheticWheelIn = () => page.evaluate(() => {
-    const cv = document.querySelector('#app canvas') || document.querySelector('canvas');
-    cv.dispatchEvent(new WheelEvent('wheel', {
-      deltaY: -120, bubbles: true, cancelable: true,
-    }));
-  });
+  const syntheticWheelIn = () =>
+    page.evaluate(() => {
+      const cv =
+        document.querySelector("#app canvas") ||
+        document.querySelector("canvas");
+      cv.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaY: -120,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
   if (!cdpWheelDelivered) await syntheticWheelIn();
   await sleep(250);
   evidence.ladder.wheelDelivery = {
@@ -392,164 +663,287 @@ try {
 
   // ---- wheel ladder part 1: steps IN until SNIPER entry ---------------------
   let notches = 1; // the instrumentation notch above already went in
-  let entered = (await rigSnap()).mode === 'SNIPER';
+  let entered = (await rigSnap()).mode === "SNIPER";
   while (!entered && notches < 9) {
     await wheelIn();
     notches++;
     await sleep(150);
-    if ((await rigSnap()).mode === 'SNIPER') entered = true;
+    if ((await rigSnap()).mode === "SNIPER") entered = true;
   }
   evidence.ladder.notchesArcadeToSniper = entered ? notches : -1;
-  check('wheel', `wheel-in enters SNIPER within <=9 notches`, entered,
-    `notches=${evidence.ladder.notchesArcadeToSniper} (orbit steps 24m..4m then scope)`);
+  check(
+    "wheel",
+    `wheel-in enters SNIPER within <=9 notches`,
+    entered,
+    `notches=${evidence.ladder.notchesArcadeToSniper} (orbit steps 24m..4m then scope)`,
+  );
   snap = await rigSnap();
-  check('wheel', 'entry zoom is x2 (ladder base)', snap.zoom === 2, `zoom=${snap.zoom}`);
-  check('hud', 'HUD mode flips to sniper', snap.hudMode === 'sniper', `hud=${snap.hudMode}`);
-  check('hud', 'FOV narrowed by zoom', snap.fov < 35, `fov=${snap.fov.toFixed(1)}`);
+  check(
+    "wheel",
+    "entry zoom is x2 (ladder base)",
+    snap.zoom === 2,
+    `zoom=${snap.zoom}`,
+  );
+  check(
+    "hud",
+    "HUD mode flips to sniper",
+    snap.hudMode === "sniper",
+    `hud=${snap.hudMode}`,
+  );
+  check(
+    "hud",
+    "FOV narrowed by zoom",
+    snap.fov < 35,
+    `fov=${snap.fov.toFixed(1)}`,
+  );
 
   // ---- scope presentation @ x2 ---------------------------------------------
   await sleep(400); // 0.1 s scope fade-in + a few live frames
   const s2 = await sampleScope();
   evidence.scope.x2 = {
-    cornersAvg: +cornersAvg(s2).toFixed(4), topMid: s2.topMid.alphaAvg,
-    armsGreen: armsGreen(s2), plateGreen: s2.plate.green, plateFnv: s2.plate.fnv,
+    cornersAvg: +cornersAvg(s2).toFixed(4),
+    topMid: s2.topMid.alphaAvg,
+    armsGreen: armsGreen(s2),
+    plateGreen: s2.plate.green,
+    plateFnv: s2.plate.fnv,
   };
-  const shotX2 = resolve(SHOT_DIR, 'sniper_x2.png');
+  const shotX2 = resolve(SHOT_DIR, "sniper_x2.png");
   await page.screenshot({ path: shotX2 });
   evidence.screenshots.push(shotX2);
-  check('scope', 'vignette ON in sniper (corners darken vs arcade)',
-    cornersAvg(s2) > evidence.scope.arcade.cornersAvg + 0.05 && cornersAvg(s2) >= 0.08,
-    `arcade ${cornersAvg(base).toFixed(3)} -> sniper ${cornersAvg(s2).toFixed(3)}`);
-  check('scope', 'vignette is SOFT (corners darker than top edge band)',
+  check(
+    "scope",
+    "vignette ON in sniper (corners darken vs arcade)",
+    cornersAvg(s2) > evidence.scope.arcade.cornersAvg + 0.05 &&
+      cornersAvg(s2) >= 0.08,
+    `arcade ${cornersAvg(base).toFixed(3)} -> sniper ${cornersAvg(s2).toFixed(3)}`,
+  );
+  check(
+    "scope",
+    "vignette is SOFT (corners darker than top edge band)",
     cornersAvg(s2) > s2.topMid.alphaAvg + 0.02,
-    `corners ${cornersAvg(s2).toFixed(3)} vs topMid ${s2.topMid.alphaAvg.toFixed(3)}`);
-  check('scope', 'reticle marks drawn (green arms delta vs arcade)',
+    `corners ${cornersAvg(s2).toFixed(3)} vs topMid ${s2.topMid.alphaAvg.toFixed(3)}`,
+  );
+  check(
+    "scope",
+    "reticle marks drawn (green arms delta vs arcade)",
     armsGreen(s2) > armsGreen(base) + 30,
-    `arcade ${armsGreen(base)} -> sniper ${armsGreen(s2)} green px`);
-  check('scope', 'zoom readout plate painted',
-    s2.plate.green > 25, `green px ${s2.plate.green}`);
+    `arcade ${armsGreen(base)} -> sniper ${armsGreen(s2)} green px`,
+  );
+  check(
+    "scope",
+    "zoom readout plate painted",
+    s2.plate.green > 25,
+    `green px ${s2.plate.green}`,
+  );
 
   // ---- ladder x4 / x8 + ceiling clamp --------------------------------------
   const plateDigests = { x2: s2.plate.fnv };
   await wheelIn();
-  check('wheel', 'wheel-in steps x2 -> x4', await rigPoll(
-    'window.__DEBUG.rig.mode === "SNIPER" && window.__DEBUG.rig.zoom === 4'),
-    `zoom=${(await rigSnap()).zoom}`);
+  check(
+    "wheel",
+    "wheel-in steps x2 -> x4",
+    await rigPoll(
+      'window.__DEBUG.rig.mode === "SNIPER" && window.__DEBUG.rig.zoom === 4',
+    ),
+    `zoom=${(await rigSnap()).zoom}`,
+  );
   await sleep(300);
   const s4 = await sampleScope();
   plateDigests.x4 = s4.plate.fnv;
   await wheelIn();
-  check('wheel', 'wheel-in steps x4 -> x8', await rigPoll(
-    'window.__DEBUG.rig.mode === "SNIPER" && window.__DEBUG.rig.zoom === 8'),
-    `zoom=${(await rigSnap()).zoom}`);
+  check(
+    "wheel",
+    "wheel-in steps x4 -> x8",
+    await rigPoll(
+      'window.__DEBUG.rig.mode === "SNIPER" && window.__DEBUG.rig.zoom === 8',
+    ),
+    `zoom=${(await rigSnap()).zoom}`,
+  );
   await sleep(300);
   const s8 = await sampleScope();
   plateDigests.x8 = s8.plate.fnv;
   evidence.scope.plateDigests = plateDigests;
-  const shotX8 = resolve(SHOT_DIR, 'sniper_x8.png');
+  const shotX8 = resolve(SHOT_DIR, "sniper_x8.png");
   await page.screenshot({ path: shotX8 });
   evidence.screenshots.push(shotX8);
-  check('wheel', 'wheel-in at x8 CLAMPS (ceiling)', await (async () => {
-    await wheelIn(); await sleep(220); await wheelIn(); await sleep(320);
-    const s = await rigSnap();
-    return s.mode === 'SNIPER' && s.zoom === 8;
-  })(), `zoom=${(await rigSnap()).zoom} (base ladder [2,4,8])`);
-  check('scope', 'zoom readout glyph CHANGES with magnification',
-    plateDigests.x2 !== plateDigests.x4 && plateDigests.x4 !== plateDigests.x8 &&
-    plateDigests.x2 !== plateDigests.x8,
-    `fnv x2=${plateDigests.x2} x4=${plateDigests.x4} x8=${plateDigests.x8}`);
+  check(
+    "wheel",
+    "wheel-in at x8 CLAMPS (ceiling)",
+    await (async () => {
+      await wheelIn();
+      await sleep(220);
+      await wheelIn();
+      await sleep(320);
+      const s = await rigSnap();
+      return s.mode === "SNIPER" && s.zoom === 8;
+    })(),
+    `zoom=${(await rigSnap()).zoom} (base ladder [2,4,8])`,
+  );
+  check(
+    "scope",
+    "zoom readout glyph CHANGES with magnification",
+    plateDigests.x2 !== plateDigests.x4 &&
+      plateDigests.x4 !== plateDigests.x8 &&
+      plateDigests.x2 !== plateDigests.x8,
+    `fnv x2=${plateDigests.x2} x4=${plateDigests.x4} x8=${plateDigests.x8}`,
+  );
 
   // ---- fps spot-sample at x8 (evidence only; floors are cert-perf's job) ---
-  evidence.fps = await page.evaluate(() => new Promise((res) => {
-    const ds = []; let last = performance.now(); let n = 0;
-    const step = (t) => {
-      ds.push(t - last); last = t;
-      if (++n < 150) requestAnimationFrame(step);
-      else {
-        ds.sort((a, b) => a - b);
-        res({
-          frames: n,
-          medianFrameMs: +ds[n >> 1].toFixed(2),
-          p95FrameMs: +ds[Math.floor(n * 0.95)].toFixed(2),
-          fpsMedian: +(1000 / ds[n >> 1]).toFixed(1),
-        });
-      }
-    };
-    requestAnimationFrame(step);
-  }));
+  evidence.fps = await page.evaluate(
+    () =>
+      new Promise((res) => {
+        const ds = [];
+        let last = performance.now();
+        let n = 0;
+        const step = (t) => {
+          ds.push(t - last);
+          last = t;
+          if (++n < 150) requestAnimationFrame(step);
+          else {
+            ds.sort((a, b) => a - b);
+            res({
+              frames: n,
+              medianFrameMs: +ds[n >> 1].toFixed(2),
+              p95FrameMs: +ds[Math.floor(n * 0.95)].toFixed(2),
+              fpsMedian: +(1000 / ds[n >> 1]).toFixed(1),
+            });
+          }
+        };
+        requestAnimationFrame(step);
+      }),
+  );
 
   // ---- wheel-out ladder back to ARCADE -------------------------------------
   await wheelOut();
-  check('wheel', 'wheel-out steps x8 -> x4', await rigPoll(
-    'window.__DEBUG.rig.mode === "SNIPER" && window.__DEBUG.rig.zoom === 4'),
-    `zoom=${(await rigSnap()).zoom}`);
+  check(
+    "wheel",
+    "wheel-out steps x8 -> x4",
+    await rigPoll(
+      'window.__DEBUG.rig.mode === "SNIPER" && window.__DEBUG.rig.zoom === 4',
+    ),
+    `zoom=${(await rigSnap()).zoom}`,
+  );
   await wheelOut();
-  check('wheel', 'wheel-out steps x4 -> x2', await rigPoll(
-    'window.__DEBUG.rig.mode === "SNIPER" && window.__DEBUG.rig.zoom === 2'),
-    `zoom=${(await rigSnap()).zoom}`);
+  check(
+    "wheel",
+    "wheel-out steps x4 -> x2",
+    await rigPoll(
+      'window.__DEBUG.rig.mode === "SNIPER" && window.__DEBUG.rig.zoom === 2',
+    ),
+    `zoom=${(await rigSnap()).zoom}`,
+  );
   await wheelOut();
-  check('wheel', 'wheel-out past x2 EXITS to ARCADE', await rigPoll(
-    'window.__DEBUG.rig.mode === "ARCADE"', 4000));
+  check(
+    "wheel",
+    "wheel-out past x2 EXITS to ARCADE",
+    await rigPoll('window.__DEBUG.rig.mode === "ARCADE"', 4000),
+  );
   const afterExit = await sampleScope();
-  check('scope', 'vignette OFF after exit (back to arcade)',
-    cornersAvg(afterExit) < 0.06, `corners alpha avg ${cornersAvg(afterExit).toFixed(3)}`);
+  check(
+    "scope",
+    "vignette OFF after exit (back to arcade)",
+    cornersAvg(afterExit) < 0.06,
+    `corners alpha avg ${cornersAvg(afterExit).toFixed(3)}`,
+  );
 
   // ---- Shift toggle lane (rebindable sniperToggle action) -------------------
   // Desktop DEFAULT has NO keyboard sniper binding (input.selftest: legacy
   // ShiftLeft migrates to freeLook) — bind it first like a player would in
   // settings, then assert the toggle lane end to end, and restore the null.
-  await page.evaluate(() => window.__DEBUG.input.setBinding('sniperToggle', 'ShiftLeft'));
-  await page.keyboard.down('ShiftLeft'); await sleep(90); await page.keyboard.up('ShiftLeft');
-  check('shift', 'Shift tap enters sniper (bound lane)', await rigPoll(
-    'window.__DEBUG.rig.mode === "SNIPER"'), `mode=${(await rigSnap()).mode}`);
-  await page.keyboard.down('ShiftLeft'); await sleep(90); await page.keyboard.up('ShiftLeft');
-  check('shift', 'Shift tap exits sniper', await rigPoll(
-    'window.__DEBUG.rig.mode === "ARCADE"'), `mode=${(await rigSnap()).mode}`);
-  await page.evaluate(() => window.__DEBUG.input.setBinding('sniperToggle', null));
+  await page.evaluate(() =>
+    window.__DEBUG.input.setBinding("sniperToggle", "ShiftLeft"),
+  );
+  await page.keyboard.down("ShiftLeft");
+  await sleep(90);
+  await page.keyboard.up("ShiftLeft");
+  check(
+    "shift",
+    "Shift tap enters sniper (bound lane)",
+    await rigPoll('window.__DEBUG.rig.mode === "SNIPER"'),
+    `mode=${(await rigSnap()).mode}`,
+  );
+  await page.keyboard.down("ShiftLeft");
+  await sleep(90);
+  await page.keyboard.up("ShiftLeft");
+  check(
+    "shift",
+    "Shift tap exits sniper",
+    await rigPoll('window.__DEBUG.rig.mode === "ARCADE"'),
+    `mode=${(await rigSnap()).mode}`,
+  );
+  await page.evaluate(() =>
+    window.__DEBUG.input.setBinding("sniperToggle", null),
+  );
 
   // ---- RMB hold-to-aim (default settings.rmbMode 'hold') --------------------
-  await page.mouse.down({ button: 'right' });
-  check('rmb', 'RMB hold enters sniper (hold-to-aim)', await rigPoll(
-    'window.__DEBUG.rig.mode === "SNIPER"'), `mode=${(await rigSnap()).mode}`);
-  await page.mouse.up({ button: 'right' });
-  check('rmb', 'RMB release restores arcade', await rigPoll(
-    'window.__DEBUG.rig.mode === "ARCADE"'), `mode=${(await rigSnap()).mode}`);
+  await page.mouse.down({ button: "right" });
+  check(
+    "rmb",
+    "RMB hold enters sniper (hold-to-aim)",
+    await rigPoll('window.__DEBUG.rig.mode === "SNIPER"'),
+    `mode=${(await rigSnap()).mode}`,
+  );
+  await page.mouse.up({ button: "right" });
+  check(
+    "rmb",
+    "RMB release restores arcade",
+    await rigPoll('window.__DEBUG.rig.mode === "ARCADE"'),
+    `mode=${(await rigSnap()).mode}`,
+  );
 
   // ---- hygiene ----------------------------------------------------------------
-  check('hygiene', 'zero page errors', evidence.pageErrorsAll.length === 0,
-    evidence.pageErrorsAll.join(' | ').slice(0, 200));
-  check('hygiene', 'zero unexpected console errors', evidence.consoleErrorsAll.length === 0,
-    evidence.consoleErrorsAll.join(' | ').slice(0, 200));
+  check(
+    "hygiene",
+    "zero page errors",
+    evidence.pageErrorsAll.length === 0,
+    evidence.pageErrorsAll.join(" | ").slice(0, 200),
+  );
+  check(
+    "hygiene",
+    "zero unexpected console errors",
+    evidence.consoleErrorsAll.length === 0,
+    evidence.consoleErrorsAll.join(" | ").slice(0, 200),
+  );
 
   if (!evidence.lock.engaged) {
     // Honest classification for the campaign doc: what this run could NOT do.
     evidence.wheelBindingThroughOnWheel = cdpWheelDelivered
-      ? 'VERIFIED handler-level (pointer lock DENIED this session; trusted CDP ' +
-        'deltas accepted by input.js onWheel via its own lockDenied && ' +
-        'target===canvas cursor-aim notch path -> zoom actions -> full ladder)'
-      : 'ENVIRONMENT-BLOCKED (lock denied AND no CDP wheel delivery; ladder ' +
-        'driven through input.tapVirtual action lane instead)';
+      ? "VERIFIED handler-level (pointer lock DENIED this session; trusted CDP " +
+        "deltas accepted by input.js onWheel via its own lockDenied && " +
+        "target===canvas cursor-aim notch path -> zoom actions -> full ladder)"
+      : "ENVIRONMENT-BLOCKED (lock denied AND no CDP wheel delivery; ladder " +
+        "driven through input.tapVirtual action lane instead)";
   } else if (evidence.ladder.wheelDelivery?.cdpDelivered) {
     evidence.wheelBindingThroughOnWheel =
-      'VERIFIED native (trusted CDP mouseWheel -> input.js onWheel -> zoom actions)';
+      "VERIFIED native (trusted CDP mouseWheel -> input.js onWheel -> zoom actions)";
   } else {
     evidence.wheelBindingThroughOnWheel =
-      'VERIFIED handler-level (synthetic WheelEvent on the locked canvas passes the ' +
-      'input.js onWheel lock gate -> zoom actions -> full ladder); native CDP wheel ' +
-      'under pointer lock was not deliverable on this host (in-page wheel log empty)';
+      "VERIFIED handler-level (synthetic WheelEvent on the locked canvas passes the " +
+      "input.js onWheel lock gate -> zoom actions -> full ladder); native CDP wheel " +
+      "under pointer lock was not deliverable on this host (in-page wheel log empty)";
   }
 } catch (err) {
-  console.error('[sniper-scope-probe] HARNESS FAILURE:', err);
-  evidence.harnessError = String(err && err.stack || err).slice(0, 800);
-  process.exitCode = 2;
+  if (!(err instanceof ProbeDone)) {
+    console.error("[sniper-scope-probe] HARNESS FAILURE:", err);
+    evidence.harnessError = String((err && err.stack) || err).slice(0, 800);
+    process.exitCode = 2;
+  }
 } finally {
   evidence.finishedAtIso = new Date().toISOString();
   evidence.checks = checks;
   evidence.failures = failures;
-  try { writeFileSync(OUT, JSON.stringify(evidence, null, 2)); } catch (_) {}
-  try { if (server) await server.close(); } catch (_) {}
-  try { if (browser) await browser.close(); } catch (_) {}
+  try {
+    writeFileSync(OUT, JSON.stringify(evidence, null, 2));
+  } catch (_) {}
+  try {
+    if (server) await server.close();
+  } catch (_) {}
+  try {
+    if (browser) await browser.close();
+  } catch (_) {}
 }
-console.log(`\n[sniper-scope-probe] ${checks - failures.length}/${checks} checks passed` +
-  ` — evidence: ${OUT}`);
+console.log(
+  `\n[sniper-scope-probe] ${checks - failures.length}/${checks} checks passed` +
+    ` — evidence: ${OUT}`,
+);
 if (failures.length) process.exitCode = 1;

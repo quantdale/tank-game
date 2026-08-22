@@ -7,10 +7,10 @@
  * `createLighting` (never deferred) so it patches the lighting shader chunks
  * before any lit material compiles.
  */
-import * as THREE from 'three';
-import { CSM } from 'three/examples/jsm/csm/CSM.js';
-import { CSMFrustum } from 'three/examples/jsm/csm/CSMFrustum.js';
-import { getDeviceTier, getPreset, onPresetChange } from './quality.js';
+import * as THREE from "three";
+import { CSM } from "three/examples/jsm/csm/CSM.js";
+import { CSMFrustum } from "three/examples/jsm/csm/CSMFrustum.js";
+import { getDeviceTier, getPreset, onPresetChange } from "./quality.js";
 import {
   SHADOW_FAR_INSTANCE_BUDGET,
   createShadowRefreshScheduler,
@@ -18,13 +18,13 @@ import {
   mergeRequiredShadowWork,
   resolveFarInstanceBudget,
   shadowInstanceBudget,
-} from './shadowRefresh.js';
+} from "./shadowRefresh.js";
 import {
   SHADOW_CASTER_MIN_TEXELS,
   resolveCasterMinTexels,
   snapShadowCoordinate,
   subtexelCullRadius,
-} from './shadowStability.js';
+} from "./shadowStability.js";
 
 const CASCADES = 4;
 // Battlefield establishing shots read objects out to ~500 m; with the clearer
@@ -65,14 +65,19 @@ function updateStableCascades(csm) {
   const camera = csm.camera;
   _stableLightOrientation.lookAt(_stableOrigin, csm.lightDirection, _stableUp);
   _stableLightOrientationInverse.copy(_stableLightOrientation).invert();
-  _stableCameraToLight.multiplyMatrices(_stableLightOrientationInverse, camera.matrixWorld);
+  _stableCameraToLight.multiplyMatrices(
+    _stableLightOrientationInverse,
+    camera.matrixWorld,
+  );
 
   for (let i = 0; i < csm.frustums.length; i++) {
     const light = csm.lights[i];
     const shadow = light.shadow;
     const shadowCam = shadow.camera;
-    const texelWidth = (shadowCam.right - shadowCam.left) / Math.max(1, shadow.mapSize.x);
-    const texelHeight = (shadowCam.top - shadowCam.bottom) / Math.max(1, shadow.mapSize.y);
+    const texelWidth =
+      (shadowCam.right - shadowCam.left) / Math.max(1, shadow.mapSize.x);
+    const texelHeight =
+      (shadowCam.top - shadowCam.bottom) / Math.max(1, shadow.mapSize.y);
     csm.frustums[i].toSpace(_stableCameraToLight, _stableLightFrustum);
 
     _stableBounds.makeEmpty();
@@ -185,7 +190,7 @@ const SHADOW_RADII = [1.6, 2.3, 2.6, 2.8];
 // grade contrast) was the real crusher, fixed by the grade's new low-end
 // taper in post.js. The dim itself now only needs to carry the COOL TINT and
 // a gentle density step; the linear ratio lands ~26% and displays ~35%.)
-const SHADOW_AMBIENT_DIM = [0.80, 0.88, 1.0];
+const SHADOW_AMBIENT_DIM = [0.8, 0.88, 1.0];
 // Indirect SPECULAR (env reflections) dims harder: a sky probe reflecting at
 // full strength inside a cast shadow is the classic "wet plastic in shade"
 // tell on ice/wet roads once materials gain speculars.
@@ -321,10 +326,10 @@ function buildCoverageMipmaps(tex, cutoff) {
   const size = img.width;
   if (size !== img.height || (size & (size - 1)) !== 0) return; // square POT only
 
-  const cnv = document.createElement('canvas');
+  const cnv = document.createElement("canvas");
   cnv.width = size;
   cnv.height = size;
-  const ctx = cnv.getContext('2d', { willReadFrequently: true });
+  const ctx = cnv.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(img, 0, 0);
   const level0 = ctx.getImageData(0, 0, size, size);
 
@@ -345,13 +350,14 @@ function buildCoverageMipmaps(tex, cutoff) {
     const pw = s * 2;
     for (let y = 0; y < s; y++) {
       for (let x = 0; x < s; x++) {
-        const i00 = ((y * 2) * pw + x * 2) * 4;
+        const i00 = (y * 2 * pw + x * 2) * 4;
         const i10 = i00 + 4;
         const i01 = i00 + pw * 4;
         const i11 = i01 + 4;
         const o = (y * s + x) * 4;
         for (let k = 0; k < 4; k++) {
-          cd[o + k] = (pd[i00 + k] + pd[i10 + k] + pd[i01 + k] + pd[i11 + k] + 2) >> 2;
+          cd[o + k] =
+            (pd[i00 + k] + pd[i10 + k] + pd[i01 + k] + pd[i11 + k] + 2) >> 2;
         }
       }
     }
@@ -368,12 +374,15 @@ function buildCoverageMipmaps(tex, cutoff) {
         const alphas = [];
         for (let i = 3; i < cd.length; i += 4) alphas.push(cd[i]);
         alphas.sort((a, b) => b - a);
-        const qi = Math.min(alphas.length - 1, Math.max(0, Math.round(targetCov * alphas.length) - 1));
+        const qi = Math.min(
+          alphas.length - 1,
+          Math.max(0, Math.round(targetCov * alphas.length) - 1),
+        );
         const q = Math.max(1, alphas[qi]);
         const boost = 3;
         for (let i = 3; i < cd.length; i += 4) {
           const v = cutByte + (cd[i] - q) * boost;
-          cd[i] = v < 0 ? 0 : (v > 255 ? 255 : v);
+          cd[i] = v < 0 ? 0 : v > 255 ? 255 : v;
         }
       }
     }
@@ -489,12 +498,17 @@ function resetCullStats() {
 function geometryTris(geo) {
   const idx = geo.index;
   const pos = geo.attributes && geo.attributes.position;
-  return (((idx ? idx.count : (pos ? pos.count : 0)) / 3) | 0);
+  return ((idx ? idx.count : pos ? pos.count : 0) / 3) | 0;
 }
 
 /** Fresh stability-gate record (also used to invalidate after foreign writes). */
 function cullPending(mesh) {
-  const rec = { pending: true, version: mesh.instanceMatrix.version, stable: 0, count: mesh.count };
+  const rec = {
+    pending: true,
+    version: mesh.instanceMatrix.version,
+    stable: 0,
+    count: mesh.count,
+  };
   _cullState.set(mesh, rec);
   return rec;
 }
@@ -513,18 +527,33 @@ function buildCullRec(mesh) {
   _geomClaims.set(geo, mesh);
   if (!geo.boundingSphere) geo.computeBoundingSphere();
   const bs = geo.boundingSphere;
-  if (!bs || !isFinite(bs.radius) || bs.radius <= 0) { _cullState.set(mesh, null); return null; }
+  if (!bs || !isFinite(bs.radius) || bs.radius <= 0) {
+    _cullState.set(mesh, null);
+    return null;
+  }
   const n = mesh.count;
   // every attribute indexed per instance in the depth draw
-  const attrs = [{ attr: mesh.instanceMatrix, size: 16, snap: null, version: 0 }];
-  if (mesh.instanceColor) attrs.push({ attr: mesh.instanceColor, size: mesh.instanceColor.itemSize, snap: null, version: 0 });
+  const attrs = [
+    { attr: mesh.instanceMatrix, size: 16, snap: null, version: 0 },
+  ];
+  if (mesh.instanceColor)
+    attrs.push({
+      attr: mesh.instanceColor,
+      size: mesh.instanceColor.itemSize,
+      snap: null,
+      version: 0,
+    });
   const ga = geo.attributes;
   for (const key of Object.keys(ga)) {
     const a = ga[key];
-    if (a && a.isInstancedBufferAttribute) attrs.push({ attr: a, size: a.itemSize, snap: null, version: 0 });
+    if (a && a.isInstancedBufferAttribute)
+      attrs.push({ attr: a, size: a.itemSize, snap: null, version: 0 });
   }
   for (const e of attrs) {
-    if (!e.attr.array || e.attr.array.length < n * e.size) { _cullState.set(mesh, null); return null; }
+    if (!e.attr.array || e.attr.array.length < n * e.size) {
+      _cullState.set(mesh, null);
+      return null;
+    }
     e.snap = e.attr.array.slice(0, n * e.size);
     e.version = e.attr.version;
   }
@@ -558,7 +587,18 @@ function buildCullRec(mesh) {
   // nothing-culled frame can early-out BEFORE any buffer byte is touched
   // (copying during the scan would silently permute the owner's arrays).
   const survivors = new Uint32Array(n);
-  const rec = { pending: false, n, attrs, centers, radii, geoRadii, order, survivors, k: 0, compacted: false };
+  const rec = {
+    pending: false,
+    n,
+    attrs,
+    centers,
+    radii,
+    geoRadii,
+    order,
+    survivors,
+    k: 0,
+    compacted: false,
+  };
   _cullState.set(mesh, rec);
   return rec;
 }
@@ -567,7 +607,12 @@ function buildCullRec(mesh) {
 function shadowCullBefore(object, shadowCamera) {
   // shadow-flicker bisect hook (probes): __SHADOW_DEBUG.noCull skips the
   // instance compaction entirely; harmless in production (never set).
-  if (typeof window !== 'undefined' && window.__SHADOW_DEBUG && window.__SHADOW_DEBUG.noCull) return;
+  if (
+    typeof window !== "undefined" &&
+    window.__SHADOW_DEBUG &&
+    window.__SHADOW_DEBUG.noCull
+  )
+    return;
   if (!object.isInstancedMesh || object.count === 0) return;
   let rec = _cullState.get(object);
   if (rec === null) return; // permanently skipped
@@ -581,7 +626,10 @@ function shadowCullBefore(object, shadowCamera) {
   }
   if (rec.pending) {
     // static only once the buffer sat untouched across 3 consecutive draws
-    if (object.instanceMatrix.version !== rec.version || object.count !== rec.count) {
+    if (
+      object.instanceMatrix.version !== rec.version ||
+      object.count !== rec.count
+    ) {
       rec.version = object.instanceMatrix.version;
       rec.count = object.count;
       rec.stable = 0;
@@ -592,10 +640,16 @@ function shadowCullBefore(object, shadowCamera) {
     if (!rec) return;
   }
   // foreign-write / live-count invalidation (owner rebuilt the instances)
-  if (object.count !== rec.n) { cullPending(object); return; }
+  if (object.count !== rec.n) {
+    cullPending(object);
+    return;
+  }
   for (let a = 0; a < rec.attrs.length; a++) {
     const e = rec.attrs[a];
-    if (e.attr.version !== e.version) { cullPending(object); return; }
+    if (e.attr.version !== e.version) {
+      cullPending(object);
+      return;
+    }
   }
   // one frustum build per cascade render (cascades draw their objects
   // back-to-back, so a single {camera, tick} memo covers the whole pass)
@@ -606,7 +660,10 @@ function shadowCullBefore(object, shadowCamera) {
   // so the box is exact again. SHADOW_CULL_MARGIN already absorbs sway and
   // round-robin staleness.)
   if (_cullFrusCam !== shadowCamera || _cullFrusStamp !== _cullTick) {
-    _cullProj.multiplyMatrices(shadowCamera.projectionMatrix, shadowCamera.matrixWorldInverse);
+    _cullProj.multiplyMatrices(
+      shadowCamera.projectionMatrix,
+      shadowCamera.matrixWorldInverse,
+    );
     _cullFrustum.setFromProjectionMatrix(_cullProj);
     // W4 per-cascade budget inputs (registered CSM cascades only): the
     // cascade's actual texel edge — read live so preset switches and refits
@@ -614,7 +671,8 @@ function shadowCullBefore(object, shadowCamera) {
     // levers are preset-resolved (see _casterMinTexels above).
     const reg = _cascadeShadows.get(shadowCamera);
     _cullTexel = reg
-      ? (shadowCamera.right - shadowCamera.left) / Math.max(1, reg.shadow.mapSize.x)
+      ? (shadowCamera.right - shadowCamera.left) /
+        Math.max(1, reg.shadow.mapSize.x)
       : 0;
     _cullBudget = reg
       ? shadowInstanceBudget(reg.index, FAR_CASCADE_START, _farInstanceBudget)
@@ -643,11 +701,24 @@ function shadowCullBefore(object, shadowCamera) {
   // during the scan would silently permute the owner's arrays).
   for (let j = 0; j < n; j++) {
     const i = order[j];
-    if (geoRadii[i] < minRadius) { culledSubtexel++; continue; }
-    _cullSphere.center.set(centers[i * 3], centers[i * 3 + 1], centers[i * 3 + 2]);
+    if (geoRadii[i] < minRadius) {
+      culledSubtexel++;
+      continue;
+    }
+    _cullSphere.center.set(
+      centers[i * 3],
+      centers[i * 3 + 1],
+      centers[i * 3 + 2],
+    );
     _cullSphere.radius = radii[i];
-    if (!_cullFrustum.intersectsSphere(_cullSphere)) { culledFrustum++; continue; }
-    if (k >= budget) { shedBudget = n - j; break; } // largest-first: the tail is all smaller
+    if (!_cullFrustum.intersectsSphere(_cullSphere)) {
+      culledFrustum++;
+      continue;
+    }
+    if (k >= budget) {
+      shedBudget = n - j;
+      break;
+    } // largest-first: the tail is all smaller
     survivors[k++] = i;
   }
   // WA2 telemetry: attribute this draw's classification to its cascade so
@@ -732,16 +803,26 @@ function shadowCullAfter(object) {
 // custom), so the flip covers all three paths and is a one-time recompile per
 // depth-material variant.
 function patchShadowDepthPacking() {
-  const hook = function (renderer, object, camera, shadowCamera, geometry, depthMaterial) {
-    if (depthMaterial && depthMaterial.isMeshDepthMaterial &&
-        depthMaterial.depthPacking !== THREE.RGBADepthPacking) {
+  const hook = (
+    renderer,
+    object,
+    camera,
+    shadowCamera,
+    geometry,
+    depthMaterial,
+  ) => {
+    if (
+      depthMaterial &&
+      depthMaterial.isMeshDepthMaterial &&
+      depthMaterial.depthPacking !== THREE.RGBADepthPacking
+    ) {
       depthMaterial.depthPacking = THREE.RGBADepthPacking;
       depthMaterial.needsUpdate = true;
     }
     // r7 cascade shadow instance culling (see the _cullState block above)
     shadowCullBefore(object, shadowCamera);
   };
-  const afterHook = function (renderer, object) {
+  const afterHook = (renderer, object) => {
     shadowCullAfter(object);
   };
   THREE.Mesh.prototype.onBeforeShadow = hook;
@@ -767,33 +848,52 @@ function patchShadowAmbientChunks() {
   if (shadowChunksPatched) return;
   shadowChunksPatched = true;
 
-  const declAnchor = 'IncidentLight directLight;';
+  const declAnchor = "IncidentLight directLight;";
   const fadeAnchor =
-    'directLight.color = mix( prevColor, directLight.color, shouldFadeLastCascade ? ratio : 1.0 );';
+    "directLight.color = mix( prevColor, directLight.color, shouldFadeLastCascade ? ratio : 1.0 );";
   const noFadeAnchor =
-    'if(linearDepth >= CSM_cascades[UNROLLED_LOOP_INDEX].x && linearDepth < CSM_cascades[UNROLLED_LOOP_INDEX].y) directLight.color *= ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;';
+    "if(linearDepth >= CSM_cascades[UNROLLED_LOOP_INDEX].x && linearDepth < CSM_cascades[UNROLLED_LOOP_INDEX].y) directLight.color *= ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;";
 
   let frag = THREE.ShaderChunk.lights_fragment_begin;
-  if (!frag.includes(declAnchor) || !frag.includes(fadeAnchor) || !frag.includes(noFadeAnchor)) {
-    throw new Error('lighting.js: shadow-density anchors not found in lights_fragment_begin');
+  if (
+    !frag.includes(declAnchor) ||
+    !frag.includes(fadeAnchor) ||
+    !frag.includes(noFadeAnchor)
+  ) {
+    throw new Error(
+      "lighting.js: shadow-density anchors not found in lights_fragment_begin",
+    );
   }
-  frag = frag.replace(declAnchor, `${declAnchor}
+  frag = frag.replace(
+    declAnchor,
+    `${declAnchor}
 float cotSunVis = 1.0;
-vec3 cotPrev;`);
-  frag = frag.replace(fadeAnchor, `${fadeAnchor}
-					cotSunVis = min( cotSunVis, directLight.color.g / max( prevColor.g, 1e-4 ) );`);
-  frag = frag.replace(noFadeAnchor, `cotPrev = directLight.color;
+vec3 cotPrev;`,
+  );
+  frag = frag.replace(
+    fadeAnchor,
+    `${fadeAnchor}
+					cotSunVis = min( cotSunVis, directLight.color.g / max( prevColor.g, 1e-4 ) );`,
+  );
+  frag = frag.replace(
+    noFadeAnchor,
+    `cotPrev = directLight.color;
 				${noFadeAnchor}
-				cotSunVis = min( cotSunVis, directLight.color.g / max( cotPrev.g, 1e-4 ) );`);
+				cotSunVis = min( cotSunVis, directLight.color.g / max( cotPrev.g, 1e-4 ) );`,
+  );
   THREE.ShaderChunk.lights_fragment_begin = frag;
 
-  const endHead = '#if defined( RE_IndirectDiffuse )';
+  const endHead = "#if defined( RE_IndirectDiffuse )";
   const end = THREE.ShaderChunk.lights_fragment_end;
   if (!end.includes(endHead)) {
-    throw new Error('lighting.js: shadow-density anchor not found in lights_fragment_end');
+    throw new Error(
+      "lighting.js: shadow-density anchor not found in lights_fragment_end",
+    );
   }
-  const dimVec = `vec3( ${SHADOW_AMBIENT_DIM.map((v) => v.toFixed(3)).join(', ')} )`;
-  THREE.ShaderChunk.lights_fragment_end = end.replace(endHead, `#if defined( USE_CSM ) && defined( CSM_CASCADES )
+  const dimVec = `vec3( ${SHADOW_AMBIENT_DIM.map((v) => v.toFixed(3)).join(", ")} )`;
+  THREE.ShaderChunk.lights_fragment_end = end.replace(
+    endHead,
+    `#if defined( USE_CSM ) && defined( CSM_CASCADES )
 
 	vec3 cotAmbDim = mix( ${dimVec}, vec3( 1.0 ), cotSunVis );
 
@@ -812,7 +912,8 @@ vec3 cotPrev;`);
 
 #endif
 
-${endHead}`);
+${endHead}`,
+  );
 
   // Give each cascade one deterministic five-tap Vogel orientation. The old
   // screen-space seed crawled with the camera; the later shadow-texel seed
@@ -822,13 +923,17 @@ ${endHead}`);
   // a round-robin refresh, while retaining a different orientation for each
   // cascade and the same five-sample cost.
   const penAnchor =
-    'float phi = interleavedGradientNoise( gl_FragCoord.xy ) * PI2;';
+    "float phi = interleavedGradientNoise( gl_FragCoord.xy ) * PI2;";
   const sm = THREE.ShaderChunk.shadowmap_pars_fragment;
   if (!sm.includes(penAnchor)) {
-    throw new Error('lighting.js: penumbra anchor not found in shadowmap_pars_fragment');
+    throw new Error(
+      "lighting.js: penumbra anchor not found in shadowmap_pars_fragment",
+    );
   }
-  THREE.ShaderChunk.shadowmap_pars_fragment = sm.replace(penAnchor,
-    'float phi = fract( shadowRadius * 0.754877666 ) * PI2;');
+  THREE.ShaderChunk.shadowmap_pars_fragment = sm.replace(
+    penAnchor,
+    "float phi = fract( shadowRadius * 0.754877666 ) * PI2;",
+  );
 }
 
 /**
@@ -862,7 +967,7 @@ ${endHead}`);
  * @returns {boolean} true when an entry was removed
  */
 export function releaseCsmShaderMaterial(csm, mat) {
-  if (!csm || !csm.shaders || !mat || typeof mat !== 'object') return false;
+  if (!csm || !csm.shaders || !mat || typeof mat !== "object") return false;
   if (!csm.shaders.has(mat)) return false;
   csm.shaders.delete(mat);
   // The wrapped hook chain (CSM's own patch + any chained extraHook) belongs
@@ -903,14 +1008,14 @@ export function createLighting(scene, camera, sunDir) {
   // range. Desktop keeps four out to 700 m. The single mobile far split is
   // refreshed every other frame, matching the existing cadence of each far
   // desktop split while removing one full CSM sampler and allocation.
-  const mobileTier = getDeviceTier() === 'mobile';
+  const mobileTier = getDeviceTier() === "mobile";
   const cascadeCount = mobileTier ? 3 : CASCADES;
   const csm = new CSM({
     camera,
     parent: scene,
     cascades: cascadeCount,
     maxFar: preset.shadowMaxFar,
-    mode: 'practical',
+    mode: "practical",
     shadowMapSize: preset.shadowMapSizes[0],
     shadowBias: SHADOW_BIAS,
     lightDirection: sunDir.clone().negate().normalize(), // CSM wants FROM-sun direction
@@ -924,8 +1029,10 @@ export function createLighting(scene, camera, sunDir) {
   // class (near pair = hero/contact, unbounded; far pair = capped). Foreign
   // shadow lights (garage rig) never register and keep plain r7 behavior.
   for (let i = 0; i < csm.lights.length; i++) {
-    _cascadeShadows.set(csm.lights[i].shadow.camera,
-      { shadow: csm.lights[i].shadow, index: i });
+    _cascadeShadows.set(csm.lights[i].shadow.camera, {
+      shadow: csm.lights[i].shadow,
+      index: i,
+    });
   }
 
   // --- r3 SHADOW DENSITY chunk patch (see SHADOW_AMBIENT_DIM above) --------
@@ -943,7 +1050,8 @@ export function createLighting(scene, camera, sunDir) {
   function applyShadowSize(i, size) {
     const shadow = csm.lights[i].shadow;
     // physical-penumbra-preserving PCF radius (see SHADOW_RADII_REF_SIZES)
-    const ref = SHADOW_RADII_REF_SIZES[Math.min(i, SHADOW_RADII_REF_SIZES.length - 1)];
+    const ref =
+      SHADOW_RADII_REF_SIZES[Math.min(i, SHADOW_RADII_REF_SIZES.length - 1)];
     shadow.radius = Math.max(
       MIN_FILTER_RADIUS_TEXELS,
       SHADOW_RADII[Math.min(i, SHADOW_RADII.length - 1)] * (size / ref),
@@ -970,7 +1078,8 @@ export function createLighting(scene, camera, sunDir) {
 
   for (let i = 0; i < csm.lights.length; i++) {
     csm.lights[i].shadow.normalBias = SHADOW_NORMAL_BIAS;
-    csm.lights[i].shadow.radius = SHADOW_RADII[Math.min(i, SHADOW_RADII.length - 1)];
+    csm.lights[i].shadow.radius =
+      SHADOW_RADII[Math.min(i, SHADOW_RADII.length - 1)];
     csm.lights[i].color.setHex(SUN_COLOR);
     // Near maps stay on Three's continuous update path so moving contact
     // shadows cannot lag the visible tank. Only the far pair are driven
@@ -996,7 +1105,7 @@ export function createLighting(scene, camera, sunDir) {
     // recovery frame exactly while the GPU is already overloaded. Keep each
     // existing map alive, then replace/refresh one cascade per render frame.
     pendingShadowSizes = p.shadowMapSizes.slice();
-    pendingShadowMask = (2 ** csm.lights.length) - 1;
+    pendingShadowMask = 2 ** csm.lights.length - 1;
     pendingShadowCursor = 0;
     csm.shadowMapSize = p.shadowMapSizes[0];
     if (csm.maxFar !== p.shadowMaxFar) {
@@ -1026,7 +1135,10 @@ export function createLighting(scene, camera, sunDir) {
   }
 
   const hemi = new THREE.HemisphereLight(
-    HEMI_SKY_COLOR, HEMI_GROUND_COLOR, HEMI_INTENSITY + hemiFloorFor(HEMI_INTENSITY));
+    HEMI_SKY_COLOR,
+    HEMI_GROUND_COLOR,
+    HEMI_INTENSITY + hemiFloorFor(HEMI_INTENSITY),
+  );
   scene.add(hemi);
 
   // Anti-sun sky fill (see FILL_* above): castShadow stays false — it must
@@ -1038,7 +1150,11 @@ export function createLighting(scene, camera, sunDir) {
     const fx = -sunDir.x;
     const fz = -sunDir.z;
     const fl = Math.hypot(fx, fz) || 1;
-    fill.position.set((fx / fl) * FILL_HORIZ_M, FILL_ELEV_Y, (fz / fl) * FILL_HORIZ_M);
+    fill.position.set(
+      (fx / fl) * FILL_HORIZ_M,
+      FILL_ELEV_Y,
+      (fz / fl) * FILL_HORIZ_M,
+    );
   }
   fill.target.position.set(0, 0, 0);
   scene.add(fill);
@@ -1050,7 +1166,9 @@ export function createLighting(scene, camera, sunDir) {
     // Allocation-free read used by the deterministic performance probe to
     // correlate a completed frame's renderer counters with its cascade work.
     // Keep the richer getShadowTelemetry() path at HUD cadence only.
-    get scheduledMask() { return lastScheduledMask; },
+    get scheduledMask() {
+      return lastScheduledMask;
+    },
 
     /**
      * Register a material for cascaded shadows, then (optionally) chain a
@@ -1112,8 +1230,10 @@ export function createLighting(scene, camera, sunDir) {
           transitionCascade = i;
           pendingShadowMask &= ~(1 << i);
           pendingShadowCursor = (i + 1) % csm.lights.length;
-          applyShadowSize(i,
-            pendingShadowSizes[Math.min(i, pendingShadowSizes.length - 1)]);
+          applyShadowSize(
+            i,
+            pendingShadowSizes[Math.min(i, pendingShadowSizes.length - 1)],
+          );
           if (!pendingShadowMask) pendingShadowSizes = null;
           break;
         }
@@ -1130,11 +1250,20 @@ export function createLighting(scene, camera, sunDir) {
           csm.lights[i].shadow.needsUpdate = true;
         }
         if (force) forceFrames = Math.max(forceFrames, 1); // settle 1 extra frame
-      } else if (typeof window !== 'undefined' && window.__SHADOW_DEBUG && window.__SHADOW_DEBUG.forceAll) {
+      } else if (
+        typeof window !== "undefined" &&
+        window.__SHADOW_DEBUG &&
+        window.__SHADOW_DEBUG.forceAll
+      ) {
         // bisect hook: every cascade re-renders every frame (no round-robin)
         lastScheduledMask = shadowScheduler.forceMask();
-        for (let i = 0; i < csm.lights.length; i++) csm.lights[i].shadow.needsUpdate = true;
-      } else if (typeof window !== 'undefined' && window.__SHADOW_DEBUG && window.__SHADOW_DEBUG.freezeMask !== undefined) {
+        for (let i = 0; i < csm.lights.length; i++)
+          csm.lights[i].shadow.needsUpdate = true;
+      } else if (
+        typeof window !== "undefined" &&
+        window.__SHADOW_DEBUG &&
+        window.__SHADOW_DEBUG.freezeMask !== undefined
+      ) {
         // bisect hook: masked cascades stop re-rendering entirely (matrix
         // freezes with content — consistent stale shadows); unmasked near
         // cascades render every frame, unmasked far ones every frame too so
@@ -1142,7 +1271,10 @@ export function createLighting(scene, camera, sunDir) {
         const mask = window.__SHADOW_DEBUG.freezeMask | 0;
         for (let i = 0; i < csm.lights.length; i++) {
           const sh = csm.lights[i].shadow;
-          if (mask & (1 << i)) { sh.autoUpdate = false; sh.needsUpdate = false; } else {
+          if (mask & (1 << i)) {
+            sh.autoUpdate = false;
+            sh.needsUpdate = false;
+          } else {
             sh.autoUpdate = i < FAR_CASCADE_START;
             sh.needsUpdate = true;
             lastScheduledMask |= 1 << i;
@@ -1162,10 +1294,15 @@ export function createLighting(scene, camera, sunDir) {
         lastScheduledMask = shadowScheduler.step(step);
         if (transitionCascade >= 0) {
           lastScheduledMask = mergeRequiredShadowWork(
-            lastScheduledMask, transitionCascade, csm.lights.length, 1);
+            lastScheduledMask,
+            transitionCascade,
+            csm.lights.length,
+            1,
+          );
         }
         for (let i = 0; i < csm.lights.length; i++) {
-          if (lastScheduledMask & (1 << i)) csm.lights[i].shadow.needsUpdate = true;
+          if (lastScheduledMask & (1 << i))
+            csm.lights[i].shadow.needsUpdate = true;
         }
       }
     },
@@ -1188,6 +1325,12 @@ export function createLighting(scene, camera, sunDir) {
     updateFov() {
       csm._initCascades();
       csm._updateShadowBounds();
+      // W09-C: a fov lerp (scope zoom / recoil kick) moves the frustum slices
+      // every frame; the rate-capped far cascades would otherwise render their
+      // shadow maps against the PREVIOUS ortho boxes for >=1 refresh cadence
+      // and distant shadows swim at scope entry/exit. Same guarded pattern as
+      // updateFrustums/setSun; only fires on frames where fov actually changed.
+      forceRateCappedCascades();
     },
 
     updateFrustums() {
@@ -1227,9 +1370,14 @@ export function createLighting(scene, camera, sunDir) {
         const presetHemi = opts.hemiIntensity ?? HEMI_INTENSITY;
         hemi.intensity = presetHemi + hemiFloorFor(presetHemi);
       }
-      const fx = -dir.x, fz = -dir.z;
+      const fx = -dir.x,
+        fz = -dir.z;
       const fl = Math.hypot(fx, fz) || 1;
-      fill.position.set((fx / fl) * FILL_HORIZ_M, FILL_ELEV_Y, (fz / fl) * FILL_HORIZ_M);
+      fill.position.set(
+        (fx / fl) * FILL_HORIZ_M,
+        FILL_ELEV_Y,
+        (fz / fl) * FILL_HORIZ_M,
+      );
       updateStableCascades(csm);
       forceRateCappedCascades(); // sun moved — every cascade must re-render
     },
@@ -1250,15 +1398,22 @@ export function createLighting(scene, camera, sunDir) {
         shadowFarInstanceBudget: _farInstanceBudget,
         cascades: csm.lights.map((light, index) => {
           const shadow = light.shadow;
-          const worldUnitsPerTexel = (shadow.camera.right - shadow.camera.left)
-            / Math.max(1, shadow.mapSize.x);
-          const budget = shadowInstanceBudget(index, FAR_CASCADE_START, _farInstanceBudget);
+          const worldUnitsPerTexel =
+            (shadow.camera.right - shadow.camera.left) /
+            Math.max(1, shadow.mapSize.x);
+          const budget = shadowInstanceBudget(
+            index,
+            FAR_CASCADE_START,
+            _farInstanceBudget,
+          );
           return {
             size: shadow.mapSize.x,
             allocated: !!shadow.map,
             allocatedSize: shadow.map?.width || 0,
             worldUnitsPerTexel: Number(worldUnitsPerTexel.toFixed(6)),
-            position: light.position.toArray().map((value) => Number(value.toFixed(4))),
+            position: light.position
+              .toArray()
+              .map((value) => Number(value.toFixed(4))),
             radius: shadow.radius,
             normalBias: shadow.normalBias,
             autoUpdate: shadow.autoUpdate,
@@ -1278,7 +1433,10 @@ export function createLighting(scene, camera, sunDir) {
               culledSubtexel: _cullStats.culledSubtexel[index],
               shedBudget: _cullStats.shedBudget[index],
               floorMeters: Number(
-                subtexelCullRadius(worldUnitsPerTexel, _casterMinTexels).toFixed(4),
+                subtexelCullRadius(
+                  worldUnitsPerTexel,
+                  _casterMinTexels,
+                ).toFixed(4),
               ),
               budget: Number.isFinite(budget) ? budget : null,
             },

@@ -12,78 +12,155 @@
 // Usage: node tools/font-inter-probe.mjs [--out shots/font-inter]
 // Reuses the fleet's FIFO ticket lock so parallel harnesses never share the GPU.
 
-import { createServer } from 'vite';
-import puppeteer from 'puppeteer';
-import { mkdirSync, rmdirSync, statSync, writeFileSync, readdirSync, unlinkSync, utimesSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { createServer } from "vite";
+import puppeteer from "puppeteer";
+import {
+  mkdirSync,
+  rmdirSync,
+  statSync,
+  writeFileSync,
+  readdirSync,
+  unlinkSync,
+  utimesSync,
+} from "node:fs";
+import { resolve, join } from "node:path";
 
 // --- exclusive run lock (same protocol as tools/screenshot.mjs) -------------
-const LOCK_DIR = '/tmp/cot-shots.lock';
-const QUEUE_DIR = '/tmp/cot-shots.queue';
+const LOCK_DIR = "/tmp/cot-shots.lock";
+const QUEUE_DIR = "/tmp/cot-shots.queue";
 const LOCK_STALE_MS = 5 * 60 * 1000;
 const TICKET_STALE_MS = 60 * 60 * 1000;
 let lockHeld = false;
-function ticketPid(name) { const m = name.match(/-(\d+)\.t$/); return m ? parseInt(m[1], 10) : -1; }
+function ticketPid(name) {
+  const m = name.match(/-(\d+)\.t$/);
+  return m ? parseInt(m[1], 10) : -1;
+}
 function ticketAlive(name) {
   const pid = ticketPid(name);
   if (pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
 }
 async function acquireLock(timeoutMs) {
   mkdirSync(QUEUE_DIR, { recursive: true });
-  const myTicket = `${String(Date.now()).padStart(15, '0')}-${process.pid}.t`;
+  const myTicket = `${String(Date.now()).padStart(15, "0")}-${process.pid}.t`;
   writeFileSync(join(QUEUE_DIR, myTicket), String(process.pid));
   const t0 = Date.now();
   try {
     for (;;) {
       let head = null;
       let names = [];
-      try { names = readdirSync(QUEUE_DIR).filter((n) => n.endsWith('.t')).sort(); } catch (_) { names = [myTicket]; }
+      try {
+        names = readdirSync(QUEUE_DIR)
+          .filter((n) => n.endsWith(".t"))
+          .sort();
+      } catch (_) {
+        names = [myTicket];
+      }
       for (const n of names) {
-        if (n === myTicket) { head = head || n; break; }
+        if (n === myTicket) {
+          head = head || n;
+          break;
+        }
         let stale = false;
-        try { stale = Date.now() - statSync(join(QUEUE_DIR, n)).mtimeMs > TICKET_STALE_MS; } catch (_) { continue; }
-        if (stale || !ticketAlive(n)) { try { unlinkSync(join(QUEUE_DIR, n)); } catch (_) { /* raced */ } continue; }
-        head = n; break;
+        try {
+          stale =
+            Date.now() - statSync(join(QUEUE_DIR, n)).mtimeMs > TICKET_STALE_MS;
+        } catch (_) {
+          continue;
+        }
+        if (stale || !ticketAlive(n)) {
+          try {
+            unlinkSync(join(QUEUE_DIR, n));
+          } catch (_) {
+            /* raced */
+          }
+          continue;
+        }
+        head = n;
+        break;
       }
       if (head === myTicket) {
-        try { mkdirSync(LOCK_DIR); lockHeld = true; return; } catch (_) { /* held */ }
         try {
-          if (Date.now() - statSync(LOCK_DIR).mtimeMs > LOCK_STALE_MS) { try { rmdirSync(LOCK_DIR); } catch (e) { if (e.code === 'ENOTDIR') unlinkSync(LOCK_DIR); else throw e; } continue; }
-        } catch (_) { continue; }
+          mkdirSync(LOCK_DIR);
+          lockHeld = true;
+          return;
+        } catch (_) {
+          /* held */
+        }
+        try {
+          if (Date.now() - statSync(LOCK_DIR).mtimeMs > LOCK_STALE_MS) {
+            try {
+              rmdirSync(LOCK_DIR);
+            } catch (e) {
+              if (e.code === "ENOTDIR") unlinkSync(LOCK_DIR);
+              else throw e;
+            }
+            continue;
+          }
+        } catch (_) {
+          continue;
+        }
       }
-      if (Date.now() - t0 > timeoutMs) throw new Error('cot-shots lock timeout');
+      if (Date.now() - t0 > timeoutMs)
+        throw new Error("cot-shots lock timeout");
       await new Promise((r) => setTimeout(r, head === myTicket ? 300 : 1000));
     }
   } finally {
-    try { unlinkSync(join(QUEUE_DIR, myTicket)); } catch (_) { /* fine */ }
+    try {
+      unlinkSync(join(QUEUE_DIR, myTicket));
+    } catch (_) {
+      /* fine */
+    }
   }
 }
-function releaseLock() { if (!lockHeld) return; lockHeld = false; try { rmdirSync(LOCK_DIR); } catch (_) { /* fine */ } }
+function releaseLock() {
+  if (!lockHeld) return;
+  lockHeld = false;
+  try {
+    rmdirSync(LOCK_DIR);
+  } catch (_) {
+    /* fine */
+  }
+}
 await acquireLock(20 * 60 * 1000);
-process.on('exit', releaseLock);
-const lockRefresher = setInterval(() => { try { const now = new Date(); utimesSync(LOCK_DIR, now, now); } catch (_) { /* fine */ } }, 60 * 1000);
+process.on("exit", releaseLock);
+const lockRefresher = setInterval(() => {
+  try {
+    const now = new Date();
+    utimesSync(LOCK_DIR, now, now);
+  } catch (_) {
+    /* fine */
+  }
+}, 60 * 1000);
 lockRefresher.unref();
 
 // --- server + browser --------------------------------------------------------
 const args = process.argv.slice(2);
-function opt(name, fallback) { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : fallback; }
-const outDir = resolve(opt('out', 'shots/font-inter'));
+function opt(name, fallback) {
+  const i = args.indexOf(`--${name}`);
+  return i >= 0 ? args[i + 1] : fallback;
+}
+const outDir = resolve(opt("out", "shots/font-inter"));
 mkdirSync(outDir, { recursive: true });
 
 const port = 7100 + Math.floor(Math.random() * 400); // font agent's own 7xxx range
 const server = await createServer({
   root: process.cwd(),
-  logLevel: 'error',
-  server: { port, strictPort: false, hmr: false, watch: { ignored: ['**/*'] } },
+  logLevel: "error",
+  server: { port, strictPort: false, hmr: false, watch: { ignored: ["**/*"] } },
   optimizeDeps: {
-    entries: ['index.html'],
+    entries: ["index.html"],
     include: [
-      'three',
-      'three/examples/jsm/loaders/GLTFLoader.js',
-      'three/examples/jsm/utils/SkeletonUtils.js',
-      'three/examples/jsm/utils/BufferGeometryUtils.js',
-      'three/examples/jsm/geometries/RoundedBoxGeometry.js',
+      "three",
+      "three/examples/jsm/loaders/GLTFLoader.js",
+      "three/examples/jsm/utils/SkeletonUtils.js",
+      "three/examples/jsm/utils/BufferGeometryUtils.js",
+      "three/examples/jsm/geometries/RoundedBoxGeometry.js",
     ],
   },
 });
@@ -92,14 +169,22 @@ const url = `http://localhost:${server.config.server.port}/`;
 console.log(`[font-probe] vite up at ${url}`);
 
 const browser = await puppeteer.launch({
-  headless: 'new',
-  args: ['--use-gl=angle', '--enable-webgl', '--no-sandbox', '--disable-dev-shm-usage'],
+  headless: "new",
+  args: [
+    "--use-gl=angle",
+    "--enable-webgl",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+  ],
 });
 const page = await browser.newPage();
 await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
 const consoleErrors = [];
-page.on('console', (m) => { if (m.type() === 'error' && !m.text().includes('favicon')) consoleErrors.push(m.text()); });
-page.on('pageerror', (e) => consoleErrors.push(String(e)));
+page.on("console", (m) => {
+  if (m.type() === "error" && !m.text().includes("favicon"))
+    consoleErrors.push(m.text());
+});
+page.on("pageerror", (e) => consoleErrors.push(String(e)));
 
 const FONT_PROBE_JS = `(() => {
   const c = document.createElement('canvas').getContext('2d');
@@ -174,9 +259,11 @@ let failed = false;
 async function snap(name) {
   // concurrent sessions editing src/ can 500 an unrelated lazy import and
   // vite parks its error overlay over the page — strip it, it is not ours.
-  await page.evaluate(
-    `document.querySelectorAll('vite-error-overlay').forEach((e) => e.remove())`
-  ).catch(() => {});
+  await page
+    .evaluate(
+      `document.querySelectorAll('vite-error-overlay').forEach((e) => e.remove())`,
+    )
+    .catch(() => {});
   const file = `${outDir}/${name}.png`;
   await page.screenshot({ path: file });
   out.screens.push(file);
@@ -188,32 +275,36 @@ try {
   // warm dep cache makes boot sub-second — throttle the CPU so the splash
   // actually holds still long enough to photograph, like a first visit would.
   const cdp = await page.createCDPSession();
-  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 6 });
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 6 });
   for (let attempt = 0; ; attempt++) {
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
       break;
     } catch (err) {
       if (attempt >= 1) throw err;
-      console.warn(`[font-probe] load attempt failed (${err.message}) — retrying`);
+      console.warn(
+        `[font-probe] load attempt failed (${err.message}) — retrying`,
+      );
       consoleErrors.length = 0;
     }
   }
-  await page.waitForSelector('#cot-boot', { timeout: 20000 });
+  await page.waitForSelector("#cot-boot", { timeout: 20000 });
   await new Promise((r) => setTimeout(r, 450));
   out.splashFonts = await page.evaluate(FONT_PROBE_JS);
   out.splashStillUp = await page.evaluate(
-    `(() => { const b = document.getElementById('cot-boot'); return !!b && !b.classList.contains('cot-boot-out'); })()`
+    `(() => { const b = document.getElementById('cot-boot'); return !!b && !b.classList.contains('cot-boot-out'); })()`,
   );
-  await snap('01_boot_splash');
-  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
+  await snap("01_boot_splash");
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
 
   // -------- 2. READY + global font state --------
-  await page.waitForFunction('window.__GAME_READY === true', { timeout: 120000 });
-  await page.evaluate('document.fonts.ready.then(() => true)');
+  await page.waitForFunction("window.__GAME_READY === true", {
+    timeout: 120000,
+  });
+  await page.evaluate("document.fonts.ready.then(() => true)");
   out.readyFonts = await page.evaluate(FONT_PROBE_JS);
   out.loadedFaces = await page.evaluate(
-    '[...document.fonts].map((f) => `${f.family} ${f.weight} ${f.stretch} ${f.status}`)'
+    "[...document.fonts].map((f) => `${f.family} ${f.weight} ${f.stretch} ${f.status}`)",
   );
 
   // -------- 2b. SETTINGS (real garage phase — gear hides in shot mode) --------
@@ -225,76 +316,72 @@ try {
   })()`);
   if (gearOpened) {
     await new Promise((r) => setTimeout(r, 500));
-    await snap('03_settings');
+    await snap("03_settings");
     out.settingsOverflow = await page.evaluate(OVERFLOW_SCAN_JS);
     out.settingsFloor = await page.evaluate(FLOOR_SCAN_JS);
-    await page.keyboard.press('Escape');
+    await page.keyboard.press("Escape");
     await new Promise((r) => setTimeout(r, 350));
   } else {
-    out.settingsOverflow = 'gear button not visible in garage phase';
+    out.settingsOverflow = "gear button not visible in garage phase";
   }
 
   // -------- 3. GARAGE --------
-  await page.evaluate(() => window.__SHOTS.set('garage'));
-  await page.waitForFunction(
-    `(() => {
-      const s = window.__GLB_STATS;
-      if (!s) return true;
-      const key = s.settled + '/' + s.started;
-      if (s.settled < s.started) { window.__GLB_STABLE_SHOT = null; return false; }
-      if (!window.__GLB_STABLE_SHOT || window.__GLB_STABLE_SHOT.key !== key) {
-        window.__GLB_STABLE_SHOT = { key, at: performance.now() };
-        return false;
-      }
-      return performance.now() - window.__GLB_STABLE_SHOT.at > 800;
-    })()`,
-    { timeout: 20000, polling: 200 },
-  ).catch(() => console.warn('[font-probe] garage GLB queue did not settle — capturing anyway'));
+  await page.evaluate(() => window.__SHOTS.set("garage"));
+  // GLB staging retired — procedural fleet (W09-D): the old wait-for-queue-drain
+  // block degenerated to an instant no-op once __GLB_STATS lost its producer;
+  // removed. The capture below keeps its own settle behavior.
   await new Promise((r) => setTimeout(r, 1200));
-  await snap('02_garage');
+  await snap("02_garage");
   out.garageAudit = await page.evaluate(AUDIT_JS);
   out.garageOverflow = await page.evaluate(OVERFLOW_SCAN_JS);
   out.garageFloor = await page.evaluate(FLOOR_SCAN_JS);
 
   // -------- 5. STAGED BATTLE HUD --------
-  await page.evaluate(() => window.__SHOTS.set('player_view'));
+  await page.evaluate(() => window.__SHOTS.set("player_view"));
   await new Promise((r) => setTimeout(r, 1500));
-  await snap('05_hud_player_view');
+  await snap("05_hud_player_view");
   out.hudAudit = await page.evaluate(AUDIT_JS);
   out.hudOverflow = await page.evaluate(OVERFLOW_SCAN_JS);
   out.hudFloor = await page.evaluate(FLOOR_SCAN_JS);
 
-  await page.evaluate(() => window.__SHOTS.set('sniper_view'));
+  await page.evaluate(() => window.__SHOTS.set("sniper_view"));
   await new Promise((r) => setTimeout(r, 1200));
-  await snap('06_hud_sniper_view');
+  await snap("06_hud_sniper_view");
 
   // -------- 7. KILLCAM X-RAY CARD --------
-  await page.evaluate(() => window.__SHOTS.set('killcam_xray'));
+  await page.evaluate(() => window.__SHOTS.set("killcam_xray"));
   await new Promise((r) => setTimeout(r, 1800));
-  await snap('07_killcam_xray');
+  await snap("07_killcam_xray");
   out.killcamOverflow = await page.evaluate(OVERFLOW_SCAN_JS);
 
   // -------- 8. LIVE BATTLE -> RESULTS REPORT --------
   const battleUp = await page.evaluate(() => {
     try {
       const g = window.__DEBUG.game;
-      const id = g.tankById.has('m1a2') ? 'm1a2' : [...g.tankById.keys()][0];
+      const id = g.tankById.has("m1a2") ? "m1a2" : [...g.tankById.keys()][0];
       window.__DEBUG.shotMode = false;
       window.__DEBUG.startBattle(id);
       return id;
-    } catch (e) { return 'ERR:' + e.message; }
+    } catch (e) {
+      return "ERR:" + e.message;
+    }
   });
   out.battleTank = battleUp;
-  if (battleUp && !String(battleUp).startsWith('ERR:')) {
+  if (battleUp && !String(battleUp).startsWith("ERR:")) {
     await new Promise((r) => setTimeout(r, 5000));
-    await page.evaluate(() => window.__DEBUG.slayEnemies && window.__DEBUG.slayEnemies(99));
-    const endShown = await page.waitForFunction(
-      `(() => { const e = document.querySelector('.cot-end'); return !!e && e.style.display === 'flex'; })()`,
-      { timeout: 30000, polling: 300 },
-    ).then(() => true).catch(() => false);
+    await page.evaluate(
+      () => window.__DEBUG.slayEnemies && window.__DEBUG.slayEnemies(99),
+    );
+    const endShown = await page
+      .waitForFunction(
+        `(() => { const e = document.querySelector('.cot-end'); return !!e && e.style.display === 'flex'; })()`,
+        { timeout: 30000, polling: 300 },
+      )
+      .then(() => true)
+      .catch(() => false);
     out.resultsReached = endShown;
     await new Promise((r) => setTimeout(r, 1500)); // report panels ease in
-    await snap('08_results_report');
+    await snap("08_results_report");
     if (endShown) {
       out.resultsOverflow = await page.evaluate(OVERFLOW_SCAN_JS);
       out.resultsFloor = await page.evaluate(FLOOR_SCAN_JS);
@@ -304,10 +391,15 @@ try {
   failed = true;
   console.error(`[font-probe] FAILED: ${err.message}`);
 } finally {
-  writeFileSync(`${outDir}/font-probe-report.json`, JSON.stringify(out, null, 2));
+  writeFileSync(
+    `${outDir}/font-probe-report.json`,
+    JSON.stringify(out, null, 2),
+  );
   console.log(`[font-probe] report -> ${outDir}/font-probe-report.json`);
   if (consoleErrors.length) {
-    console.error(`[font-probe] page console errors (${consoleErrors.length}):`);
+    console.error(
+      `[font-probe] page console errors (${consoleErrors.length}):`,
+    );
     for (const e of consoleErrors.slice(0, 20)) console.error(`  ${e}`);
   }
   await browser.close();
@@ -316,19 +408,35 @@ try {
 
 // verdicts the orchestrator cares about
 const r = out.readyFonts || {};
-const floors = [out.settingsFloor, out.garageFloor, out.hudFloor, out.resultsFloor]
-  .filter((f) => Array.isArray(f));
+const floors = [
+  out.settingsFloor,
+  out.garageFloor,
+  out.hudFloor,
+  out.resultsFloor,
+].filter((f) => Array.isArray(f));
 const verdicts = {
   webfontRenders: r.wInter > 0 && Math.abs(r.wInter - r.wMono) > 0.5,
   weightAxisLive: r.wInter800 > 0 && Math.abs(r.wInter800 - r.wInter) > 0.5,
-  allWeightsResolve: !!(r.checkI500 && r.checkI600 && r.checkI700 && r.checkI800),
+  allWeightsResolve: !!(
+    r.checkI500 &&
+    r.checkI600 &&
+    r.checkI700 &&
+    r.checkI800
+  ),
   splashHadWebfont: !!(out.splashFonts && out.splashFonts.checkI800),
   weightFloorClean: floors.length > 0 && floors.every((f) => f.length === 0),
-  zeroArchivoFaces: !!(out.loadedFaces && !out.loadedFaces.some((f) => /Archivo/i.test(f))),
+  zeroArchivoFaces: !!(
+    out.loadedFaces && !out.loadedFaces.some((f) => /Archivo/i.test(f))
+  ),
 };
-console.log('[font-probe] verdicts:', JSON.stringify(verdicts));
+console.log("[font-probe] verdicts:", JSON.stringify(verdicts));
 process.exit(
-  failed || !verdicts.webfontRenders || !verdicts.allWeightsResolve ||
-  !verdicts.splashHadWebfont || !verdicts.weightFloorClean || !verdicts.zeroArchivoFaces
-    ? 1 : 0,
+  failed ||
+    !verdicts.webfontRenders ||
+    !verdicts.allWeightsResolve ||
+    !verdicts.splashHadWebfont ||
+    !verdicts.weightFloorClean ||
+    !verdicts.zeroArchivoFaces
+    ? 1
+    : 0,
 );

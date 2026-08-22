@@ -6,10 +6,10 @@
 //   constrained 2x CDP CPU, 4 logical cores, 4 GB reported memory
 //   software    constrained CPU plus SwiftShader (stress floor, not an iGPU model)
 
-import { createServer } from 'vite';
-import puppeteer from 'puppeteer';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { createServer } from "vite";
+import puppeteer from "puppeteer";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 const argv = process.argv.slice(2);
 function option(name, fallback) {
@@ -18,43 +18,63 @@ function option(name, fallback) {
   const i = argv.indexOf(`--${name}`);
   return i >= 0 ? argv[i + 1] : fallback;
 }
-const profileName = option('profile', 'normal');
-const entryMode = option('entry', 'debug');
-if (!['debug', 'real'].includes(entryMode)) throw new Error('--entry must be debug or real');
-const deviceTier = option('tier', 'desktop');
-if (!['desktop', 'mobile'].includes(deviceTier)) throw new Error('--tier must be desktop or mobile');
+const profileName = option("profile", "normal");
+const entryMode = option("entry", "debug");
+if (!["debug", "real"].includes(entryMode))
+  throw new Error("--entry must be debug or real");
+const deviceTier = option("tier", "desktop");
+if (!["desktop", "mobile"].includes(deviceTier))
+  throw new Error("--tier must be desktop or mobile");
 const viewport = {
-  width: Math.max(320, Number(option('width', '1365')) || 1365),
-  height: Math.max(320, Number(option('height', '768')) || 768),
-  deviceScaleFactor: Math.max(1, Number(option('dpr', '1')) || 1),
+  width: Math.max(320, Number(option("width", "1365")) || 1365),
+  height: Math.max(320, Number(option("height", "768")) || 768),
+  deviceScaleFactor: Math.max(1, Number(option("dpr", "1")) || 1),
 };
-const seconds = Math.max(4, Number(option('seconds', '12')) || 12);
-const garageWaitMs = Math.max(0, (Number(option('garage-wait', '0')) || 0) * 1000);
-const openTimeoutMs = Math.max(10000, (Number(option('open-timeout', '180')) || 180) * 1000);
-const output = resolve(option('out', `.qa-dev/dev-perf-${profileName}.json`));
-const cpuProfileEnabled = !['0', 'false', 'off'].includes(String(option('cpu-profile', 'true')).toLowerCase());
-const profileLoad = ['1', 'true', 'on'].includes(String(option('profile-load', 'false')).toLowerCase());
-const entryGateEnabled = ['1', 'true', 'on'].includes(String(option('entry-gate', 'false')).toLowerCase());
+const seconds = Math.max(4, Number(option("seconds", "12")) || 12);
+const garageWaitMs = Math.max(
+  0,
+  (Number(option("garage-wait", "0")) || 0) * 1000,
+);
+const openTimeoutMs = Math.max(
+  10000,
+  (Number(option("open-timeout", "180")) || 180) * 1000,
+);
+const output = resolve(option("out", `.qa-dev/dev-perf-${profileName}.json`));
+const cpuProfileEnabled = !["0", "false", "off"].includes(
+  String(option("cpu-profile", "true")).toLowerCase(),
+);
+const profileLoad = ["1", "true", "on"].includes(
+  String(option("profile-load", "false")).toLowerCase(),
+);
+const entryGateEnabled = ["1", "true", "on"].includes(
+  String(option("entry-gate", "false")).toLowerCase(),
+);
 const profiles = {
   normal: { cpuRate: 1, cores: null, memoryGB: null, softwareGPU: false },
   constrained: { cpuRate: 2, cores: null, memoryGB: null, softwareGPU: false },
   software: { cpuRate: 2, cores: null, memoryGB: null, softwareGPU: true },
 };
-if (!profiles[profileName]) throw new Error(`unknown --profile=${profileName}; use normal, constrained, or software`);
+if (!profiles[profileName])
+  throw new Error(
+    `unknown --profile=${profileName}; use normal, constrained, or software`,
+  );
 const selected = { ...profiles[profileName] };
 selected.deviceTier = deviceTier;
 selected.viewport = viewport;
 selected.garageWaitMs = garageWaitMs;
-const cpuOverride = Number(option('cpu', ''));
+const cpuOverride = Number(option("cpu", ""));
 if (cpuOverride > 0) selected.cpuRate = cpuOverride;
-const coresOverride = Number(option('cores', ''));
-const memoryOverride = Number(option('memory', ''));
+const coresOverride = Number(option("cores", ""));
+const memoryOverride = Number(option("memory", ""));
 if (coresOverride > 0) selected.cores = coresOverride;
 if (memoryOverride > 0) selected.memoryGB = memoryOverride;
-selected.throttleStage = option('throttle-stage', profileName === 'normal' ? 'boot' : 'live');
+selected.throttleStage = option(
+  "throttle-stage",
+  profileName === "normal" ? "boot" : "live",
+);
 selected.cpuProfile = cpuProfileEnabled;
-if (!['boot', 'countdown', 'live'].includes(selected.throttleStage)) {
-  throw new Error('--throttle-stage must be boot, countdown, or live');
+if (!["boot", "countdown", "live"].includes(selected.throttleStage)) {
+  throw new Error("--throttle-stage must be boot, countdown, or live");
 }
 
 const percentile = (values, q) => {
@@ -64,49 +84,84 @@ const percentile = (values, q) => {
 };
 function frameWindow(trace, fromMs, toMs) {
   const ix = Object.fromEntries(trace.frameSchema.map((name, i) => [name, i]));
-  const frames = trace.frames.filter((row) => row[ix.tMs] >= fromMs && row[ix.tMs] <= toMs);
+  const frames = trace.frames.filter(
+    (row) => row[ix.tMs] >= fromMs && row[ix.tMs] <= toMs,
+  );
   const gaps = frames.map((row) => row[ix.gapMs]);
   const programs = frames.map((row) => row[ix.programs]);
   const requestedDurationMs = Math.max(0, toMs - fromMs);
-  const observedDurationMs = frames.length > 1
-    ? frames[frames.length - 1][ix.tMs] - frames[0][ix.tMs] : 0;
+  const observedDurationMs =
+    frames.length > 1
+      ? frames[frames.length - 1][ix.tMs] - frames[0][ix.tMs]
+      : 0;
   return {
-    fromMs: +fromMs.toFixed(1), toMs: +toMs.toFixed(1), frames: frames.length,
+    fromMs: +fromMs.toFixed(1),
+    toMs: +toMs.toFixed(1),
+    frames: frames.length,
     requestedDurationMs: +requestedDurationMs.toFixed(1),
     observedDurationMs: +observedDurationMs.toFixed(1),
-    effectiveFps: observedDurationMs > 0
-      ? +((frames.length - 1) * 1000 / observedDurationMs).toFixed(2) : 0,
-    averageGapMs: gaps.length ? +(gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length).toFixed(2) : 0,
-    gapP50: +percentile(gaps, .5).toFixed(2), gapP95: +percentile(gaps, .95).toFixed(2),
-    gapP99: +percentile(gaps, .99).toFixed(2), maxGapMs: +(Math.max(0, ...gaps)).toFixed(2),
+    effectiveFps:
+      observedDurationMs > 0
+        ? +(((frames.length - 1) * 1000) / observedDurationMs).toFixed(2)
+        : 0,
+    averageGapMs: gaps.length
+      ? +(gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length).toFixed(2)
+      : 0,
+    gapP50: +percentile(gaps, 0.5).toFixed(2),
+    gapP95: +percentile(gaps, 0.95).toFixed(2),
+    gapP99: +percentile(gaps, 0.99).toFixed(2),
+    maxGapMs: +Math.max(0, ...gaps).toFixed(2),
     programBirths: programs.length ? Math.max(...programs) - programs[0] : 0,
-    longTasks: trace.events.filter((row) => row.kind === 'anomaly' && row.name === 'longtask'
-      && row.tMs >= fromMs && row.tMs <= toMs).length,
-    freezes: trace.events.filter((row) => row.kind === 'anomaly'
-      && ['screen:freeze', 'sim:freeze', 'render:freeze'].includes(row.name)
-      && row.tMs >= fromMs && row.tMs <= toMs).length,
+    longTasks: trace.events.filter(
+      (row) =>
+        row.kind === "anomaly" &&
+        row.name === "longtask" &&
+        row.tMs >= fromMs &&
+        row.tMs <= toMs,
+    ).length,
+    freezes: trace.events.filter(
+      (row) =>
+        row.kind === "anomaly" &&
+        ["screen:freeze", "sim:freeze", "render:freeze"].includes(row.name) &&
+        row.tMs >= fromMs &&
+        row.tMs <= toMs,
+    ).length,
   };
 }
 function countdownWindow(trace) {
   const ix = Object.fromEntries(trace.frameSchema.map((name, i) => [name, i]));
-  const frames = trace.frames.filter((row) => row[ix.phase] === 'battle'
-    && Number.isFinite(row[ix.preBattleS]) && row[ix.preBattleS] > 0);
+  const frames = trace.frames.filter(
+    (row) =>
+      row[ix.phase] === "battle" &&
+      Number.isFinite(row[ix.preBattleS]) &&
+      row[ix.preBattleS] > 0,
+  );
   if (!frames.length) return null;
-  return frameWindow(trace, frames[0][ix.tMs], frames[frames.length - 1][ix.tMs]);
+  return frameWindow(
+    trace,
+    frames[0][ix.tMs],
+    frames[frames.length - 1][ix.tMs],
+  );
 }
 function firstLiveWindow(trace, durationMs = 5000) {
   const ix = Object.fromEntries(trace.frameSchema.map((name, i) => [name, i]));
-  const rollout = trace.events.find((row) => row.name === 'battle:rollout');
-  const first = trace.frames.find((row) => row[ix.phase] === 'battle' && row[ix.preBattleS] <= 0);
+  const rollout = trace.events.find((row) => row.name === "battle:rollout");
+  const first = trace.frames.find(
+    (row) => row[ix.phase] === "battle" && row[ix.preBattleS] <= 0,
+  );
   const fromMs = rollout?.tMs ?? first?.[ix.tMs];
   if (!Number.isFinite(fromMs)) return null;
   return frameWindow(trace, fromMs, fromMs + durationMs);
 }
 function battleOpenWindow(trace) {
   const ix = Object.fromEntries(trace.frameSchema.map((name, i) => [name, i]));
-  const explicit = trace.events.find((row) => row.kind === 'mark' && row.name === 'battle:open');
+  const explicit = trace.events.find(
+    (row) => row.kind === "mark" && row.name === "battle:open",
+  );
   if (explicit) return frameWindow(trace, explicit.tMs, explicit.tMs + 10000);
-  const first = trace.frames.find((row) => row[ix.phase] === 'battle' && row[ix.preBattleS] <= 0);
+  const first = trace.frames.find(
+    (row) => row[ix.phase] === "battle" && row[ix.preBattleS] <= 0,
+  );
   if (!first) return null;
   return frameWindow(trace, first[ix.tMs], first[ix.tMs] + 10000);
 }
@@ -114,15 +169,19 @@ function topSelf(profile, limit = 30) {
   const byFunction = new Map();
   for (const node of profile.nodes || []) {
     const frame = node.callFrame || {};
-    const cleanUrl = (frame.url || '').replace(/^.*\/(src|node_modules)\//, '$1/').split('?')[0];
-    const key = `${frame.functionName || '(anonymous)'} @ ${cleanUrl}:${(frame.lineNumber ?? -1) + 1}`;
+    const cleanUrl = (frame.url || "")
+      .replace(/^.*\/(src|node_modules)\//, "$1/")
+      .split("?")[0];
+    const key = `${frame.functionName || "(anonymous)"} @ ${cleanUrl}:${(frame.lineNumber ?? -1) + 1}`;
     byFunction.set(key, (byFunction.get(key) || 0) + (node.hitCount || 0));
   }
   const hits = [...byFunction.values()].reduce((sum, n) => sum + n, 0);
-  const intervalUs = profile.endTime && profile.startTime && hits
-    ? (profile.endTime - profile.startTime) / hits : 500;
+  const intervalUs =
+    profile.endTime && profile.startTime && hits
+      ? (profile.endTime - profile.startTime) / hits
+      : 500;
   return [...byFunction.entries()]
-    .map(([fn, n]) => ({ fn, selfMs: +(n * intervalUs / 1000).toFixed(2) }))
+    .map(([fn, n]) => ({ fn, selfMs: +((n * intervalUs) / 1000).toFixed(2) }))
     .sort((a, b) => b.selfMs - a.selfMs)
     .slice(0, limit);
 }
@@ -132,14 +191,15 @@ function topSelf(profile, limit = 30) {
 // game code ran).
 const port = 7200 + Math.floor(Math.random() * 500);
 const server = await createServer({
-  root: process.cwd(), logLevel: 'error',
-  server: { port, strictPort: false, hmr: false, watch: { ignored: ['**/*'] } },
+  root: process.cwd(),
+  logLevel: "error",
+  server: { port, strictPort: false, hmr: false, watch: { ignored: ["**/*"] } },
   optimizeDeps: {
-    entries: ['index.html'],
+    entries: ["index.html"],
     include: [
-      'three',
-      'three/examples/jsm/utils/BufferGeometryUtils.js',
-      'three/examples/jsm/geometries/RoundedBoxGeometry.js',
+      "three",
+      "three/examples/jsm/utils/BufferGeometryUtils.js",
+      "three/examples/jsm/geometries/RoundedBoxGeometry.js",
     ],
   },
 });
@@ -148,9 +208,10 @@ let profilerRunning = false;
 let readyWallMs = null;
 let bootTrace = null;
 let garageDwell = null;
-let url = '';
+let url = "";
 const consoleErrors = [];
-let watchdogTimer = null, watchdogStage = null;
+let watchdogTimer = null,
+  watchdogStage = null;
 function armWatchdog(stage) {
   clearTimeout(watchdogTimer);
   watchdogStage = null;
@@ -160,49 +221,84 @@ function armWatchdog(stage) {
     // only this probe-owned Chrome to enforce a real wall-clock bound.
     const ownedBrowser = browser;
     browser = null;
-    try { ownedBrowser?.process()?.kill('SIGKILL'); } catch (_) { /* already gone */ }
+    try {
+      ownedBrowser?.process()?.kill("SIGKILL");
+    } catch (_) {
+      /* already gone */
+    }
   }, openTimeoutMs + 15000);
 }
-function disarmWatchdog() { clearTimeout(watchdogTimer); watchdogTimer = null; }
+function disarmWatchdog() {
+  clearTimeout(watchdogTimer);
+  watchdogTimer = null;
+}
 try {
   await server.listen();
-  const launchArgs = ['--use-gl=angle', '--enable-webgl', '--no-sandbox', '--disable-dev-shm-usage'];
-  if (selected.softwareGPU) launchArgs.push('--use-angle=swiftshader', '--enable-unsafe-swiftshader');
+  const launchArgs = [
+    "--use-gl=angle",
+    "--enable-webgl",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+  ];
+  if (selected.softwareGPU)
+    launchArgs.push("--use-angle=swiftshader", "--enable-unsafe-swiftshader");
   browser = await puppeteer.launch({
-    headless: 'new', protocolTimeout: Math.max(30000, Math.min(300000, openTimeoutMs + 15000)),
+    headless: "new",
+    protocolTimeout: Math.max(30000, Math.min(300000, openTimeoutMs + 15000)),
     args: launchArgs,
   });
   page = await browser.newPage();
   await page.setViewport(viewport);
-  page.on('pageerror', (error) => consoleErrors.push(`pageerror: ${error.message}`));
-  page.on('console', (message) => {
-    if (message.type() === 'error' && !message.text().includes('favicon')) {
+  page.on("pageerror", (error) =>
+    consoleErrors.push(`pageerror: ${error.message}`),
+  );
+  page.on("console", (message) => {
+    if (message.type() === "error" && !message.text().includes("favicon")) {
       consoleErrors.push(`console: ${message.text()}`);
     }
   });
   if (selected.cores || selected.memoryGB) {
-    await page.evaluateOnNewDocument((cores, memoryGB) => {
-      if (cores) Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', { configurable: true, get: () => cores });
-      if (memoryGB) Object.defineProperty(Navigator.prototype, 'deviceMemory', { configurable: true, get: () => memoryGB });
-    }, selected.cores, selected.memoryGB);
+    await page.evaluateOnNewDocument(
+      (cores, memoryGB) => {
+        if (cores)
+          Object.defineProperty(Navigator.prototype, "hardwareConcurrency", {
+            configurable: true,
+            get: () => cores,
+          });
+        if (memoryGB)
+          Object.defineProperty(Navigator.prototype, "deviceMemory", {
+            configurable: true,
+            get: () => memoryGB,
+          });
+      },
+      selected.cores,
+      selected.memoryGB,
+    );
   }
   cdp = await page.createCDPSession();
   const emulation = {};
   async function cdpTry(method, params) {
-    const rows = emulation[method] ||= [];
-    try { await cdp.send(method, params); rows.push({ params, status: 'ok' }); }
-    catch (error) { rows.push({ params, status: `unsupported: ${error.message}` }); }
+    const rows = (emulation[method] ||= []);
+    try {
+      await cdp.send(method, params);
+      rows.push({ params, status: "ok" });
+    } catch (error) {
+      rows.push({ params, status: `unsupported: ${error.message}` });
+    }
   }
-  await cdpTry('Emulation.setCPUThrottlingRate', {
-    rate: selected.throttleStage === 'boot' ? selected.cpuRate : 1,
+  await cdpTry("Emulation.setCPUThrottlingRate", {
+    rate: selected.throttleStage === "boot" ? selected.cpuRate : 1,
   });
-  if (selected.cores) await cdpTry('Emulation.setHardwareConcurrencyOverride', { hardwareConcurrency: selected.cores });
+  if (selected.cores)
+    await cdpTry("Emulation.setHardwareConcurrencyOverride", {
+      hardwareConcurrency: selected.cores,
+    });
   if (cpuProfileEnabled) {
-    await cdp.send('Profiler.enable');
+    await cdp.send("Profiler.enable");
     // A 4x-throttled isolate can generate a multi-minute 0.5 ms profile that
     // times out while DevTools serializes it. One-millisecond sampling still
     // resolves the hot renderer stacks while halving probe overhead/output.
-    await cdp.send('Profiler.setSamplingInterval', {
+    await cdp.send("Profiler.setSamplingInterval", {
       interval: selected.cpuRate >= 4 ? 1000 : 500,
     });
   }
@@ -210,98 +306,136 @@ try {
   // and shader compilation. Keep the lossless in-page recorder on for that window,
   // then start CPU sampling at battle-open so the diagnostic does not create
   // the multi-minute CDP stall it is trying to measure.
-  if (cpuProfileEnabled && (entryMode === 'debug' || profileLoad)) {
-    await cdp.send('Profiler.start');
+  if (cpuProfileEnabled && (entryMode === "debug" || profileLoad)) {
+    await cdp.send("Profiler.start");
     profilerRunning = true;
   }
 
   url = `http://localhost:${server.config.server.port}/?nosplash=1&tier=${deviceTier}&gfxreset=1`;
   const bootStarted = Date.now();
-  armWatchdog('game-ready-or-battle-open');
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 180000 });
-  await page.waitForFunction('window.__GAME_READY === true && window.__DEV_TRACE?.enabled === true', { timeout: 240000 });
+  armWatchdog("game-ready-or-battle-open");
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 180000 });
+  await page.waitForFunction(
+    "window.__GAME_READY === true && window.__DEV_TRACE?.enabled === true",
+    { timeout: 240000 },
+  );
   await page.bringToFront();
   readyWallMs = Date.now() - bootStarted;
   // Preserve boot events/long tasks before the play window gets a fresh clock.
   // Defer the optional driver query so it cannot contaminate boot attribution.
-  bootTrace = await page.evaluate(() => window.__DEV_TRACE.snapshot({ gpu: false }));
+  bootTrace = await page.evaluate(() =>
+    window.__DEV_TRACE.snapshot({ gpu: false }),
+  );
   if (garageWaitMs) {
     await new Promise((resolveWait) => setTimeout(resolveWait, garageWaitMs));
     garageDwell = await page.evaluate(() => {
       const trace = window.__DEV_TRACE.snapshot({ gpu: false });
       return {
         stats: trace.stats,
-        anomalies: trace.events.filter((row) => row.kind === 'anomaly'),
+        anomalies: trace.events.filter((row) => row.kind === "anomaly"),
         worldPrefetch: window.__WORLD_PREFETCH || null,
       };
     });
   }
-  await page.evaluate((metadata) => {
-    window.__DEV_TRACE.clear();
-    window.__DEV_TRACE.mark('probe:start', metadata);
-  }, { profile: profileName, entry: entryMode, seconds, syntheticFreezeExcluded: true });
+  await page.evaluate(
+    (metadata) => {
+      window.__DEV_TRACE.clear();
+      window.__DEV_TRACE.mark("probe:start", metadata);
+    },
+    {
+      profile: profileName,
+      entry: entryMode,
+      seconds,
+      syntheticFreezeExcluded: true,
+    },
+  );
 
   // Queue the synchronous battle constructor as a page task, so DevTools gets
   // control back before it starts. The two marks expose its exact wall block.
   await page.evaluate((entry) => {
     setTimeout(async () => {
-      window.__DEV_TRACE.mark('battle:start-request', { tank: 'm1a2', entry });
-      if (entry === 'real') await window.__DEBUG.beginSoloBattle({ specId: 'm1a2', mapId: 'verdant' });
-      else window.__DEBUG.startBattle('m1a2');
-      window.__DEV_TRACE.mark('battle:start-returned', { entry });
+      window.__DEV_TRACE.mark("battle:start-request", { tank: "m1a2", entry });
+      if (entry === "real")
+        await window.__DEBUG.beginSoloBattle({
+          specId: "m1a2",
+          mapId: "verdant",
+        });
+      else window.__DEBUG.startBattle("m1a2");
+      window.__DEV_TRACE.mark("battle:start-returned", { entry });
     }, 0);
   }, entryMode);
   await page.waitForFunction(
     'window.__DEV_TRACE.tail(20, "mark").some((row) => row.name === "battle:start-returned")',
-    { timeout: openTimeoutMs, polling: 50 });
-  if (selected.throttleStage === 'countdown') {
-    await cdpTry('Emulation.setCPUThrottlingRate', { rate: selected.cpuRate });
-    await page.evaluate((rate) => window.__DEV_TRACE.mark('probe:cpu-throttle', { rate }), selected.cpuRate);
+    { timeout: openTimeoutMs, polling: 50 },
+  );
+  if (selected.throttleStage === "countdown") {
+    await cdpTry("Emulation.setCPUThrottlingRate", { rate: selected.cpuRate });
+    await page.evaluate(
+      (rate) => window.__DEV_TRACE.mark("probe:cpu-throttle", { rate }),
+      selected.cpuRate,
+    );
   }
   await page.waitForFunction(
     'window.__DEBUG.game.phase === "battle" && window.__DEBUG.game.preBattleS <= 0',
-    { timeout: openTimeoutMs, polling: 50 });
+    { timeout: openTimeoutMs, polling: 50 },
+  );
   disarmWatchdog();
   if (cpuProfileEnabled && !profilerRunning) {
-    await cdp.send('Profiler.start');
+    await cdp.send("Profiler.start");
     profilerRunning = true;
   }
   // Install the complete drive before live throttling. DevTools page/Input
   // commands can themselves starve behind a 4x-throttled, 0.5 ms-sampled V8
   // isolate even when rAF remains healthy; an in-page timer keeps the tested
   // workload independent of that transport artifact.
-  await page.evaluate((durationMs) => {
-    window.__DEV_TRACE.mark('battle:open', {});
-    window.__DEBUG.aimAtNearest();
-    window.__DEBUG.flags.forceFire = true;
-    window.dispatchEvent(new KeyboardEvent('keydown', {
-      code: 'KeyW', key: 'w', bubbles: true,
-    }));
-    let finished = false;
-    window.__PERF_FINISH_DRIVE = () => {
-      if (finished) return;
-      finished = true;
-      window.dispatchEvent(new KeyboardEvent('keyup', {
-        code: 'KeyW', key: 'w', bubbles: true,
-      }));
-      window.__DEBUG.flags.forceFire = false;
-      const player = window.__DEBUG.game.player;
-      if (player?.input) { player.input.throttle = 0; player.input.steer = 0; }
-      window.__DEV_TRACE.mark('probe:natural-end', {});
-    };
-    setTimeout(window.__PERF_FINISH_DRIVE, durationMs);
-  }, Math.round(seconds * 1000));
-  if (selected.throttleStage === 'live') {
-    await cdpTry('Emulation.setCPUThrottlingRate', { rate: selected.cpuRate });
+  await page.evaluate(
+    (durationMs) => {
+      window.__DEV_TRACE.mark("battle:open", {});
+      window.__DEBUG.aimAtNearest();
+      window.__DEBUG.flags.forceFire = true;
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          code: "KeyW",
+          key: "w",
+          bubbles: true,
+        }),
+      );
+      let finished = false;
+      window.__PERF_FINISH_DRIVE = () => {
+        if (finished) return;
+        finished = true;
+        window.dispatchEvent(
+          new KeyboardEvent("keyup", {
+            code: "KeyW",
+            key: "w",
+            bubbles: true,
+          }),
+        );
+        window.__DEBUG.flags.forceFire = false;
+        const player = window.__DEBUG.game.player;
+        if (player?.input) {
+          player.input.throttle = 0;
+          player.input.steer = 0;
+        }
+        window.__DEV_TRACE.mark("probe:natural-end", {});
+      };
+      setTimeout(window.__PERF_FINISH_DRIVE, durationMs);
+    },
+    Math.round(seconds * 1000),
+  );
+  if (selected.throttleStage === "live") {
+    await cdpTry("Emulation.setCPUThrottlingRate", { rate: selected.cpuRate });
   }
-  await new Promise((resolveWait) => setTimeout(resolveWait, Math.round(seconds * 1000 + 350)));
+  await new Promise((resolveWait) =>
+    setTimeout(resolveWait, Math.round(seconds * 1000 + 350)),
+  );
   let profile = { nodes: [] };
   if (profilerRunning) {
-    ({ profile } = await cdp.send('Profiler.stop'));
+    ({ profile } = await cdp.send("Profiler.stop"));
     profilerRunning = false;
   }
-  if (selected.cpuRate !== 1 && selected.throttleStage !== 'boot') {
-    await cdpTry('Emulation.setCPUThrottlingRate', { rate: 1 });
+  if (selected.cpuRate !== 1 && selected.throttleStage !== "boot") {
+    await cdpTry("Emulation.setCPUThrottlingRate", { rate: 1 });
   }
   const naturalStats = await page.evaluate(() => {
     window.__PERF_FINISH_DRIVE?.();
@@ -314,115 +448,198 @@ try {
     network: window.__NETWORK_LOAD || null,
     combatWarm: window.__COMBAT_WARM || null,
     countdownWarm: window.__BATTLE_COUNTDOWN_WARM || null,
-    glb: window.__GLB_STATS || null,
+    // GLB staging retired — procedural fleet (W09-D): __GLB_STATS read dropped.
     worldPrefetch: window.__WORLD_PREFETCH || null,
     rosterPrefetch: window.__ROSTER_PREFETCH || null,
   }));
   const countdown = countdownWindow(naturalTrace);
   const firstLive5s = firstLiveWindow(naturalTrace);
-  const cleanVisibleWindow = (window) => !!window
-    && window.programBirths === 0 && window.longTasks === 0 && window.freezes === 0
-    && window.gapP95 <= 50 && window.maxGapMs <= 100;
-  const entryHealth = entryMode === 'real' ? {
-    warmOwnedByTransition: loading.countdownWarm?.done === true
-      && loading.countdownWarm?.phase === 'transition',
-    countdownClean: cleanVisibleWindow(countdown),
-    firstLive5sClean: cleanVisibleWindow(firstLive5s),
-  } : null;
+  const cleanVisibleWindow = (window) =>
+    !!window &&
+    window.programBirths === 0 &&
+    window.longTasks === 0 &&
+    window.freezes === 0 &&
+    window.gapP95 <= 50 &&
+    window.maxGapMs <= 100;
+  const entryHealth =
+    entryMode === "real"
+      ? {
+          warmOwnedByTransition:
+            loading.countdownWarm?.done === true &&
+            loading.countdownWarm?.phase === "transition",
+          countdownClean: cleanVisibleWindow(countdown),
+          firstLive5sClean: cleanVisibleWindow(firstLive5s),
+        }
+      : null;
   if (entryHealth) entryHealth.pass = Object.values(entryHealth).every(Boolean);
 
   // Detector falsification: marked and kept out of naturalTrace/topSelf.
-  await page.evaluate(() => new Promise((resolveWait) => {
-    setTimeout(() => {
-      window.__DEV_TRACE.mark('probe:synthetic-freeze:start', { expectedMs: 320 });
-      const until = performance.now() + 320;
-      while (performance.now() < until) { /* intentional main-thread block */ }
-      window.__DEV_TRACE.mark('probe:synthetic-freeze:end', {});
-      resolveWait();
-    }, 0);
-  }));
+  await page.evaluate(
+    () =>
+      new Promise((resolveWait) => {
+        setTimeout(() => {
+          window.__DEV_TRACE.mark("probe:synthetic-freeze:start", {
+            expectedMs: 320,
+          });
+          const until = performance.now() + 320;
+          while (performance.now() < until) {
+            /* intentional main-thread block */
+          }
+          window.__DEV_TRACE.mark("probe:synthetic-freeze:end", {});
+          resolveWait();
+        }, 0);
+      }),
+  );
   await new Promise((resolveWait) => setTimeout(resolveWait, 1000));
   const trace = await page.evaluate(() => window.__DEV_TRACE.snapshot());
-  const syntheticStart = trace.events.find((row) => row.kind === 'mark' && row.name === 'probe:synthetic-freeze:start');
-  const syntheticFreeze = trace.events.find((row) => row.kind === 'anomaly'
-    && ['screen:freeze', 'frame:hidden-gap'].includes(row.name)
-    && row.seq > (syntheticStart?.seq || Infinity));
-  const syntheticLongTask = trace.events.find((row) => row.kind === 'anomaly' && row.name === 'longtask'
-    && row.seq > (syntheticStart?.seq || Infinity));
+  const syntheticStart = trace.events.find(
+    (row) => row.kind === "mark" && row.name === "probe:synthetic-freeze:start",
+  );
+  const syntheticFreeze = trace.events.find(
+    (row) =>
+      row.kind === "anomaly" &&
+      ["screen:freeze", "frame:hidden-gap"].includes(row.name) &&
+      row.seq > (syntheticStart?.seq || Infinity),
+  );
+  const syntheticLongTask = trace.events.find(
+    (row) =>
+      row.kind === "anomaly" &&
+      row.name === "longtask" &&
+      row.seq > (syntheticStart?.seq || Infinity),
+  );
   const result = {
-    version: 1, generatedAt: new Date().toISOString(), profile: profileName, entryMode,
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    profile: profileName,
+    entryMode,
     profileConfig: {
       ...selected,
       profileLoad,
       entryGateEnabled,
       gpuMeaning: selected.softwareGPU
-        ? 'SwiftShader software rasterizer: a severe GPU stress floor, not a calibrated low-end iGPU'
-        : 'Host ANGLE renderer; CPU/device traits are the only calibrated constraints',
+        ? "SwiftShader software rasterizer: a severe GPU stress floor, not a calibrated low-end iGPU"
+        : "Host ANGLE renderer; CPU/device traits are the only calibrated constraints",
     },
-    cdp: emulation, url, readyWallMs, seconds, bootTrace, garageDwell, loading,
+    cdp: emulation,
+    url,
+    readyWallMs,
+    seconds,
+    bootTrace,
+    garageDwell,
+    loading,
     entryHealth,
     natural: {
       stats: naturalTrace.stats,
       countdown,
       firstLive5s,
       battleOpen10s: battleOpenWindow(naturalTrace),
-      anomalies: naturalTrace.events.filter((row) => row.kind === 'anomaly'),
+      anomalies: naturalTrace.events.filter((row) => row.kind === "anomaly"),
       topSelf: topSelf(profile),
     },
     syntheticVerification: {
-      expectedMs: 320, freezeDetected: !!syntheticFreeze,
-      freeze: syntheticFreeze || null, longTaskDetected: !!syntheticLongTask,
+      expectedMs: 320,
+      freezeDetected: !!syntheticFreeze,
+      freeze: syntheticFreeze || null,
+      longTaskDetected: !!syntheticLongTask,
     },
     consoleErrors,
     trace,
   };
   mkdirSync(dirname(output), { recursive: true });
   writeFileSync(output, `${JSON.stringify(result, null, 2)}\n`);
-  console.log(JSON.stringify({
-    output, profile: profileName, readyWallMs,
-    gpu: trace.environment.gpu?.renderer || null,
-    natural: result.natural.stats,
-    entryHealth: result.entryHealth,
-    countdown: result.natural.countdown,
-    firstLive5s: result.natural.firstLive5s,
-    battleOpen10s: result.natural.battleOpen10s,
-    syntheticVerification: result.syntheticVerification,
-    consoleErrors,
-  }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        output,
+        profile: profileName,
+        readyWallMs,
+        gpu: trace.environment.gpu?.renderer || null,
+        natural: result.natural.stats,
+        entryHealth: result.entryHealth,
+        countdown: result.natural.countdown,
+        firstLive5s: result.natural.firstLive5s,
+        battleOpen10s: result.natural.battleOpen10s,
+        syntheticVerification: result.syntheticVerification,
+        consoleErrors,
+      },
+      null,
+      2,
+    ),
+  );
   if (!syntheticFreeze) process.exitCode = 2;
   if (consoleErrors.length) process.exitCode = 3;
-  if (entryGateEnabled && entryMode === 'real' && !entryHealth?.pass) process.exitCode = 4;
+  if (entryGateEnabled && entryMode === "real" && !entryHealth?.pass)
+    process.exitCode = 4;
 } catch (error) {
-  let partialTrace = null, partialProfile = null;
-  const devToolsResponsive = !(error.name === 'ProtocolError' && /timed out/i.test(error.message));
+  let partialTrace = null,
+    partialProfile = null;
+  const devToolsResponsive = !(
+    error.name === "ProtocolError" && /timed out/i.test(error.message)
+  );
   if (devToolsResponsive) {
     if (profilerRunning) {
-      try { ({ profile: partialProfile } = await cdp.send('Profiler.stop')); } catch (_) { /* renderer unavailable */ }
+      try {
+        ({ profile: partialProfile } = await cdp.send("Profiler.stop"));
+      } catch (_) {
+        /* renderer unavailable */
+      }
     }
-    try { partialTrace = await page?.evaluate(() => window.__DEV_TRACE?.snapshot() || null); } catch (_) { /* renderer unavailable */ }
+    try {
+      partialTrace = await page?.evaluate(
+        () => window.__DEV_TRACE?.snapshot() || null,
+      );
+    } catch (_) {
+      /* renderer unavailable */
+    }
   } else {
     // No second protocol wait: this is the very giant-task failure we report.
-    try { browser?.process()?.kill('SIGKILL'); } catch (_) { /* already gone */ }
+    try {
+      browser?.process()?.kill("SIGKILL");
+    } catch (_) {
+      /* already gone */
+    }
     browser = null;
   }
   profilerRunning = false;
   mkdirSync(dirname(output), { recursive: true });
-  writeFileSync(output, `${JSON.stringify({
-    version: 1, generatedAt: new Date().toISOString(), profile: profileName,
-    profileConfig: selected, failed: true, devToolsResponsive, watchdogStage,
-    url, readyWallMs, openTimeoutMs, bootTrace,
-    error: { name: error.name, message: error.message, stack: error.stack },
-    natural: partialTrace ? {
-      stats: partialTrace.stats,
-      countdown: countdownWindow(partialTrace),
-      firstLive5s: firstLiveWindow(partialTrace),
-      battleOpen10s: battleOpenWindow(partialTrace),
-      anomalies: partialTrace.events.filter((row) => row.kind === 'anomaly'),
-      topSelf: partialProfile ? topSelf(partialProfile) : [],
-    } : null,
-    consoleErrors, trace: partialTrace,
-  }, null, 2)}\n`);
-  console.error(`[dev-perf] failed; diagnostic written to ${output}\n${error.stack || error}`);
+  writeFileSync(
+    output,
+    `${JSON.stringify(
+      {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        profile: profileName,
+        profileConfig: selected,
+        failed: true,
+        devToolsResponsive,
+        watchdogStage,
+        url,
+        readyWallMs,
+        openTimeoutMs,
+        bootTrace,
+        error: { name: error.name, message: error.message, stack: error.stack },
+        natural: partialTrace
+          ? {
+              stats: partialTrace.stats,
+              countdown: countdownWindow(partialTrace),
+              firstLive5s: firstLiveWindow(partialTrace),
+              battleOpen10s: battleOpenWindow(partialTrace),
+              anomalies: partialTrace.events.filter(
+                (row) => row.kind === "anomaly",
+              ),
+              topSelf: partialProfile ? topSelf(partialProfile) : [],
+            }
+          : null,
+        consoleErrors,
+        trace: partialTrace,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  console.error(
+    `[dev-perf] failed; diagnostic written to ${output}\n${error.stack || error}`,
+  );
   process.exitCode = 1;
 } finally {
   disarmWatchdog();

@@ -23,16 +23,26 @@
 //   node tools/genIcons.mjs --dedup-existing   (browser-free: collapse the
 //       byte-identical marking sheets already recorded in the manifest)
 
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createServer } from 'vite';
-import puppeteer from 'puppeteer';
-import { TANK_ASSET_SCHEMA_VERSION, TANK_ASSET_VIEWS } from '../src/vehicles/tankAssets.js';
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createServer } from "vite";
+import puppeteer from "puppeteer";
+import {
+  TANK_ASSET_SCHEMA_VERSION,
+  TANK_ASSET_VIEWS,
+} from "../src/vehicles/tankAssets.js";
 
 const args = process.argv.slice(2);
-function opt(name, fallback = '') {
+function opt(name, fallback = "") {
   const prefix = `--${name}=`;
   const inline = args.find((arg) => arg.startsWith(prefix));
   if (inline) return inline.slice(prefix.length);
@@ -41,20 +51,26 @@ function opt(name, fallback = '') {
 }
 
 function sha256(buffer) {
-  return createHash('sha256').update(buffer).digest('hex');
+  return createHash("sha256").update(buffer).digest("hex");
 }
 
 // --- marking-sheet dedup core (pure, Node-runnable, covered by selftest) ----
 
-export const MARKINGS_SHARED_PREFIX = '_markings_shared_';
+export const MARKINGS_SHARED_PREFIX = "_markings_shared_";
 
 /** Content-addressed filename for a shared marking sheet. */
 export function sharedMarkingsName(shaHex) {
-  return `${MARKINGS_SHARED_PREFIX}${String(shaHex).replace(/[^0-9a-f]/g, '').slice(0, 12)}.png`;
+  return `${MARKINGS_SHARED_PREFIX}${String(shaHex)
+    .replace(/[^0-9a-f]/g, "")
+    .slice(0, 12)}.png`;
 }
 
 export function isSharedMarkingsName(file) {
-  return typeof file === 'string' && file.startsWith(MARKINGS_SHARED_PREFIX) && file.endsWith('.png');
+  return (
+    typeof file === "string" &&
+    file.startsWith(MARKINGS_SHARED_PREFIX) &&
+    file.endsWith(".png")
+  );
 }
 
 /**
@@ -66,7 +82,10 @@ export function isSharedMarkingsName(file) {
  * @param {Map<string, string>} [existingSharedByHash] sha256 -> shared file already shipped
  * @returns {{ targetByTank: Map<string, {file: string, buffer: Buffer}>, sharedWrites: Map<string, Buffer> }}
  */
-export function assignMarkingsTargets(buffersByTank, existingSharedByHash = new Map()) {
+export function assignMarkingsTargets(
+  buffersByTank,
+  existingSharedByHash = new Map(),
+) {
   const byHash = new Map();
   for (const [id, buffer] of buffersByTank) {
     const sha = sha256(buffer);
@@ -77,12 +96,17 @@ export function assignMarkingsTargets(buffersByTank, existingSharedByHash = new 
   const sharedWrites = new Map();
   for (const [sha, ids] of byHash) {
     if (ids.length === 1 && !existingSharedByHash.has(sha)) {
-      targetByTank.set(ids[0], { file: `${ids[0]}_markings.png`, buffer: buffersByTank.get(ids[0]) });
+      targetByTank.set(ids[0], {
+        file: `${ids[0]}_markings.png`,
+        buffer: buffersByTank.get(ids[0]),
+      });
       continue;
     }
     const file = existingSharedByHash.get(sha) || sharedMarkingsName(sha);
-    for (const id of ids) targetByTank.set(id, { file, buffer: buffersByTank.get(id) });
-    if (!existingSharedByHash.has(sha)) sharedWrites.set(file, buffersByTank.get(ids[0]));
+    for (const id of ids)
+      targetByTank.set(id, { file, buffer: buffersByTank.get(id) });
+    if (!existingSharedByHash.has(sha))
+      sharedWrites.set(file, buffersByTank.get(ids[0]));
   }
   return { targetByTank, sharedWrites };
 }
@@ -96,7 +120,8 @@ export function planPrune(previousFiles, referencedFiles) {
 function writeIfChanged(outDir, file, buffer) {
   const path = resolve(outDir, file);
   if (existsSync(path)) {
-    if (readFileSync(path).equals(buffer)) return { existed: true, changed: false };
+    if (readFileSync(path).equals(buffer))
+      return { existed: true, changed: false };
     writeFileSync(path, buffer);
     return { existed: true, changed: true };
   }
@@ -111,7 +136,7 @@ function assetRecord(outDir, file, view) {
     file,
     width: def.width,
     height: def.height,
-    mime: def.ext === 'png' ? 'image/png' : 'image/webp',
+    mime: def.ext === "png" ? "image/png" : "image/webp",
     bytes: buffer.length,
     sha256: sha256(buffer),
   };
@@ -125,7 +150,9 @@ function assetRecord(outDir, file, view) {
  */
 export function dedupExistingMarkings({ outDir, manifestPath, manifest }) {
   if (!manifest || !manifest.tanks || !Object.keys(manifest.tanks).length) {
-    throw new Error('needs an existing complete manifest; run the full fleet once first');
+    throw new Error(
+      "needs an existing complete manifest; run the full fleet once first",
+    );
   }
   const buffersByTank = new Map();
   const records = new Map();
@@ -134,7 +161,9 @@ export function dedupExistingMarkings({ outDir, manifestPath, manifest }) {
     if (!rec || !rec.file) continue;
     const buffer = readFileSync(resolve(outDir, rec.file));
     if (sha256(buffer) !== rec.sha256 || buffer.length !== rec.bytes) {
-      throw new Error(`${id}: ${rec.file} drifted from its manifest record; regenerate the fleet before deduplicating`);
+      throw new Error(
+        `${id}: ${rec.file} drifted from its manifest record; regenerate the fleet before deduplicating`,
+      );
     }
     buffersByTank.set(id, buffer);
     records.set(id, rec);
@@ -147,10 +176,14 @@ export function dedupExistingMarkings({ outDir, manifestPath, manifest }) {
   }
   const existingSharedByHash = new Map();
   for (const [, rec] of records) {
-    if (isSharedMarkingsName(rec.file)) existingSharedByHash.set(rec.sha256, rec.file);
+    if (isSharedMarkingsName(rec.file))
+      existingSharedByHash.set(rec.sha256, rec.file);
   }
 
-  const { targetByTank, sharedWrites } = assignMarkingsTargets(buffersByTank, existingSharedByHash);
+  const { targetByTank, sharedWrites } = assignMarkingsTargets(
+    buffersByTank,
+    existingSharedByHash,
+  );
   let createdFiles = 0;
   let createdBytes = 0;
   for (const [file, buffer] of sharedWrites) {
@@ -168,7 +201,7 @@ export function dedupExistingMarkings({ outDir, manifestPath, manifest }) {
     if (!target) continue;
     const rec = tank.assets.markings;
     if (rec && rec.file !== target.file) {
-      tank.assets.markings = assetRecord(outDir, target.file, 'markings');
+      tank.assets.markings = assetRecord(outDir, target.file, "markings");
       repointed++;
     }
     if (isSharedMarkingsName(target.file)) {
@@ -190,7 +223,9 @@ export function dedupExistingMarkings({ outDir, manifestPath, manifest }) {
     const path = resolve(outDir, file);
     try {
       deletedBytes += statSync(path).size;
-    } catch { /* already gone */ }
+    } catch {
+      /* already gone */
+    }
     rmSync(path, { force: true });
     deletedFiles++;
   }
@@ -213,128 +248,192 @@ export function dedupExistingMarkings({ outDir, manifestPath, manifest }) {
 // --- generation driver ------------------------------------------------------
 
 async function main() {
-  const outDir = resolve(opt('out', 'public/icons'));
-  const selected = opt('tanks') || opt('ids');
-  const onlyTanks = selected ? selected.split(',').map((id) => id.trim()).filter(Boolean) : [];
-  const selectedViews = opt('views')
-    ? opt('views').split(',').map((view) => view.trim()).filter(Boolean)
+  const outDir = resolve(opt("out", "public/icons"));
+  const selected = opt("tanks") || opt("ids");
+  const onlyTanks = selected
+    ? selected
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean)
+    : [];
+  const selectedViews = opt("views")
+    ? opt("views")
+        .split(",")
+        .map((view) => view.trim())
+        .filter(Boolean)
     : Object.keys(TANK_ASSET_VIEWS);
-  const allowPartial = args.includes('--allow-partial');
-  const manifestPath = resolve(outDir, 'tank-assets.json');
+  const allowPartial = args.includes("--allow-partial");
+  const manifestPath = resolve(outDir, "tank-assets.json");
   mkdirSync(outDir, { recursive: true });
 
   function readManifest() {
     if (!existsSync(manifestPath)) return null;
-    return JSON.parse(readFileSync(manifestPath, 'utf8'));
+    return JSON.parse(readFileSync(manifestPath, "utf8"));
   }
 
   let startingManifest = readManifest();
   for (const view of selectedViews) {
     if (!TANK_ASSET_VIEWS[view]) {
-      console.error(`[tank-assets] Unknown view '${view}'. Expected one of: ${Object.keys(TANK_ASSET_VIEWS).join(', ')}`);
+      console.error(
+        `[tank-assets] Unknown view '${view}'. Expected one of: ${Object.keys(TANK_ASSET_VIEWS).join(", ")}`,
+      );
       process.exit(1);
     }
   }
-  if (args.includes('--dedup-existing')) {
+  if (args.includes("--dedup-existing")) {
     if (onlyTanks.length) {
-      console.error('[tank-assets] dedup FAILED: --dedup-existing operates on the whole manifest; drop --tanks/--ids');
+      console.error(
+        "[tank-assets] dedup FAILED: --dedup-existing operates on the whole manifest; drop --tanks/--ids",
+      );
       process.exit(1);
     }
     if (!startingManifest) {
-      console.error('[tank-assets] dedup FAILED: missing tank-assets.json; run the full fleet once first');
+      console.error(
+        "[tank-assets] dedup FAILED: missing tank-assets.json; run the full fleet once first",
+      );
       process.exit(1);
     }
     if (startingManifest.schemaVersion !== TANK_ASSET_SCHEMA_VERSION) {
-      console.error(`[tank-assets] dedup FAILED: manifest schema ${startingManifest.schemaVersion} != generator schema ${TANK_ASSET_SCHEMA_VERSION}; regenerate the full fleet first`);
+      console.error(
+        `[tank-assets] dedup FAILED: manifest schema ${startingManifest.schemaVersion} != generator schema ${TANK_ASSET_SCHEMA_VERSION}; regenerate the full fleet first`,
+      );
       process.exit(1);
     }
     try {
-      const summary = dedupExistingMarkings({ outDir, manifestPath, manifest: startingManifest });
+      const summary = dedupExistingMarkings({
+        outDir,
+        manifestPath,
+        manifest: startingManifest,
+      });
       for (const group of summary.groups) {
-        console.log(`[tank-assets] ${group.file} <- ${group.ids.join(', ')}`);
+        console.log(`[tank-assets] ${group.file} <- ${group.ids.join(", ")}`);
       }
       const net = summary.deletedBytes - summary.createdBytes;
-      console.log(`[tank-assets] dedup: ${summary.repointed} record(s) repointed, `
-        + `${summary.createdFiles} shared file(s) created (${summary.createdBytes} bytes), `
-        + `${summary.deletedFiles} duplicate file(s) removed (${summary.deletedBytes} bytes), `
-        + `net ${net >= 0 ? '' : '-'}${Math.abs(net)} bytes`);
+      console.log(
+        `[tank-assets] dedup: ${summary.repointed} record(s) repointed, ` +
+          `${summary.createdFiles} shared file(s) created (${summary.createdBytes} bytes), ` +
+          `${summary.deletedFiles} duplicate file(s) removed (${summary.deletedBytes} bytes), ` +
+          `net ${net >= 0 ? "" : "-"}${Math.abs(net)} bytes`,
+      );
     } catch (error) {
       console.error(`[tank-assets] dedup FAILED: ${error.message}`);
       process.exit(1);
     }
     process.exit(0);
   }
-  if (selectedViews.length < Object.keys(TANK_ASSET_VIEWS).length && !startingManifest && !allowPartial) {
-    console.error('[tank-assets] Selective view generation needs an existing complete manifest.');
+  if (
+    selectedViews.length < Object.keys(TANK_ASSET_VIEWS).length &&
+    !startingManifest &&
+    !allowPartial
+  ) {
+    console.error(
+      "[tank-assets] Selective view generation needs an existing complete manifest.",
+    );
     process.exit(1);
   }
   if (onlyTanks.length && !startingManifest && !allowPartial) {
-    console.error('[tank-assets] Selective generation needs an existing complete manifest;');
-    console.error('[tank-assets] run the full fleet once or pass --allow-partial for scratch output.');
+    console.error(
+      "[tank-assets] Selective generation needs an existing complete manifest;",
+    );
+    console.error(
+      "[tank-assets] run the full fleet once or pass --allow-partial for scratch output.",
+    );
     process.exit(1);
   }
-  if (startingManifest && startingManifest.schemaVersion !== TANK_ASSET_SCHEMA_VERSION) {
+  if (
+    startingManifest &&
+    startingManifest.schemaVersion !== TANK_ASSET_SCHEMA_VERSION
+  ) {
     if (onlyTanks.length) {
-      console.error(`[tank-assets] Manifest schema ${startingManifest.schemaVersion} is incompatible with generator schema ${TANK_ASSET_SCHEMA_VERSION}; regenerate the full fleet.`);
+      console.error(
+        `[tank-assets] Manifest schema ${startingManifest.schemaVersion} is incompatible with generator schema ${TANK_ASSET_SCHEMA_VERSION}; regenerate the full fleet.`,
+      );
       process.exit(1);
     }
-    console.log(`[tank-assets] schema ${startingManifest.schemaVersion} -> ${TANK_ASSET_SCHEMA_VERSION}; regenerating the complete fleet`);
+    console.log(
+      `[tank-assets] schema ${startingManifest.schemaVersion} -> ${TANK_ASSET_SCHEMA_VERSION}; regenerating the complete fleet`,
+    );
     startingManifest = null;
   }
 
-  const viteCacheDir = resolve('/tmp', `cot-icons-vite-${process.pid}`);
+  const viteCacheDir = resolve("/tmp", `cot-icons-vite-${process.pid}`);
   const server = await createServer({
-    root: process.cwd(), configFile: false, cacheDir: viteCacheDir,
-    logLevel: 'error',
+    root: process.cwd(),
+    configFile: false,
+    cacheDir: viteCacheDir,
+    logLevel: "error",
     optimizeDeps: { noDiscovery: true },
-    server: { host: '127.0.0.1', port: 7400 + (process.pid % 200), strictPort: true, hmr: false, watch: null },
+    server: {
+      host: "127.0.0.1",
+      port: 7400 + (process.pid % 200),
+      strictPort: true,
+      hmr: false,
+      watch: null,
+    },
   });
   await server.listen();
   const address = server.httpServer.address();
-  const port = typeof address === 'object' && address ? address.port : server.config.server.port;
+  const port =
+    typeof address === "object" && address
+      ? address.port
+      : server.config.server.port;
   const url = `http://127.0.0.1:${port}/tools/icons-page.html`;
   console.log(`[tank-assets] studio ${url}`);
 
   const browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--use-gl=angle', '--enable-webgl', '--no-sandbox', '--disable-dev-shm-usage'],
+    headless: "new",
+    args: [
+      "--use-gl=angle",
+      "--enable-webgl",
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+    ],
   });
   const page = await browser.newPage();
   const pageErrors = [];
-  page.on('pageerror', (error) => pageErrors.push(String(error)));
-  page.on('console', (message) => {
-    if (message.type() === 'error' && !message.text().includes('favicon') && !message.text().includes('404')) {
+  page.on("pageerror", (error) => pageErrors.push(String(error)));
+  page.on("console", (message) => {
+    if (
+      message.type() === "error" &&
+      !message.text().includes("favicon") &&
+      !message.text().includes("404")
+    ) {
       pageErrors.push(message.text());
     }
   });
 
   let failed = false;
   try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForFunction('window.__ICONS_READY === true', { timeout: 60000 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForFunction("window.__ICONS_READY === true", {
+      timeout: 60000,
+    });
     await page.evaluate((ids) => window.__WARM(ids), onlyTanks);
     await page.waitForFunction(
       () => {
+        // GLB staging retired — procedural fleet (W09-D): bounded poll-count
+        // settle only; the __GLB_STATS streak path lost its producer.
         window.__GLB_POLLS = (window.__GLB_POLLS || 0) + 1;
-        const stats = window.__GLB_STATS;
-        if (!stats) return window.__GLB_POLLS >= 10;
-        const settled = stats.started === stats.settled;
-        window.__GLB_SETTLE_STREAK = settled ? (window.__GLB_SETTLE_STREAK || 0) + 1 : 0;
-        return window.__GLB_SETTLE_STREAK >= 2;
+        return window.__GLB_POLLS >= 10;
       },
       { timeout: 120000, polling: 400 },
     );
 
-    const generated = await page.evaluate((ids, views) => window.__GEN(ids, views), onlyTanks, selectedViews);
+    const generated = await page.evaluate(
+      (ids, views) => window.__GEN(ids, views),
+      onlyTanks,
+      selectedViews,
+    );
 
     // Deduplicate marking sheets before anything is written: identical bytes
     // share one content-addressed file instead of one PNG per tank.
     const markingsBuffers = new Map();
-    if (selectedViews.includes('markings')) {
+    if (selectedViews.includes("markings")) {
       for (const [id, meta] of Object.entries(generated.tanks)) {
         const name = meta.requiredFiles && meta.requiredFiles.markings;
         const dataUrl = name && generated.files[name];
-        if (dataUrl) markingsBuffers.set(id, Buffer.from(dataUrl.split(',')[1], 'base64'));
+        if (dataUrl)
+          markingsBuffers.set(id, Buffer.from(dataUrl.split(",")[1], "base64"));
       }
     }
     const existingSharedByHash = new Map();
@@ -344,12 +443,21 @@ async function main() {
         if (!rec || !isSharedMarkingsName(rec.file)) continue;
         try {
           const buffer = readFileSync(resolve(outDir, rec.file));
-          if (sha256(buffer) === rec.sha256) existingSharedByHash.set(rec.sha256, rec.file);
-          else console.warn(`[tank-assets] shared sheet ${rec.file} drifted from its record; skipping adoption`);
-        } catch { /* missing file: regeneration recreates the content */ }
+          if (sha256(buffer) === rec.sha256)
+            existingSharedByHash.set(rec.sha256, rec.file);
+          else
+            console.warn(
+              `[tank-assets] shared sheet ${rec.file} drifted from its record; skipping adoption`,
+            );
+        } catch {
+          /* missing file: regeneration recreates the content */
+        }
       }
     }
-    const { targetByTank, sharedWrites } = assignMarkingsTargets(markingsBuffers, existingSharedByHash);
+    const { targetByTank, sharedWrites } = assignMarkingsTargets(
+      markingsBuffers,
+      existingSharedByHash,
+    );
     const supersededNames = new Set();
     for (const [id, target] of targetByTank) {
       const meta = generated.tanks[id];
@@ -358,19 +466,24 @@ async function main() {
     }
 
     for (const [name, dataUrl] of Object.entries(generated.files)) {
-      if (name.endsWith('.error')) {
+      if (name.endsWith(".error")) {
         failed = true;
         console.error(`[tank-assets] ${name}: ${dataUrl}`);
         continue;
       }
       if (supersededNames.has(name)) continue;
-      const buffer = Buffer.from(dataUrl.split(',')[1], 'base64');
+      const buffer = Buffer.from(dataUrl.split(",")[1], "base64");
       writeFileSync(resolve(outDir, name), buffer);
-      console.log(`[tank-assets] wrote ${name} (${Math.round(buffer.length / 1024)} KB)`);
+      console.log(
+        `[tank-assets] wrote ${name} (${Math.round(buffer.length / 1024)} KB)`,
+      );
     }
     for (const [file, buffer] of sharedWrites) {
       const result = writeIfChanged(outDir, file, buffer);
-      if (result.changed) console.log(`[tank-assets] wrote ${file} (${Math.round(buffer.length / 1024)} KB)`);
+      if (result.changed)
+        console.log(
+          `[tank-assets] wrote ${file} (${Math.round(buffer.length / 1024)} KB)`,
+        );
     }
 
     if (!failed) {
@@ -380,17 +493,24 @@ async function main() {
         const assets = { ...(previous?.tanks?.[id]?.assets || {}) };
         for (const [view, file] of Object.entries(meta.requiredFiles)) {
           if (!selectedViews.includes(view)) continue;
-          const target = view === 'markings' ? targetByTank.get(id) : undefined;
+          const target = view === "markings" ? targetByTank.get(id) : undefined;
           assets[view] = assetRecord(outDir, target ? target.file : file, view);
         }
         tanks[id] = { ...meta, assets };
         delete tanks[id].requiredFiles;
       }
-      const sortedTanks = Object.fromEntries(Object.entries(tanks).sort(([a], [b]) => a.localeCompare(b)));
+      const sortedTanks = Object.fromEntries(
+        Object.entries(tanks).sort(([a], [b]) => a.localeCompare(b)),
+      );
+      const partialFlag = onlyTanks.length
+        ? previous
+          ? !!previous.partial
+          : true
+        : false;
       const manifest = {
         schemaVersion: TANK_ASSET_SCHEMA_VERSION,
-        partial: onlyTanks.length ? (previous ? !!previous.partial : true) : false,
-        generator: 'tools/genIcons.mjs',
+        partial: partialFlag,
+        generator: "tools/genIcons.mjs",
         requiredViews: Object.keys(TANK_ASSET_VIEWS),
         tanks: sortedTanks,
       };
@@ -412,11 +532,17 @@ async function main() {
           }
         }
         const stale = planPrune(previousFiles, referenced);
-        for (const file of stale) rmSync(resolve(outDir, file), { force: true });
-        if (stale.length) console.log(`[tank-assets] pruned ${stale.length} unreferenced generated file(s): ${stale.join(', ')}`);
+        for (const file of stale)
+          rmSync(resolve(outDir, file), { force: true });
+        if (stale.length)
+          console.log(
+            `[tank-assets] pruned ${stale.length} unreferenced generated file(s): ${stale.join(", ")}`,
+          );
       }
       writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-      console.log(`[tank-assets] ${Object.keys(generated.tanks).length} tanks, ${Object.keys(generated.files).length - supersededNames.size} files -> ${outDir}`);
+      console.log(
+        `[tank-assets] ${Object.keys(generated.tanks).length} tanks, ${Object.keys(generated.files).length - supersededNames.size} files -> ${outDir}`,
+      );
       console.log(`[tank-assets] manifest ${manifestPath}`);
     }
   } catch (error) {
@@ -436,6 +562,9 @@ async function main() {
   process.exit(failed ? 1 : 0);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   await main();
 }
