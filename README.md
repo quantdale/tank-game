@@ -165,6 +165,11 @@ context loss. The current presentation path combines:
 
 The renderer reached **120 FPS on the certified test hardware**. Actual performance depends on refresh rate, browser,
 thermal limits, GPU and driver, resolution, and quality level. Combat rules remain fixed at 60 Hz at every render rate.
+Release-candidate certification (2026-08-22, sustained battle, worst-case roster, headed Chrome) measured an fps median of
+**59.9** at 60 Hz vsync with frame p50 ≈ 16.7 ms and p99 ≈ 33 ms, ≤811 draw calls on the worst frame, ~4.56 M triangles,
+and no retained heap growth; an uncontended garage probe medians **119 FPS** (8.4 ms frames). First battle open remains
+the expensive path when shader caches are cold (~155 s worst case; ~85 s for a returning player whose disk cache is
+warm, boot-to-garage 7 s) — a cold-cache cost, not per-session work.
 
 <table>
 <tr>
@@ -179,6 +184,12 @@ Local, LAN, browser-hosted private, and dedicated ranked modes share the same re
 Clients send intent, never trusted hits or damage. Snapshot filtering, local prediction/reconciliation, bounded remote
 interpolation, reliable fire edges, reconnectable room state, and separate control/chat delivery keep a moving and firing
 7v7 battle responsive without giving the client authority.
+
+Reachability status: local multiplayer is live-verified on the development host — signaling lifecycle, ranked
+queue → match → authoritative snapshot streaming, browser-pair guest entry, and mid-match peer-disconnect resilience
+(a disconnecting socket no longer crashes the dedicated match server for every room) all pass against real services.
+Production deployment still requires secure WebSocket/HTTP endpoints, explicit origin configuration, persistent rating
+storage, and TURN as described in [docs/MULTIPLAYER-ARCHITECTURE.md](docs/MULTIPLAYER-ARCHITECTURE.md).
 
 <p align="center">
   <img src="public/media/multiplayer-r1/dual-perspective.webp" alt="Side-by-side live browser multiplayer screens showing an M1A2 Abrams and T-90M Proryv facing each other from opposing player perspectives">
@@ -308,15 +319,25 @@ Start with [Technical overview](docs/TECHNICAL-OVERVIEW.md), [Product features](
 npm install
 npx vite
 npm test
+npm run test:journey
+npm run test:gate
 npm run test:net:browser
 npm run tank:native:check
 npm run build
 npm run build:private
 ```
 
-The public build strips quarantined comparison assets. Simulation, networking, browser multiplayer, maps, collision,
-destruction, rendering policy, UI, mobile controls, vehicle provenance, anatomy, generated assets, and both build variants
-have executable checks.
+`test:journey` drives a real browser through the full player loop (boot, garage,
+battle, damage, victory, rematch, death, wreck exit) as a headed end-to-end gate;
+`test:gate` discovers every tracked selftest, runs the suite with per-file
+evidence, and appends the journey. The public build is produced by
+`tools/build-public.mjs` and runs identically on Windows, macOS, and Linux —
+it strips quarantined comparison assets. Simulation, networking, browser
+multiplayer, maps, collision, destruction, rendering policy, UI, mobile
+controls, vehicle provenance, anatomy, generated assets, both build variants,
+and the player-journey E2E have executable checks; 180 selftest files are wired
+and a hard guard fails any future unwired test. See
+[docs/QA-COVERAGE.md](docs/QA-COVERAGE.md) for the coverage map.
 
 ## Credits and licensing
 

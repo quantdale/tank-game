@@ -62,12 +62,54 @@ clients/services, signaling, world collision, match pacing, movement, combat,
 spotting, bots, game state, equipment, consumables, mobile aim, vehicle
 contracts, world destruction, interface contracts, and track geometry.
 
+The chains are guarded: `tools/selftestChainGuard.selftest.mjs` runs inside
+`npm test` and fails if any git-tracked `*.selftest.mjs` is missing from all
+three npm chains. Adding a selftest without wiring it into package.json turns
+the suite red. See [QA-COVERAGE.md](QA-COVERAGE.md) for the full coverage map
+and wiring contract.
+
+Run the browser player-journey end-to-end probe:
+
+    npm run test:journey
+
+This drives a real headed Chrome through the complete player loop — boot,
+garage selection, solo battle entry on the real loading path, aim/fire with
+damage receipts, victory results, BATTLE AGAIN rematch, a death leg, and a
+wreck exit — through public `__DEBUG` hooks only. It needs a display and
+several minutes (battle-open staging dominates). Evidence JSON lands in
+`.qa-dev/player-journey-report.json`. Exit codes: 0 green, 1 assertion
+failure, 2 harness failure. `--headless` works on GPU-less hosts but stages
+roughly 1.4x slower under SwiftShader; keep battle-entry budgets generous
+(the probe uses 420 s).
+
+Run the discovery-based release gate:
+
+    npm run test:gate
+
+Equivalent to `node tools/release-gate.mjs --with-journey`. Instead of a
+copied list it discovers every tracked-or-wired `*.selftest.mjs`, runs them
+sequentially (server/net suites bind ports), reports per-file timings and
+domain summaries, writes JSON evidence to
+`.qa-dev/release-gate-report.json`, then appends the journey probe. Useful
+options: `--filter=<substring>` for a subset, `--chain=test` to mirror one
+npm chain's order, `--report=<path>` to relocate evidence. The full unit leg
+takes roughly five minutes; reserve a display for the journey tail.
+
 Build the public artifact:
 
     npm run build
 
-The public build runs Vite with public mode and then strips quarantined
-comparison assets.
+`npm run build` (and its alias `build:public`) executes
+`node tools/build-public.mjs`. The wrapper is shell-neutral: it sets
+`VITE_PUBLIC_BUILD=1` on the child process env in-process, spawns `vite build`
+directly through Node, and then runs the strip-quarantined-assets postbuild
+guard, which fails closed if any registered playable still references a
+stripped NC path. This replaces the historical POSIX-only
+`VITE_PUBLIC_BUILD=1 vite build && node tools/strip-nc-assets.mjs` chain,
+which npm could not run on Windows (cmd.exe cannot parse the `VAR=value`
+env-prefix form). Builds now work identically from cmd.exe, PowerShell, and
+POSIX shells; extra arguments are forwarded to Vite
+(`npm run build -- --force`).
 
 Build the private artifact:
 
@@ -90,6 +132,7 @@ internal workflows.
 | Landing page or public docs | public build, desktop and mobile browser inspection |
 | Scene Studio | Studio self-test and affected capture pipeline |
 | Signaling/ranked service | npm test plus service-specific integration test |
+| Release candidate / pre-ship sweep | npm run test:gate (full discovery gate + journey E2E) |
 
 Risk can require more than the minimum. A build passing does not replace a
 behavioral test, and a screenshot does not replace a simulation invariant.
@@ -103,7 +146,10 @@ Run:
 The rig starts signaling, Vite, and two Chromium peers. It exercises room code
 creation/join, host policy, team and spectator switching, same-vehicle identity
 separation, WebRTC handoff, authoritative movement, adverse delivery, and clean
-departure.
+departure. The soak/entry tools resolve page URLs through `fileURLToPath`, so
+they run on Windows hosts as well as POSIX ones; on machines where WinNAT
+reserves ephemeral port ranges, bind explicit ports to avoid EACCES from
+random-port selection.
 
 Entry-link verification:
 
@@ -294,4 +340,6 @@ Before a production release:
 - PERFORMANCE.md: render/load/per-frame performance design
 - STUDIO.md: Scene Studio API and determinism
 - TANK-ASSET-PIPELINE.md: generated vehicle asset contract
+- ASSET-PIPELINES.md: offline KTX2/Meshopt/ORM/PNG texture and geometry pipelines
+- QA-COVERAGE.md: selftest coverage map, wiring guard, journey/gate usage
 - INDEX.md: complete documentation map

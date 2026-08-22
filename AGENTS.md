@@ -89,7 +89,9 @@ worktree and never stage generated tank work wholesale.
   `NOTICE.md`; every playable spec inherits the named authorship record from
   `src/authorship.js`. Record third-party exceptions in `docs/ATTRIBUTION.md`
   and run `npm run attribution:check`.
-- Add focused `*.selftest.mjs` coverage and include it in `npm test`.
+- Add focused `*.selftest.mjs` coverage and include it in `npm test`; the
+  chain guard fails unwired tracked tests. Coverage map and gate usage:
+  `docs/QA-COVERAGE.md` (`npm run test:gate`, `npm run test:journey`).
 - Any playable tank addition or geometry/profile change must run the complete
   combat-anatomy procedure: `npm run tank:anatomy:update`,
   `npm run tank:anatomy:check`, then the targeted
