@@ -96,3 +96,10 @@ export const PROFILED_BUILDERS = Object.fromEntries(Object.entries(PROCEDURAL_PR
     : profile.base
     ? buildDonorVariant(P, profile)
     : buildProfile(P, profile)]));
+
+// Eager-union view of every family map, in flatten order. Exported for the
+// lazy-fleet contract selftest: the browser's per-family lazy groups must
+// expose exactly these ids with the exact same underlying profile rows
+// (identity, not deep-equality) so a split chunk can never drift from the
+// eager facade. Not imported by any runtime consumer.
+export { PROCEDURAL_PROFILES };

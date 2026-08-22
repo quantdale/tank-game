@@ -2,7 +2,7 @@ import { Vector3 } from 'three';
 import { createCombatState } from '../sim/damage.js';
 import { createTankState, shotRecoilScale } from '../sim/movement.js';
 import { getSpec } from '../vehicles/specs.js';
-import { createTank } from '../vehicles/tankFactory.js';
+import { createTank, ensureFullFleet } from '../vehicles/fleetFactory.js';
 import { prebakeSharedTextures } from '../vehicles/materials.js';
 import { pushHullFromObstacle } from '../world/collision.js';
 import { LocalTankPredictor } from './localTankPrediction.js';
@@ -158,6 +158,10 @@ export function createBrowserBattleBridge({
   }
 
   async function prepareRoster(players, onProgress = null) {
+    // W2-H lazy fleet: ensureEntity builds visuals synchronously per player,
+    // so every family chunk must be registered before the first build. The
+    // facade self-fetches at eval; this await only pays residual eval time.
+    await ensureFullFleet();
     const active = (players || []).filter((player) => player.team !== 'spectator');
     const warmed = new Set();
     for (let index = 0; index < active.length; index++) {

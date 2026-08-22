@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { createTank } from '../vehicles/tankFactory.js';
+import { createTank, ensureFullFleet } from '../vehicles/fleetFactory.js';
 import { VISIBLE_TANK_IDS, getSpec } from '../vehicles/specs.js';
 import {
   buildGalleryRecords,
@@ -415,6 +415,9 @@ async function loadTank(id, options = {}) {
   const version = ++loadVersion;
   loadingState.classList.remove('hidden');
   await nextFrame();
+  // W2-H lazy fleet: gallery heroes span every profile family. The facade
+  // self-fetches at eval; this await guarantees registration before build.
+  await ensureFullFleet();
   if (version !== loadVersion) return;
 
   disposeTank();

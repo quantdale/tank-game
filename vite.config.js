@@ -129,6 +129,14 @@ export default {
         docsTopic: resolve(process.cwd(), 'docs-topic.html'),
         gallery: resolve(process.cwd(), 'gallery.html'),
       },
+      // W2-H tankFactory chunk split (blocker B4): the old 2.2 MB monolithic
+      // tankFactory chunk is gone via dynamic-import boundaries in
+      // src/vehicles/fleetFactory.js (four lazy fleet-family groups in
+      // src/vehicles/fleet/*, fetched after boot starts and awaited only at
+      // the gates that build vehicles). manualChunks/advancedChunks grouping
+      // was evaluated for the eager remainder and measured as a byte-identical
+      // no-op under Rolldown's graph-driven splitting, so it is deliberately
+      // NOT set — do not add static grouping rules without re-measuring.
     },
   },
   optimizeDeps: {

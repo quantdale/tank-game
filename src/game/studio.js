@@ -30,7 +30,7 @@
  */
 import * as THREE from 'three';
 import { VISIBLE_TANK_IDS, getSpec } from '../vehicles/specs.js';
-import { createTank } from '../vehicles/tankFactory.js';
+import { createTank, ensureFullFleet } from '../vehicles/fleetFactory.js';
 import {
   createTankState, resetTankVerticalState, updateTank, SIM_DT,
 } from '../sim/movement.js';
@@ -2069,6 +2069,9 @@ export function createStudio(ctx) {
     if (loading) throw new Error('studio.load already in flight');
     loading = true;
     try {
+      // W2-H lazy fleet: addActor builds visuals synchronously, so every
+      // family chunk must be registered before the first staged actor.
+      await ensureFullFleet();
       const mapId = resolveMapId(json.map || 'verdant', () => 0.01);
       if (!active) await enter({ map: mapId });
       const w0 = getWorld();

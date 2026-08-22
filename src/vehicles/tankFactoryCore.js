@@ -4554,6 +4554,11 @@ const CANONICAL_BUILDERS = { ...BUILDERS };
  * builder pack. Canonical packs must be disjoint; profiled builders are the
  * one explicit override layer because recovered vehicles intentionally
  * replace donor silhouettes while still calling the frozen donor builder.
+ *
+ * `profiledBuilders` is optional since the lazy-fleet split (W2-H): the
+ * browser facade configures without it and late-registers family builders
+ * through {@link registerProfiledBuilders} as their chunks arrive. The Node
+ * facade (tankFactory.js) keeps registering everything eagerly.
  */
 export function configureTankFactory({ canonicalBuilderPacks, profiledBuilders, fittings }) {
   if (factoryConfigured) throw new Error('Tank factory is already configured');
@@ -4580,10 +4585,11 @@ export function configureTankFactory({ canonicalBuilderPacks, profiledBuilders, 
     }
   }
 
-  if (!profiledBuilders || typeof profiledBuilders !== 'object') {
+  if (profiledBuilders !== undefined
+      && (profiledBuilders === null || typeof profiledBuilders !== 'object')) {
     throw new TypeError('profiledBuilders must be an object');
   }
-  const profileEntries = Object.entries(profiledBuilders);
+  const profileEntries = profiledBuilders ? Object.entries(profiledBuilders) : [];
   for (const [id, builder] of profileEntries) {
     if (typeof builder !== 'function') throw new TypeError(`Profiled builder ${id} must be a function`);
   }
@@ -4599,6 +4605,25 @@ export function configureTankFactory({ canonicalBuilderPacks, profiledBuilders, 
   for (const [id, builder] of profileEntries) BUILDERS[id] = builder;
   KIT_FITTINGS = fittings;
   factoryConfigured = true;
+}
+
+/**
+ * Late-register profiled builders AFTER configuration (lazy fleet loading,
+ * W2-H): the browser facade boots with only the core/canonical builders and
+ * merges per-family builder maps as their dynamic chunks resolve. Validation
+ * matches the configure-time profiled layer; re-registering an id overwrites
+ * the previous entry so a family chunk evaluating twice stays idempotent.
+ * @param {Record<string, (P: object) => void>} profiledBuilders
+ */
+export function registerProfiledBuilders(profiledBuilders) {
+  if (!factoryConfigured) throw new Error('Tank factory is not configured yet');
+  if (!profiledBuilders || typeof profiledBuilders !== 'object') {
+    throw new TypeError('profiledBuilders must be an object');
+  }
+  for (const [id, builder] of Object.entries(profiledBuilders)) {
+    if (typeof builder !== 'function') throw new TypeError(`Profiled builder ${id} must be a function`);
+    BUILDERS[id] = builder;
+  }
 }
 
 function buildCanonical(P, id) {
@@ -6686,6 +6711,19 @@ export function createTank(specId, engineCtx, opts = {}) {
       // Detached detail is intentionally outside root traversal while far.
       // Reattach before resource disposal so no retained mesh is skipped.
       setBattleDetailsAttached(true);
+      // CSM r2 (W2-F leak): three's CSM.setupMaterial registers every
+      // shadow-patched material in a session-long shaders Map and only a full
+      // CSM.dispose() clears entries. This visual's per-instance material set
+      // (mats + decor + ghillie, all in `disposables`) would stay pinned there
+      // forever after disposal — the measured ~16 MB/battle soak growth.
+      // Release the registration BEFORE the material dies; shared materials
+      // never enter `disposables` (see createTankMaterials), so this cannot
+      // unregister a live user's registration.
+      for (const g of disposables) {
+        if (g && g.isMaterial && engineCtx?.releaseShadowMaterial) {
+          engineCtx.releaseShadowMaterial(g);
+        }
+      }
       for (const g of disposables) g.dispose();
       root.traverse((o) => {
         if (o.isBatchedMesh) o.dispose();
