@@ -258,7 +258,10 @@ const runT0 = Date.now();
 const port = forcePort || 5320 + Math.floor(Math.random() * 110); // below WinNAT 7185-7284
 const server = await createServer({
   root: repoRoot, logLevel: 'error',
-  server: { port, strictPort: false, hmr: false, watch: { ignored: ['**/*'] } },
+  // strictPort: a busy pinned port must FAIL loudly, not fall forward - the
+  // report's origin keys IndexedDB-derived caches and reused profiles; a
+  // silently shifted port measures a different browser state (W01 finding).
+  server: { port, strictPort: true, hmr: false, watch: { ignored: ['**/*'] } },
 });
 await server.listen();
 const base = `http://localhost:${server.config.server.port}`;
