@@ -28,7 +28,7 @@ import { terrainTravelCostFactor } from "../sim/terrainMobility.js";
  * @returns {() => number} generator of floats in [0,1)
  */
 export function mulberry32(a) {
-  return function () {
+  return () => {
     a |= 0;
     a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
