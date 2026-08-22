@@ -835,11 +835,48 @@ ${endHead}`);
  * @typedef {object} Lighting
  * @property {CSM} csm - four quality-scaled cascaded shadow maps
  * @property {(mat: THREE.Material, extraHook?: ?Function) => THREE.Material} setupShadowMaterial
+ * @property {(mat: ?THREE.Material) => boolean} releaseShadowMaterial - drop a disposed material's CSM registration
  * @property {() => void} update - per-frame `csm.update()`; call AFTER the camera is final
  * @property {() => void} updateFrustums - call on resize / camera fov or aspect change
  * @property {(i: number) => void} setSunIntensity
  * @property {THREE.HemisphereLight} hemi
  */
+
+/**
+ * Release ONE material from a CSM instance's shader registry.
+ *
+ * three's CSM.setupMaterial pins every shadow-patched material in its
+ * long-lived `shaders` Map (strong ref → material, its onBeforeCompile
+ * closure and shader uniforms) and only clears entries in CSM.dispose(),
+ * which never runs mid-session. Per-instance materials — every tank
+ * visual's material set is rebuilt per battle — must therefore be released
+ * explicitly when their owner is disposed, or the registry retains them
+ * (and everything they exclusively reference) until page unload. That
+ * retention was the ~16 MB/battle heap growth the W2-F soak measured.
+ *
+ * Mirrors CSM.dispose()'s per-material teardown; idempotent and safe on
+ * materials that were never registered.
+ *
+ * @param {{shaders: Map}} csm - CSM-like instance (duck-typed for selftests)
+ * @param {?THREE.Material} mat - material being disposed by its owner
+ * @returns {boolean} true when an entry was removed
+ */
+export function releaseCsmShaderMaterial(csm, mat) {
+  if (!csm || !csm.shaders || !mat || typeof mat !== 'object') return false;
+  if (!csm.shaders.has(mat)) return false;
+  csm.shaders.delete(mat);
+  // The wrapped hook chain (CSM's own patch + any chained extraHook) belongs
+  // to this registry entry; a released material is dead by contract, so
+  // dropping the hook cannot break a live compile path.
+  delete mat.onBeforeCompile;
+  if (mat.defines) {
+    delete mat.defines.USE_CSM;
+    delete mat.defines.CSM_CASCADES;
+    delete mat.defines.CSM_FADE;
+  }
+  mat.needsUpdate = true;
+  return true;
+}
 
 /**
  * Build the full light rig: CSM sun cascades + hemisphere sky/ground bounce.
@@ -1043,6 +1080,19 @@ export function createLighting(scene, camera, sunDir) {
         buildCoverageMipmaps(mat.map, mat.alphaTest);
       }
       return mat;
+    },
+
+    /**
+     * Release a disposed material's CSM registration (see
+     * releaseCsmShaderMaterial). Owners of per-instance materials — tank
+     * visuals, evicted world caches — must call this at dispose time so the
+     * registry cannot pin them for the rest of the session.
+     *
+     * @param {?THREE.Material} mat - material being disposed by its owner
+     * @returns {boolean} true when a registration was removed
+     */
+    releaseShadowMaterial(mat) {
+      return releaseCsmShaderMaterial(csm, mat);
     },
 
     /**
