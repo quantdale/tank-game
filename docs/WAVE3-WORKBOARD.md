@@ -49,3 +49,7 @@ Concurrency budget: ~16 slots. Evidence root: `.qa-dev/w3/<worker>/`. Port bands
 - Implementation workers land via isolated worktree branches; lead merges in order and re-runs affected selftests.
 - All browser probes spawn their OWN vite server on assigned ports; never trust :5173.
 - Perf-sensitive headed runs record contention stamps; contaminated runs are rejected, not explained away.
+
+## Phase 1 progress log (append-only)
+
+- W15 r1 landed: campaign doc header flipped to FINAL WAVE IN FLIGHT; §1 matrix rows 1-5,7-12,15,16 re-statused against commit evidence (`425218c3..30a7e38d`) with reconciliation note; §5 gained "Blocker final dispositions" table with `<<FINAL:B#>>` placeholder column; §8 Wave-3 skeleton + final-results ledger appended. Remaining `<<FINAL:*>>` tokens are intentionally unfilled until measured on the integrated tree.
