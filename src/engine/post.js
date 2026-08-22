@@ -41,25 +41,17 @@
  *     flat sky/fog. It lands at native canvas resolution; HUD/DOM never
  *     passes through the composer, so UI text keeps full sharpness.
  */
-import * as THREE from "three";
-import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
-import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
-import {
-  FullScreenQuad,
-  Pass,
-} from "three/examples/jsm/postprocessing/Pass.js";
-import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
-import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
-import { SMAAPass } from "three/examples/jsm/postprocessing/SMAAPass.js";
-import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
-import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
-import { CopyShader } from "three/examples/jsm/shaders/CopyShader.js";
-import {
-  getPreset,
-  onPresetChange,
-  reportSustainedOverload,
-  taaRequested,
-} from "./quality.js";
+import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { FullScreenQuad, Pass } from 'three/examples/jsm/postprocessing/Pass.js';
+import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { CopyShader } from 'three/examples/jsm/shaders/CopyShader.js';
+import { getPreset, onPresetChange, reportSustainedOverload, taaRequested } from './quality.js';
 import {
   aoSampleCount,
   baseDynamicScale,
@@ -67,8 +59,8 @@ import {
   internalPixelRatio,
   overloadReliefLever,
   reconstructionSharpness,
-} from "./renderScalePolicy.js";
-import { LATE_FX_LAYER } from "../fx/particles.js";
+} from './renderScalePolicy.js';
+import { LATE_FX_LAYER } from '../fx/particles.js';
 import {
   JITTER_PHASE_COUNT,
   TAA_BLEND_K,
@@ -76,7 +68,7 @@ import {
   jitterPhase,
   jitterPhaseY,
   removeCameraJitter,
-} from "./temporal/taaCore.js";
+} from './temporal/taaCore.js';
 
 // r5 bloom retune ("muzzle flash is three enormous structureless gaussian
 // bloom blobs"): strength 0.34 → 0.20 and radius 0.4 → 0.28 so bloom is a
@@ -89,7 +81,7 @@ import {
 // (a) the high-pass input stays clamped (BLOOM_INPUT_CLAMP) so halo energy is
 // bounded, and (b) the 1.78 threshold still fences everything but genuinely
 // hot cores — the halo hugs the fire instead of swallowing the frame.
-const BLOOM_STRENGTH = 0.3;
+const BLOOM_STRENGTH = 0.30;
 const BLOOM_RADIUS = 0.34;
 // With the rebalanced ambient (sky.js ENV_INTENSITY 0.45, hemi 0.26) diffuse
 // surfaces top out well under 1.0 in the linear HDR buffer, so the threshold
@@ -115,7 +107,7 @@ const BLOOM_THRESHOLD = 1.78;
 // headroom (up to ~5.15) must reach the bloom pass or the halo cannot scale
 // with core heat; still far below the 5-20 raw stack values that flooded.
 const BLOOM_INPUT_CLAMP = 2.6;
-const HIGH_PASS_ANCHOR = "gl_FragColor = mix( outputColor, texel, alpha );";
+const HIGH_PASS_ANCHOR = 'gl_FragColor = mix( outputColor, texel, alpha );';
 // AO radius must be vehicle-scale (~1 m) to ground hulls/building bases;
 // 0.3 m read as nothing at gameplay camera distances. r3: radius 1.0 → 1.3,
 // scale 1.3 → 1.7, thickness 1.2 → 1.6 — the critic read the shots as having
@@ -162,27 +154,14 @@ const HIGH_PASS_ANCHOR = "gl_FragColor = mix( outputColor, texel, alpha );";
 // under-canopy AO (cell-level dark flips: AO on 3.3%/frame vs AO off 0.7%).
 // Halve the thickness heuristic — walls/hulls/trunks are real volumes and
 // keep their grounding; only the phantom depth of foliage cards thins out.
-const GTAO_PARAMS = {
-  radius: 2.3,
-  distanceExponent: 2,
-  thickness: 1.0,
-  scale: 3.3,
-  samples: 16,
-};
+const GTAO_PARAMS = { radius: 2.3, distanceExponent: 2, thickness: 1.0, scale: 3.3, samples: 16 };
 // ao-boil r1: denoiser retuned for temporal stability on foliage. depthPhi
 // 2 → 6 (weight = 1 - depthDiff/phi, so a LOW phi refuses to smooth across
 // depth edges — and leaf speckle is nothing but depth edges: the denoiser
 // was preserving the boil as "detail"); radius 8 → 10 and rings 2 → 3
 // spread each pixel's estimate over more of the half-res AO buffer, cutting
 // frame-to-frame variance of blob shapes.
-const GTAO_PD_PARAMS = {
-  lumaPhi: 10,
-  depthPhi: 6,
-  normalPhi: 3,
-  radius: 10,
-  rings: 3,
-  samples: 16,
-};
+const GTAO_PD_PARAMS = { lumaPhi: 10, depthPhi: 6, normalPhi: 3, radius: 10, rings: 3, samples: 16 };
 const GTAO_BLEND_INTENSITY = 1.0;
 
 // Depth-driven aerial perspective (r3: "distant hills correctly shift
@@ -220,7 +199,7 @@ const GTAO_BLEND_INTENSITY = 1.0;
 // 400m regression: full desat now lands at 1.3 km+, not 400 m).
 const AERIAL_DENSITY = 0.00145; // 1/m; f = 1-exp(-(d*k)^2)
 const AERIAL_DESAT = 0.62; // max saturation loss at full distance
-const AERIAL_COOL = [0.9, 0.97, 1.08]; // cool shift multiplier at full distance
+const AERIAL_COOL = [0.90, 0.97, 1.08]; // cool shift multiplier at full distance
 // Scatter-in term (r4), retuned r5: 0.0009 → 0.00058 — at 0.0009 the horizon
 // mountain ring (r 760-1220 m) was 50-80% swallowed by a single neutral haze
 // color: "flat, untextured, uniform light-gray silhouettes". At 0.00058 the
@@ -405,8 +384,8 @@ const EM_SHOULDER_RANGE = 3.6; // asymptote = START + RANGE
 // 1.10 draft floor pulled whole sunlit meadows into the taps for ~0.45 ms;
 // at 1.70 the clamp costs ~0.1 ms and sub-bloom sparkle is owned by the
 // display-space dust filter below instead).
-const FIREFLY_MIN = 1.7; // linear luma floor — below this, never touched
-const FIREFLY_TOL = 1.3; // allowed ratio over the brightest diagonal
+const FIREFLY_MIN = 1.70; // linear luma floor — below this, never touched
+const FIREFLY_TOL = 1.30; // allowed ratio over the brightest diagonal
 const FIREFLY_PAD = 0.06; // absolute headroom so dim neighborhoods don't crush
 
 // FSR 1 spatial upscale (EASU + RCAS), adapted to a Three ShaderMaterial.
@@ -575,54 +554,36 @@ export class FsrUpscalePass extends Pass {
       depthBuffer: false,
       stencilBuffer: false,
     });
-    this.intermediate.texture.name = "FSR1.EASU";
+    this.intermediate.texture.name = 'FSR1.EASU';
     this.easuMaterial = new THREE.ShaderMaterial({
-      name: "FSR1.EASU",
-      vertexShader: CopyShader.vertexShader,
+      name: 'FSR1.EASU', vertexShader: CopyShader.vertexShader,
       fragmentShader: FSR_EASU_FRAG,
-      uniforms: {
-        tDiffuse: { value: null },
-        uInputSize: { value: new THREE.Vector2(1, 1) },
-        uOutputSize: { value: this.outputSize },
-      },
-      depthTest: false,
-      depthWrite: false,
-      blending: THREE.NoBlending,
-      toneMapped: false,
+      uniforms: { tDiffuse: { value: null }, uInputSize: { value: new THREE.Vector2(1, 1) },
+        uOutputSize: { value: this.outputSize } },
+      depthTest: false, depthWrite: false, blending: THREE.NoBlending, toneMapped: false,
     });
     this.rcasMaterial = new THREE.ShaderMaterial({
-      name: "FSR1.RCAS",
-      vertexShader: CopyShader.vertexShader,
+      name: 'FSR1.RCAS', vertexShader: CopyShader.vertexShader,
       fragmentShader: FSR_RCAS_FRAG,
-      uniforms: {
-        tDiffuse: { value: null },
-        uTexelDelta: { value: new THREE.Vector2(1, 1) },
-        uSharpness: { value: 0.12 },
-      },
-      depthTest: false,
-      depthWrite: false,
-      blending: THREE.NoBlending,
-      toneMapped: false,
+      uniforms: { tDiffuse: { value: null }, uTexelDelta: { value: new THREE.Vector2(1, 1) },
+        uSharpness: { value: 0.12 } },
+      depthTest: false, depthWrite: false, blending: THREE.NoBlending, toneMapped: false,
     });
     this.quad = new FullScreenQuad(this.easuMaterial);
   }
   setOutputSize(width, height) {
-    const w = Math.max(1, Math.round(width)),
-      h = Math.max(1, Math.round(height));
+    const w = Math.max(1, Math.round(width)), h = Math.max(1, Math.round(height));
     if (this.outputSize.x === w && this.outputSize.y === h) return;
     this.outputSize.set(w, h);
     this.intermediate.setSize(w, h);
   }
   render(renderer, writeBuffer, readBuffer) {
     const srcRT = this.externalSource || readBuffer;
-    const inW = srcRT.width,
-      inH = srcRT.height;
-    const outW = this.outputSize.x,
-      outH = this.outputSize.y;
+    const inW = srcRT.width, inH = srcRT.height;
+    const outW = this.outputSize.x, outH = this.outputSize.y;
     const upscale = inW !== outW || inH !== outH;
     let source = srcRT.texture;
-    let sourceW = inW,
-      sourceH = inH;
+    let sourceW = inW, sourceH = inH;
     if (upscale) {
       this.easuMaterial.uniforms.tDiffuse.value = source;
       this.easuMaterial.uniforms.uInputSize.value.set(inW, inH);
@@ -630,8 +591,7 @@ export class FsrUpscalePass extends Pass {
       renderer.setRenderTarget(this.intermediate);
       this.quad.render(renderer);
       source = this.intermediate.texture;
-      sourceW = outW;
-      sourceH = outH;
+      sourceW = outW; sourceH = outH;
     }
     this.rcasMaterial.uniforms.tDiffuse.value = source;
     this.rcasMaterial.uniforms.uTexelDelta.value.set(1 / sourceW, 1 / sourceH);
@@ -639,16 +599,10 @@ export class FsrUpscalePass extends Pass {
     // stays at the proven 0.28; more heavily scaled Medium/Low frames receive
     // stronger recovery, capped at 0.4 before grass/leaf halos dominate.
     const inputScale = upscale ? Math.min(inW / outW, inH / outH) : 1;
-    this.rcasMaterial.uniforms.uSharpness.value =
-      reconstructionSharpness(inputScale);
+    this.rcasMaterial.uniforms.uSharpness.value = reconstructionSharpness(inputScale);
     this.quad.material = this.rcasMaterial;
     renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
-    if (this.clear)
-      renderer.clear(
-        renderer.autoClearColor,
-        renderer.autoClearDepth,
-        renderer.autoClearStencil,
-      );
+    if (this.clear) renderer.clear(renderer.autoClearColor, renderer.autoClearDepth, renderer.autoClearStencil);
     this.quad.render(renderer);
   }
   dispose() {
@@ -660,7 +614,7 @@ export class FsrUpscalePass extends Pass {
 }
 
 const AerialShader = {
-  name: "AerialPerspectiveShader",
+  name: 'AerialPerspectiveShader',
   uniforms: {
     tDiffuse: { value: null },
     tDepth: { value: null },
@@ -974,7 +928,7 @@ const GRADE_BLACK_LIFT = 0.022;
 // pale blown sky band upper-left"): 0.82 → 0.80 — the shoulder starts a step
 // lower so cream road/field highlights re-spread instead of pooling in the
 // warm split-tone band.
-const GRADE_KNEE = 0.8; // display-space luma where the highlight shoulder starts
+const GRADE_KNEE = 0.80; // display-space luma where the highlight shoulder starts
 // (r9: the linear GRADE_KNEE_SLOPE 0.55 knee was replaced by a rational
 // shoulder in the shader — see the "soft highlight shoulder" note there.)
 // Warm afternoon balance, matching the sun key instead of fighting it.
@@ -1040,8 +994,8 @@ const GRADE_HIGH_TINT = [1.056, 1.008, 0.947]; // warm sun-kissed highlights
 // radius (top-center sits at 0.49 — untouched), reaching SCOPE_VIGNETTE_MAX
 // only at the extreme corners. WoT's sniper shade is corner-only; the sight
 // picture, scoreboard band and horizon keep full scene exposure.
-const SCOPE_VIGNETTE_INNER = 0.6; // corner-normalized radius where shade begins
-const SCOPE_VIGNETTE_MAX = 0.2; // ×0.80 at the extreme frame corners only
+const SCOPE_VIGNETTE_INNER = 0.60; // corner-normalized radius where shade begins
+const SCOPE_VIGNETTE_MAX = 0.20; // ×0.80 at the extreme frame corners only
 // hud_ui r4: blur only kisses the outer ~20% of screen radius at ~40% strength
 // (the old 1.02 start put the outer thirds of a 16:9 frame at FULL blur —
 // "left and right thirds dissolve into watercolor streaks" at x8)
@@ -1050,7 +1004,7 @@ const SCOPE_BLUR_RAMP = 0.5; // blur reaches full strength at START+RAMP
 const SCOPE_BLUR_STEP = 0.0028; // UV step of the 4-tap radial blur at full blur
 
 const GradeShader = {
-  name: "GradeShader",
+  name: 'GradeShader',
   uniforms: {
     tDiffuse: { value: null },
     uContrast: { value: GRADE_CONTRAST },
@@ -1260,11 +1214,9 @@ const GradeShader = {
 // transforming the center texel would make scoped frames differ from the old
 // two-pass result.
 function createOutputGradePass() {
-  const sampleAnchor = "texture2D( tDiffuse,";
-  let fragmentShader = GradeShader.fragmentShader
-    .split(sampleAnchor)
-    .join("sampleDisplay(");
-  const parsAnchor = "uniform sampler2D tDiffuse;";
+  const sampleAnchor = 'texture2D( tDiffuse,';
+  let fragmentShader = GradeShader.fragmentShader.split(sampleAnchor).join('sampleDisplay(');
+  const parsAnchor = 'uniform sampler2D tDiffuse;';
   const outputPars = /* glsl */ `precision highp float;
     uniform sampler2D tDiffuse;
     #include <tonemapping_pars_fragment>
@@ -1293,14 +1245,14 @@ function createOutputGradePass() {
       return outputColor;
     }`;
   const patched = fragmentShader.replace(parsAnchor, outputPars);
-  if (patched === fragmentShader || !patched.includes("sampleDisplay( vUv )")) {
-    throw new Error("post.js: output-grade shader anchors not found");
+  if (patched === fragmentShader || !patched.includes('sampleDisplay( vUv )')) {
+    throw new Error('post.js: output-grade shader anchors not found');
   }
   fragmentShader = patched;
 
   const pass = new OutputPass();
   Object.assign(pass.uniforms, THREE.UniformsUtils.clone(GradeShader.uniforms));
-  pass.material.name = "OutputGradePass";
+  pass.material.name = 'OutputGradePass';
   pass.material.uniforms = pass.uniforms;
   pass.material.fragmentShader = fragmentShader;
   pass.material.needsUpdate = true;
@@ -1480,15 +1432,15 @@ export class TAAPass extends Pass {
       depthBuffer: false,
       stencilBuffer: false,
     });
-    this.historyTarget1.texture.name = "TAA.history1";
+    this.historyTarget1.texture.name = 'TAA.history1';
     this.historyTarget2 = this.historyTarget1.clone();
-    this.historyTarget2.texture.name = "TAA.history2";
+    this.historyTarget2.texture.name = 'TAA.history2';
     this.sceneDepthTexture = null;
     this.lastMs = -1e9;
     this.prevViewProj = new THREE.Matrix4();
     this.invViewProj = new THREE.Matrix4();
     this.material = new THREE.ShaderMaterial({
-      name: "TAAPass.Accumulate",
+      name: 'TAAPass.Accumulate',
       uniforms: {
         tCurrent: { value: null },
         tHistory: { value: null },
@@ -1532,19 +1484,12 @@ export class TAAPass extends Pass {
   render(renderer, writeBuffer, readBuffer) {
     if (!this.enabled) return;
     const cam = this.camera;
-    this.invViewProj.multiplyMatrices(
-      cam.matrixWorld,
-      cam.projectionMatrixInverse,
-    );
+    this.invViewProj.multiplyMatrices(cam.matrixWorld, cam.projectionMatrixInverse);
 
-    const now =
-      typeof performance === "undefined" ? Date.now() : performance.now();
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const seed = now - this.lastMs > 250;
     if (seed) {
-      this.prevViewProj.multiplyMatrices(
-        cam.projectionMatrix,
-        cam.matrixWorldInverse,
-      );
+      this.prevViewProj.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
     }
     this.lastMs = now;
 
@@ -1565,10 +1510,7 @@ export class TAAPass extends Pass {
     this.historyTarget1 = this.historyTarget2;
     this.historyTarget2 = tmp;
 
-    this.prevViewProj.multiplyMatrices(
-      cam.projectionMatrix,
-      cam.matrixWorldInverse,
-    );
+    this.prevViewProj.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
   }
 
   dispose() {
@@ -1593,7 +1535,7 @@ export class SceneAAPass extends RenderPass {
     this.renderWidth = target ? target.width : 1;
     this.renderHeight = target ? target.height : 1;
     this.copyMaterial = new THREE.ShaderMaterial({
-      name: "SceneAAPass.Copy",
+      name: 'SceneAAPass.Copy',
       uniforms: THREE.UniformsUtils.clone(CopyShader.uniforms),
       vertexShader: CopyShader.vertexShader,
       fragmentShader: CopyShader.fragmentShader,
@@ -1629,46 +1571,23 @@ export class SceneAAPass extends RenderPass {
       // scene depth is resolved. It is deliberately absent from this pass.
       this.camera.layers.disable(LATE_FX_LAYER);
       // TAA sub-pixel jitter: apply Halton (2,3) phase offset to perspective projection
-      const applyJitter =
-        this.taaEnabled && this.camera && this.camera.isPerspectiveCamera;
+      const applyJitter = this.taaEnabled && this.camera && this.camera.isPerspectiveCamera;
       let jx = 0;
       let jy = 0;
       if (applyJitter) {
         jx = jitterPhase(this.jitterIndex);
         jy = jitterPhaseY(this.jitterIndex);
-        applyCameraJitter(
-          this.camera.projectionMatrix.elements,
-          jx,
-          jy,
-          this.renderWidth,
-          this.renderHeight,
-        );
-        this.camera.projectionMatrixInverse
-          .copy(this.camera.projectionMatrix)
-          .invert();
+        applyCameraJitter(this.camera.projectionMatrix.elements, jx, jy, this.renderWidth, this.renderHeight);
+        this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
       }
       // WA8: direct mode rasterizes into the composer's own read buffer —
       // the copy below would only re-write identical values.
-      renderer.setRenderTarget(
-        this.directResolve ? readBuffer : this.sceneTarget,
-      );
-      renderer.clear(
-        renderer.autoClearColor,
-        renderer.autoClearDepth,
-        renderer.autoClearStencil,
-      );
+      renderer.setRenderTarget(this.directResolve ? readBuffer : this.sceneTarget);
+      renderer.clear(renderer.autoClearColor, renderer.autoClearDepth, renderer.autoClearStencil);
       renderer.render(this.scene, this.camera);
       if (applyJitter) {
-        removeCameraJitter(
-          this.camera.projectionMatrix.elements,
-          jx,
-          jy,
-          this.renderWidth,
-          this.renderHeight,
-        );
-        this.camera.projectionMatrixInverse
-          .copy(this.camera.projectionMatrix)
-          .invert();
+        removeCameraJitter(this.camera.projectionMatrix.elements, jx, jy, this.renderWidth, this.renderHeight);
+        this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
         this.jitterIndex = (this.jitterIndex + 1) % JITTER_PHASE_COUNT;
       }
 
@@ -1721,7 +1640,7 @@ export class LateFxPass extends Pass {
     // allocate its full HDR color+depth for nothing.
     this.skipSceneTargetWarmup = false;
     this.copyMaterial = new THREE.ShaderMaterial({
-      name: "LateFxPass.Copy",
+      name: 'LateFxPass.Copy',
       uniforms: THREE.UniformsUtils.clone(CopyShader.uniforms),
       vertexShader: CopyShader.vertexShader,
       fragmentShader: CopyShader.fragmentShader,
@@ -1739,15 +1658,11 @@ export class LateFxPass extends Pass {
   }
   prepare(renderer) {
     if (this.prepared) return;
-    if (!this.skipSceneTargetWarmup)
-      renderer.initRenderTarget(this.sceneTarget);
+    if (!this.skipSceneTargetWarmup) renderer.initRenderTarget(this.sceneTarget);
     renderer.initRenderTarget(this.target);
     if (this.softState) {
       this.softState.uSceneDepth.value = this.sceneDepthTexture;
-      this.softState.uSoftViewport.value.set(
-        this.target.width,
-        this.target.height,
-      );
+      this.softState.uSoftViewport.value.set(this.target.width, this.target.height);
       this.softState.uCameraNear.value = this.camera.near;
       this.softState.uCameraFar.value = this.camera.far;
     }
@@ -1772,10 +1687,7 @@ export class LateFxPass extends Pass {
       renderer.clear(true, true, true);
       this.copyMaterial.uniforms.tDiffuse.value = readBuffer.texture;
       this.copyQuad.render(renderer);
-      renderer.copyTextureToTexture(
-        this.sceneDepthTexture,
-        this.target.depthTexture,
-      );
+      renderer.copyTextureToTexture(this.sceneDepthTexture, this.target.depthTexture);
       this.softDepthCopies++;
       this.softState.uSceneDepth.value = this.sceneDepthTexture;
       this.softState.uCameraNear.value = this.camera.near;
@@ -1821,8 +1733,9 @@ export function createPost(renderer, scene, camera) {
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
 
   const maxSamples = renderer.capabilities.maxSamples || 0;
-  const samplesForPreset = (p) =>
-    maxSamples >= 2 ? Math.min(Math.max(0, p.msaaSamples || 0), maxSamples) : 0;
+  const samplesForPreset = (p) => maxSamples >= 2
+    ? Math.min(Math.max(0, p.msaaSamples || 0), maxSamples)
+    : 0;
   let msaaSamples = samplesForPreset(preset);
 
   // Composer ping-pong buffers never need depth or MSAA: the world is rendered
@@ -1838,8 +1751,8 @@ export function createPost(renderer, scene, camera) {
     stencilBuffer: false,
     samples: msaaSamples,
   });
-  sceneTarget.texture.name = "SceneAAPass.color";
-  sceneTarget.depthTexture.name = "SceneAAPass.depth";
+  sceneTarget.texture.name = 'SceneAAPass.color';
+  sceneTarget.depthTexture.name = 'SceneAAPass.depth';
   // Single-sample composite used only while transparent combat FX is alive.
   // It receives the resolved world color and a depth copy; late cards render
   // into it with normal hardware depth testing while sampling the SOURCE
@@ -1849,12 +1762,11 @@ export function createPost(renderer, scene, camera) {
     depthTexture: new THREE.DepthTexture(size.x, size.y),
     stencilBuffer: false,
   });
-  lateTarget.texture.name = "SceneAAPass.lateColor";
-  lateTarget.depthTexture.name = "SceneAAPass.lateDepth";
+  lateTarget.texture.name = 'SceneAAPass.lateColor';
+  lateTarget.depthTexture.name = 'SceneAAPass.lateDepth';
   const composer = new EffectComposer(renderer, target);
   const sceneDepth = sceneTarget.depthTexture;
-  const softState =
-    scene.getObjectByName("fx")?.userData?.softParticles || null;
+  const softState = scene.getObjectByName('fx')?.userData?.softParticles || null;
   // WA8: every consumer of the frame's scene depth registers a repointer
   // here. SceneAAPass fires them once per frame — after the scene draw,
   // before any consumer runs — with the depth texture that actually holds
@@ -1862,26 +1774,17 @@ export function createPost(renderer, scene, camera) {
   // sceneTarget's own in stock mode). Assigning the same reference in stock
   // mode is free and keeps preset/bisect mode switches instantly consistent.
   const sceneDepthRepointers = [];
+  // W02 cold-boot: materials created locally inside createPost's blocks below
+  // (AO EMA/composite) that the program submit must also cover. Function-scoped
+  // so the return-object methods can collect the complete chain inventory.
+  const localWarmMaterials = [];
   const sceneAA = new SceneAAPass(scene, camera, sceneTarget);
-  const lateFx = new LateFxPass(
-    scene,
-    camera,
-    sceneTarget,
-    lateTarget,
-    softState,
-  );
-  sceneDepthRepointers.push((d) => {
-    lateFx.sceneDepthTexture = d;
-  });
-  if (softState)
-    sceneDepthRepointers.push((d) => {
-      softState.uSceneDepth.value = d;
-    });
+  const lateFx = new LateFxPass(scene, camera, sceneTarget, lateTarget, softState);
+  sceneDepthRepointers.push((d) => { lateFx.sceneDepthTexture = d; });
+  if (softState) sceneDepthRepointers.push((d) => { softState.uSceneDepth.value = d; });
 
   const taaPass = new TAAPass(camera);
-  sceneDepthRepointers.push((d) => {
-    taaPass.sceneDepthTexture = d;
-  });
+  sceneDepthRepointers.push((d) => { taaPass.sceneDepthTexture = d; });
   // SA-12: TAA is the experimental W13 lever — quality.taaRequested keeps it
   // unreachable from persisted state (see that gate's contract note).
   let taaEnabled = taaRequested(preset);
@@ -1890,9 +1793,7 @@ export function createPost(renderer, scene, camera) {
 
   const publishAAState = () => {
     renderer.domElement.dataset.sceneMsaaSamples = String(msaaSamples);
-    renderer.domElement.dataset.postAa = taaEnabled
-      ? "taa+smaa-high+fsr1"
-      : "smaa-high+fsr1";
+    renderer.domElement.dataset.postAa = taaEnabled ? 'taa+smaa-high+fsr1' : 'smaa-high+fsr1';
   };
   publishAAState();
   composer.addPass(sceneAA); // 1. scene raster (+ resolve copy when MSAA > 0)
@@ -1905,9 +1806,7 @@ export function createPost(renderer, scene, camera) {
   // ping-pong buffer), so no draw can form a framebuffer feedback loop.
   const aerial = new ShaderPass(AerialShader);
   aerial.uniforms.tDepth.value = sceneDepth;
-  sceneDepthRepointers.push((d) => {
-    aerial.uniforms.tDepth.value = d;
-  });
+  sceneDepthRepointers.push((d) => { aerial.uniforms.tDepth.value = d; });
   composer.addPass(aerial);
 
   const gtao = new GTAOPass(scene, camera, size.x, size.y); // 3. AO multiply
@@ -1991,19 +1890,16 @@ export function createPost(renderer, scene, camera) {
     // to 25 metric (~90 m), a 35% give-back through 60 (undersampled band),
     // then gone by 170 metric (~550+ m — the aerial haze owns the far field).
     // Verified A/B on winter/desert establishing shots: no dot-grid return.
-    const AO_FADE =
-      "ao = 1.0 - ( 1.0 - ao ) * smoothstep( 0.14, 0.40, 1.0 - ao );" +
-      "\n\t\t\tao = mix( ao, 1., 0.35 * smoothstep( 25., 60., length( viewPos ) ) );" +
+    const AO_FADE = 'ao = 1.0 - ( 1.0 - ao ) * smoothstep( 0.14, 0.40, 1.0 - ao );'
+      + '\n\t\t\tao = mix( ao, 1., 0.35 * smoothstep( 25., 60., length( viewPos ) ) );'
       // terrain_environment r5: length(viewPos) here reads ~3-4x smaller than
       // true camera distance (see handoff doc).
-      "\n\t\t\tao = mix( ao, 1., smoothstep( 60., 170., length( viewPos ) ) );";
-    const AO_ANCHOR = "ao = pow(ao, scale);";
+      + '\n\t\t\tao = mix( ao, 1., smoothstep( 60., 170., length( viewPos ) ) );';
+    const AO_ANCHOR = 'ao = pow(ao, scale);';
     const src = gtao.gtaoMaterial.fragmentShader;
     const patched = src.replace(AO_ANCHOR, `${AO_FADE}\n\t\t\t${AO_ANCHOR}`);
     if (patched === src) {
-      throw new Error(
-        "post.js: GTAO distance-fade anchor not found in GTAOShader",
-      );
+      throw new Error('post.js: GTAO distance-fade anchor not found in GTAOShader');
     }
     gtao.gtaoMaterial.fragmentShader = patched;
     gtao.gtaoMaterial.needsUpdate = true;
@@ -2045,9 +1941,7 @@ export function createPost(renderer, scene, camera) {
   const AO_TAA_K = 0.15;
   {
     if (GTAOPass.OUTPUT.Off !== -1 || GTAOPass.OUTPUT.Default !== 0) {
-      throw new Error(
-        "post.js: GTAOPass.OUTPUT enum changed — re-verify the ao-boil r3 render wrapper",
-      );
+      throw new Error('post.js: GTAOPass.OUTPUT enum changed — re-verify the ao-boil r3 render wrapper');
     }
     const emaMat = new THREE.ShaderMaterial({
       uniforms: {
@@ -2060,8 +1954,7 @@ export function createPost(renderer, scene, camera) {
         uSeed: { value: 1 },
         uBlendK: { value: AO_TAA_K },
       },
-      vertexShader:
-        "varying vec2 vUv;\nvoid main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
+      vertexShader: 'varying vec2 vUv;\nvoid main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
       fragmentShader: `
         uniform sampler2D tNow, tPrev, tDepth;
         uniform mat4 uInvViewProj, uPrevViewProj;
@@ -2093,9 +1986,8 @@ export function createPost(renderer, scene, camera) {
       depthWrite: false,
       blending: THREE.NoBlending,
     });
-    sceneDepthRepointers.push((d) => {
-      emaMat.uniforms.tDepth.value = d;
-    });
+    sceneDepthRepointers.push((d) => { emaMat.uniforms.tDepth.value = d; });
+    localWarmMaterials.push(emaMat);
     let emaPrev = gtao.pdRenderTarget.clone();
     let emaCur = gtao.pdRenderTarget.clone();
     // PERF (full-frame copy): stock OUTPUT.Default spends two fullscreen
@@ -2106,7 +1998,7 @@ export function createPost(renderer, scene, camera) {
     // bit-for-bit while dropping a full-res RGBA16F read+write per
     // AO-enabled frame (~75 MB/frame at the retina High raster).
     const aoCompositeMaterial = new THREE.ShaderMaterial({
-      name: "GTAO.FusedComposite",
+      name: 'GTAO.FusedComposite',
       uniforms: {
         tDiffuse: { value: null },
         tAO: { value: null },
@@ -2128,6 +2020,7 @@ export function createPost(renderer, scene, camera) {
       blending: THREE.NoBlending,
       toneMapped: false,
     });
+    localWarmMaterials.push(aoCompositeMaterial);
     let emaLastMs = -1e9; // >250 ms without an AO render → history is stale
     const prevViewProj = emaMat.uniforms.uPrevViewProj.value;
     const origSetSize = gtao.setSize.bind(gtao);
@@ -2135,66 +2028,33 @@ export function createPost(renderer, scene, camera) {
       emaPrev.setSize(gtao.pdRenderTarget.width, gtao.pdRenderTarget.height);
       emaCur.setSize(gtao.pdRenderTarget.width, gtao.pdRenderTarget.height);
       emaMat.uniforms.uTexel.value.set(
-        1 / gtao.pdRenderTarget.width,
-        1 / gtao.pdRenderTarget.height,
-      );
+        1 / gtao.pdRenderTarget.width, 1 / gtao.pdRenderTarget.height);
       emaLastMs = -1e9; // reseed — old history is the wrong resolution
     };
     gtao.setSize = (w, h) => {
       const s = preset.aoScale || 1;
-      origSetSize(
-        Math.max(1, Math.round(w * s)),
-        Math.max(1, Math.round(h * s)),
-      );
+      origSetSize(Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s)));
       syncEmaSize();
     };
     syncEmaSize();
-    gtao.render = function (
-      renderer2,
-      writeBuffer,
-      readBuffer,
-      deltaTime,
-      maskActive,
-    ) {
-      if (
-        this.output !== GTAOPass.OUTPUT.Default ||
-        (typeof window !== "undefined" && window.__AO_EMA_OFF)
-      ) {
-        // bisect hook
-        return GTAOPass.prototype.render.call(
-          this,
-          renderer2,
-          writeBuffer,
-          readBuffer,
-          deltaTime,
-          maskActive,
-        );
+    gtao.render = function (renderer2, writeBuffer, readBuffer, deltaTime, maskActive) {
+      if (this.output !== GTAOPass.OUTPUT.Default ||
+          (typeof window !== 'undefined' && window.__AO_EMA_OFF)) { // bisect hook
+        return GTAOPass.prototype.render.call(this, renderer2, writeBuffer, readBuffer, deltaTime, maskActive);
       }
       this.output = GTAOPass.OUTPUT.Off; // AO + denoise only, no composition
       try {
-        GTAOPass.prototype.render.call(
-          this,
-          renderer2,
-          writeBuffer,
-          readBuffer,
-          deltaTime,
-          maskActive,
-        );
+        GTAOPass.prototype.render.call(this, renderer2, writeBuffer, readBuffer, deltaTime, maskActive);
       } finally {
         this.output = GTAOPass.OUTPUT.Default;
       }
       const cam = this.camera;
-      emaMat.uniforms.uInvViewProj.value.multiplyMatrices(
-        cam.matrixWorld,
-        cam.projectionMatrixInverse,
-      );
+      emaMat.uniforms.uInvViewProj.value
+        .multiplyMatrices(cam.matrixWorld, cam.projectionMatrixInverse);
       const now = performance.now();
       const seed = now - emaLastMs > 250;
       if (seed) {
-        prevViewProj.multiplyMatrices(
-          cam.projectionMatrix,
-          cam.matrixWorldInverse,
-        );
+        prevViewProj.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
       }
       emaLastMs = now;
       emaMat.uniforms.tNow.value = this.pdRenderTarget.texture;
@@ -2213,10 +2073,7 @@ export function createPost(renderer, scene, camera) {
       emaMat.uniforms.uBlendK.value = AO_TAA_K;
       this._renderPass(renderer2, emaMat, emaCur, 0xffffff, 1.0);
       // this frame's view-projection becomes next frame's reprojection source
-      prevViewProj.multiplyMatrices(
-        cam.projectionMatrix,
-        cam.matrixWorldInverse,
-      );
+      prevViewProj.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
       // Default composition, fused from GTAOPass.prototype.render (r185):
       // the stock copy + multiply-blend pair collapsed into one draw with
       // identical per-channel math (see aoCompositeMaterial above), fed by
@@ -2224,14 +2081,8 @@ export function createPost(renderer, scene, camera) {
       aoCompositeMaterial.uniforms.tDiffuse.value = readBuffer.texture;
       aoCompositeMaterial.uniforms.tAO.value = emaCur.texture;
       aoCompositeMaterial.uniforms.uIntensity.value = this.blendIntensity;
-      this._renderPass(
-        renderer2,
-        aoCompositeMaterial,
-        this.renderToScreen ? null : writeBuffer,
-      );
-      const t = emaPrev;
-      emaPrev = emaCur;
-      emaCur = t;
+      this._renderPass(renderer2, aoCompositeMaterial, this.renderToScreen ? null : writeBuffer);
+      const t = emaPrev; emaPrev = emaCur; emaCur = t;
     };
     gtao.enabled = preset.aoScale > 0;
   }
@@ -2248,12 +2099,7 @@ export function createPost(renderer, scene, camera) {
   // that background depth across the foreground card (the reported glitch).
   composer.addPass(lateFx);
 
-  const bloom = new UnrealBloomPass(
-    size.clone(),
-    BLOOM_STRENGTH,
-    BLOOM_RADIUS,
-    BLOOM_THRESHOLD,
-  );
+  const bloom = new UnrealBloomPass(size.clone(), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
   {
     // Clamp the bloom extraction (see BLOOM_INPUT_CLAMP above).
     const hp = bloom.materialHighPassFilter;
@@ -2262,9 +2108,7 @@ export function createPost(renderer, scene, camera) {
       `gl_FragColor = mix( outputColor, vec4( min( texel.rgb, vec3( ${BLOOM_INPUT_CLAMP.toFixed(2)} ) ), texel.a ), alpha );`,
     );
     if (patched === hp.fragmentShader) {
-      throw new Error(
-        "post.js: bloom high-pass clamp anchor not found in LuminosityHighPassShader",
-      );
+      throw new Error('post.js: bloom high-pass clamp anchor not found in LuminosityHighPassShader');
     }
     hp.fragmentShader = patched;
     hp.needsUpdate = true;
@@ -2276,10 +2120,7 @@ export function createPost(renderer, scene, camera) {
     const origSetSize = bloom.setSize.bind(bloom);
     bloom.setSize = (w, h) => {
       const s = preset.bloomScale || 1;
-      origSetSize(
-        Math.max(1, Math.round(w * s)),
-        Math.max(1, Math.round(h * s)),
-      );
+      origSetSize(Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s)));
     };
   }
   composer.addPass(bloom); // 3. HDR bloom — muzzle flash / fire pop here
@@ -2303,10 +2144,10 @@ export function createPost(renderer, scene, camera) {
   // catches those fine edges and follows longer diagonals without the memory
   // and fill-rate cost of full-scene MSAA/supersampling.
   if (smaa._materialEdges && smaa._materialEdges.defines) {
-    smaa._materialEdges.defines.SMAA_THRESHOLD = "0.055";
+    smaa._materialEdges.defines.SMAA_THRESHOLD = '0.055';
   }
   if (smaa._materialWeights && smaa._materialWeights.defines) {
-    smaa._materialWeights.defines.SMAA_MAX_SEARCH_STEPS = "16";
+    smaa._materialWeights.defines.SMAA_MAX_SEARCH_STEPS = '16';
   }
   composer.addPass(smaa); // 5. edge-pattern AA (geometric silhouettes)
 
@@ -2332,13 +2173,13 @@ export function createPost(renderer, scene, camera) {
     depthBuffer: false,
     stencilBuffer: false,
   });
-  gradeTarget.texture.name = "PostTail.grade";
+  gradeTarget.texture.name = 'PostTail.grade';
   const smaaTarget = new THREE.WebGLRenderTarget(size.x, size.y, {
     type: THREE.UnsignedByteType,
     depthBuffer: false,
     stencilBuffer: false,
   });
-  smaaTarget.texture.name = "PostTail.smaa";
+  smaaTarget.texture.name = 'PostTail.smaa';
   // SMAA's own intermediates are HalfFloat in stock three: the edge buffer
   // holds binary flags and the weight buffer holds 0..1 blends derived from
   // the 8-bit area/search textures. Retype both to 8-bit while they are
@@ -2349,13 +2190,7 @@ export function createPost(renderer, scene, camera) {
     rt.dispose();
   }
   const origGradeRender = grade.render.bind(grade);
-  grade.render = (
-    renderer2,
-    writeBuffer,
-    readBuffer,
-    deltaTime,
-    maskActive,
-  ) => {
+  grade.render = (renderer2, writeBuffer, readBuffer, deltaTime, maskActive) => {
     origGradeRender(renderer2, gradeTarget, readBuffer, deltaTime, maskActive);
   };
   const origSmaaRender = smaa.render.bind(smaa);
@@ -2382,22 +2217,18 @@ export function createPost(renderer, scene, camera) {
   // dataset.sceneResolveCopy publishes the active mode for probes.
   let directResolve = false;
   const updateSceneResolveMode = () => {
-    const forcedStock =
-      typeof window !== "undefined" && window.__SCENE_RESOLVE_COPY === true;
+    const forcedStock = typeof window !== 'undefined'
+      && window.__SCENE_RESOLVE_COPY === true;
     const want = sceneResolveCopyEliminated(msaaSamples, forcedStock);
     if (want === directResolve) return;
     directResolve = want;
     sceneAA.directResolve = want;
     lateFx.skipSceneTargetWarmup = want;
-    setComposerDepthAttachments(
-      [composer.renderTarget1, composer.renderTarget2],
-      want,
-    );
-    renderer.domElement.dataset.sceneResolveCopy = want ? "eliminated" : "copy";
+    setComposerDepthAttachments([composer.renderTarget1, composer.renderTarget2], want);
+    renderer.domElement.dataset.sceneResolveCopy = want ? 'eliminated' : 'copy';
   };
   sceneAA.onSceneRendered = (depthTex) => {
-    for (let i = 0; i < sceneDepthRepointers.length; i++)
-      sceneDepthRepointers[i](depthTex);
+    for (let i = 0; i < sceneDepthRepointers.length; i++) sceneDepthRepointers[i](depthTex);
   };
   updateSceneResolveMode();
 
@@ -2544,8 +2375,8 @@ export function createPost(renderer, scene, camera) {
   // while below the smooth-enough ceiling — as overloaded, walking the same
   // relief ladder. After it fires, the baseline decays toward reality so an
   // exhausted ladder doesn't re-fire every window forever.
-  const FPS_DECLINE_K = 0.8;
-  const FPS_BASELINE_MIN = 24; // no baseline chasing on already-slow boxes
+  const FPS_DECLINE_K = 0.80;
+  const FPS_BASELINE_MIN = 24;   // no baseline chasing on already-slow boxes
   const FPS_SMOOTH_CEILING = 118; // high-refresh declines should still govern
   let fpsBaseline = 0;
   const TRIM_UP_BACKOFF_S = 15;
@@ -2553,16 +2384,16 @@ export function createPost(renderer, scene, camera) {
   // background-app spikes on a healthy device otherwise freeze recovery at a
   // trimmed rung forever — the trims are coarse levers, and a flapped
   // release is caught by the exponential backoff anyway.
-  const TRIM_UP_MISS_MAX = 0.1;
+  const TRIM_UP_MISS_MAX = 0.10;
   const TRIM_UP_BACKOFF_MAX_S = 90;
   let perfTrim = 0;
   let trimStrikes = 0;
   let trimUpBackoffS = TRIM_UP_BACKOFF_S;
   let trimLastUpAt = -Infinity;
   let trimLastDownAt = -Infinity;
-  let quality = "high"; // mirrors setQuality — AO recomputes from one place
+  let quality = 'high'; // mirrors setQuality — AO recomputes from one place
   function applyAoEnabled() {
-    gtao.enabled = quality !== "low" && preset.aoScale > 0 && perfTrim < 1;
+    gtao.enabled = quality !== 'low' && preset.aoScale > 0 && perfTrim < 1;
   }
   function setPerfTrim(next) {
     const lv = Math.max(0, Math.min(trimMax(), next));
@@ -2574,11 +2405,7 @@ export function createPost(renderer, scene, camera) {
   function applySize(w, h) {
     cssW = w;
     cssH = h;
-    const renderScale = internalPixelRatio(
-      renderer.getPixelRatio(),
-      preset,
-      dynScale,
-    );
+    const renderScale = internalPixelRatio(renderer.getPixelRatio(), preset, dynScale);
     composer.setPixelRatio(renderScale);
     composer.setSize(w, h);
     renderer.domElement.dataset.renderScale = renderScale.toFixed(3);
@@ -2637,25 +2464,19 @@ export function createPost(renderer, scene, camera) {
     // own budget and the governor stops helping precisely when it is needed.
     dynRingScratch.set(dynRing.subarray(0, dynRingN));
     const sorted = dynRingScratch.subarray(0, dynRingN).sort();
-    const p10 = sorted[Math.floor(dynRingN * 0.1)];
+    const p10 = sorted[Math.floor(dynRingN * 0.10)];
     dynBestCadenceMs = Math.min(dynBestCadenceMs, p10);
-    dynBudgetMs = Math.min(
-      DYN_BUDGET_MAX_MS,
-      Math.max(DYN_TARGET_MS, dynBestCadenceMs),
-    );
+    dynBudgetMs = Math.min(DYN_BUDGET_MAX_MS,
+      Math.max(DYN_TARGET_MS, dynBestCadenceMs));
     const missRatio = dynWinMisses / dynWinFrames;
     // perf-governor r2: achieved fps this window (counted frames over counted
     // time — >250 ms hitch frames are excluded from both, so a uniform
     // slowdown reads true).
-    const windowFps =
-      dynWinFrames / Math.max(0.001, dynClock - dynLastDecision);
+    const windowFps = dynWinFrames / Math.max(0.001, dynClock - dynLastDecision);
     dynWinFrames = 0;
     dynWinMisses = 0;
     dynLastDecision = dynClock;
-    if (
-      dynUpBackoffS > DYN_INTERVAL_S &&
-      dynClock - dynLastDownAt > DYN_BACKOFF_RESET_S
-    ) {
+    if (dynUpBackoffS > DYN_INTERVAL_S && dynClock - dynLastDownAt > DYN_BACKOFF_RESET_S) {
       dynUpBackoffS = DYN_INTERVAL_S; // flap-free minute: forgiven
     }
     // clarity-r1 RELIEF LADDER, purely from measured frame times:
@@ -2667,34 +2488,23 @@ export function createPost(renderer, scene, camera) {
     // the user pinned an explicit preset) now fires only after the WHOLE
     // in-session ladder is exhausted, so it is the last resort it was always
     // meant to be. Recovery walks the same ladder in reverse.
-    const overBudget =
-      dynEma > dynBudgetMs * DYN_DOWN_LEVEL && missRatio > DYN_DOWN_MISS_MIN;
-    const fpsDeclined =
-      fpsBaseline >= FPS_BASELINE_MIN &&
-      windowFps < fpsBaseline * FPS_DECLINE_K &&
-      windowFps < FPS_SMOOTH_CEILING;
+    const overBudget = dynEma > dynBudgetMs * DYN_DOWN_LEVEL && missRatio > DYN_DOWN_MISS_MIN;
+    const fpsDeclined = fpsBaseline >= FPS_BASELINE_MIN
+      && windowFps < fpsBaseline * FPS_DECLINE_K
+      && windowFps < FPS_SMOOTH_CEILING;
     const overloaded = overBudget || fpsDeclined;
     if (!overloaded) {
       // clean-ish window: re-earn the baseline quickly, sag it reluctantly
-      fpsBaseline =
-        fpsBaseline === 0
-          ? windowFps
-          : fpsBaseline +
-            (windowFps - fpsBaseline) * (windowFps > fpsBaseline ? 0.3 : 0.05);
+      fpsBaseline = fpsBaseline === 0 ? windowFps
+        : fpsBaseline + (windowFps - fpsBaseline) * (windowFps > fpsBaseline ? 0.3 : 0.05);
     } else if (fpsDeclined) {
       fpsBaseline += (windowFps - fpsBaseline) * 0.15; // decay toward reality
     }
     renderer.domElement.dataset.fps = windowFps.toFixed(1);
     renderer.domElement.dataset.fpsBaseline = fpsBaseline.toFixed(1);
-    const clean =
-      dynEma < dynBudgetMs * DYN_UP_LEVEL && missRatio < DYN_UP_MISS_MAX;
-    const reliefLever = overloadReliefLever(
-      perfTrim,
-      trimMax(),
-      dynScale,
-      dynFloor,
-    );
-    if (overloaded && reliefLever === "trim") {
+    const clean = dynEma < dynBudgetMs * DYN_UP_LEVEL && missRatio < DYN_UP_MISS_MAX;
+    const reliefLever = overloadReliefLever(perfTrim, trimMax(), dynScale, dynFloor);
+    if (overloaded && reliefLever === 'trim') {
       // Preserve pixel density first: require consecutive evidence, then drop
       // GTAO before touching the full-frame raster scale.
       trimStrikes++;
@@ -2708,7 +2518,7 @@ export function createPost(renderer, scene, camera) {
         return;
       }
       return;
-    } else if (overloaded && reliefLever === "tier" && dynClock > 8) {
+    } else if (overloaded && reliefLever === 'tier' && dynClock > 8) {
       // fully trimmed and still overloaded: escalate to the persisted tier
       tierStrikes++;
       if (tierStrikes >= TIER_STRIKES_MAX) {
@@ -2719,29 +2529,23 @@ export function createPost(renderer, scene, camera) {
       tierStrikes = 0;
       trimStrikes = 0;
     }
-    if (overloaded && reliefLever === "resolution") {
+    if (overloaded && reliefLever === 'resolution') {
       dynScale = Math.max(dynFloor, dynScale - DYN_STEP);
       if (dynClock - dynLastUpAt < DYN_FLAP_S) {
         // the last up-step flapped — back the next try off exponentially
         dynUpBackoffS = Math.min(dynUpBackoffS * 2, DYN_BACKOFF_MAX_S);
       }
       dynLastDownAt = dynClock;
-    } else if (
-      clean &&
-      dynScale < 1 &&
-      dynClock - dynLastStep >= dynUpBackoffS
-    ) {
+    } else if (clean
+        && dynScale < 1 && dynClock - dynLastStep >= dynUpBackoffS) {
       // Recover pixel density before AO; structural detail is the readability
       // priority and the AO pass is also the costliest lever to restore.
       dynScale = Math.min(1, dynScale + DYN_STEP);
       dynLastUpAt = dynClock;
-    } else if (
-      perfTrim > 0 &&
-      dynEma < dynBudgetMs * DYN_UP_LEVEL &&
-      missRatio < TRIM_UP_MISS_MAX &&
-      dynClock - trimLastDownAt >= trimUpBackoffS &&
-      dynClock - trimLastUpAt >= trimUpBackoffS
-    ) {
+    } else if (perfTrim > 0
+        && dynEma < dynBudgetMs * DYN_UP_LEVEL && missRatio < TRIM_UP_MISS_MAX
+        && dynClock - trimLastDownAt >= trimUpBackoffS
+        && dynClock - trimLastUpAt >= trimUpBackoffS) {
       setPerfTrim(perfTrim - 1);
       trimLastUpAt = dynClock;
       return;
@@ -2799,7 +2603,7 @@ export function createPost(renderer, scene, camera) {
     perfTrim = 0;
     trimStrikes = 0;
     trimUpBackoffS = TRIM_UP_BACKOFF_S;
-    renderer.domElement.dataset.perfTrim = "0";
+    renderer.domElement.dataset.perfTrim = '0';
     applyAoEnabled();
     resetGovernorState();
   });
@@ -2831,19 +2635,15 @@ export function createPost(renderer, scene, camera) {
       // ramp main.js applies to the FogExp2 density — at x8 the far field
       // must read magnified-clear, not teal-washed (see AERIAL_ZOOM_*).
       {
-        const fovK =
-          camera.fov < AERIAL_ZOOM_FOV
-            ? Math.max(AERIAL_ZOOM_FLOOR, (camera.fov / AERIAL_ZOOM_FOV) ** 1.5)
-            : 1;
+        const fovK = camera.fov < AERIAL_ZOOM_FOV
+          ? Math.max(AERIAL_ZOOM_FLOOR, Math.pow(camera.fov / AERIAL_ZOOM_FOV, 1.5))
+          : 1;
         aerial.uniforms.uDensity.value = AERIAL_DENSITY * fovK;
         aerial.uniforms.uHazeDensity.value = AERIAL_HAZE_DENSITY * fovK;
         // far-field detail fades in as the FOV drops through scope range
         // (x2 ~ fov 27 stays clean; x4 ~ fov 12 partial; x8 ~ fov 6.9 full)
         aerial.uniforms.uDetailW.value = THREE.MathUtils.clamp(
-          (AERIAL_DETAIL_FOV - camera.fov) / (AERIAL_DETAIL_FOV - 8),
-          0,
-          1,
-        );
+          (AERIAL_DETAIL_FOV - camera.fov) / (AERIAL_DETAIL_FOV - 8), 0, 1);
       }
       // per-map display exposure trim (sky.js applyPreset publishes the
       // active preset's postExposure on scene.userData; default 1.0)
@@ -2860,9 +2660,10 @@ export function createPost(renderer, scene, camera) {
       {
         const target = camera.userData.scoped ? 1 : 0;
         const cur = grade.uniforms.uScope.value;
-        grade.uniforms.uScope.value =
-          Math.abs(target - cur) < 0.01 ? target : cur + (target - cur) * 0.45;
-        grade.uniforms.uAspect.value = camera.aspect || 16 / 9;
+        grade.uniforms.uScope.value = Math.abs(target - cur) < 0.01
+          ? target
+          : cur + (target - cur) * 0.45;
+        grade.uniforms.uAspect.value = camera.aspect || (16 / 9);
         // r4: zoom-scaled unsharp — 0 below x3 (fov ≥ ~16°), full at x8
         // (fov 6.25°). Follows the eased uScope so scope-in has no pop.
         // r5 ("enemy Tiger at 300 m renders soft at x8 — real WoT sniper
@@ -2870,10 +2671,8 @@ export function createPost(renderer, scene, camera) {
         // at their finest mip under magnification (screen-space derivatives
         // shrink with FOV), so source softness must be re-crisped here; the
         // tighter 1 px kernel above keeps it from haloing.
-        grade.uniforms.uSharp.value =
-          grade.uniforms.uScope.value *
-          0.95 *
-          Math.min(1, Math.max(0, (16 - camera.fov) / 10));
+        grade.uniforms.uSharp.value = grade.uniforms.uScope.value *
+          0.95 * Math.min(1, Math.max(0, (16 - camera.fov) / 10));
         // gameplay_feel r6 (scoped sun-side washout): bloom is a large share
         // of the milk over bright ground — pull it to ~half while scoped,
         // and take one extra step out of BOTH aerial curves beyond the r9
@@ -2883,22 +2682,16 @@ export function createPost(renderer, scene, camera) {
         const scopeW = grade.uniforms.uScope.value;
         bloom.strength = BLOOM_STRENGTH * (1 - 0.5 * scopeW);
         aerial.uniforms.uDensity.value *= 1 - 0.22 * scopeW;
-        aerial.uniforms.uHazeDensity.value *= 1 - 0.3 * scopeW;
+        aerial.uniforms.uHazeDensity.value *= 1 - 0.30 * scopeW;
       }
       // scatter-in targets follow the sky-sampled fog color (map switches),
       // split into a warm (sunward) and cool (anti-sun) pole
       if (scene.fog) {
         const fc = scene.fog.color;
         aerial.uniforms.uHazeWarm.value.setRGB(
-          fc.r * AERIAL_WARM_TINT[0],
-          fc.g * AERIAL_WARM_TINT[1],
-          fc.b * AERIAL_WARM_TINT[2],
-        );
+          fc.r * AERIAL_WARM_TINT[0], fc.g * AERIAL_WARM_TINT[1], fc.b * AERIAL_WARM_TINT[2]);
         aerial.uniforms.uHazeCool.value.setRGB(
-          fc.r * AERIAL_COOL_TINT[0],
-          fc.g * AERIAL_COOL_TINT[1],
-          fc.b * AERIAL_COOL_TINT[2],
-        );
+          fc.r * AERIAL_COOL_TINT[0], fc.g * AERIAL_COOL_TINT[1], fc.b * AERIAL_COOL_TINT[2]);
         capLuminance(aerial.uniforms.uHazeWarm.value, AERIAL_HAZE_LUM_CAP);
         capLuminance(aerial.uniforms.uHazeCool.value, AERIAL_HAZE_LUM_CAP);
       }
@@ -2957,6 +2750,112 @@ export function createPost(renderer, scene, camera) {
      * @param {THREE.WebGLRenderer} renderer2
      * @returns {number} ms spent (for __BOOT_TIMINGS)
      */
+    /**
+     * W02 cold-boot: complete inventory of post-chain fullscreen materials.
+     * The scene compile in main.js only covers `scene` objects — every pass
+     * quad program (aerial/GTAO/bloom/grade/SMAA/FSR/copy blits) was absent
+     * from it and first-linked serially inside the first composer render,
+     * which is exactly the cold `postFirstRender` link storm (~0.5 s per
+     * program on the reference ANGLE host, W2-A measurement).
+     * TAA is deliberately excluded: the SA-12 gate keeps it unreachable from
+     * persisted state (same contract as warmDeferredPrograms). GTAOPass'
+     * normalMaterial is excluded: `_renderGBuffer` is permanently false here
+     * (external depth G-buffer), so that program would be born dead.
+     * @returns {THREE.Material[]}
+     */
+    postProgramMaterials() {
+      const mats = localWarmMaterials.slice();
+      const push = (m) => { if (m && m.isMaterial && !mats.includes(m)) mats.push(m); };
+      push(aerial.material);
+      push(gtao.gtaoMaterial);
+      push(gtao.pdMaterial);
+      push(gtao.copyMaterial);
+      push(gtao.blendMaterial);
+      push(bloom.materialHighPassFilter);
+      if (Array.isArray(bloom.separableBlurMaterials)) for (const m of bloom.separableBlurMaterials) push(m);
+      push(bloom.blendMaterial);
+      push(grade.material);
+      push(smaa._materialEdges);
+      push(smaa._materialWeights);
+      push(smaa._materialBlend);
+      push(upscaler.easuMaterial);
+      push(upscaler.rcasMaterial);
+      push(lateFx.copyMaterial);
+      push(sceneAA.copyMaterial);
+      return mats;
+    },
+
+    /**
+     * W02 cold-boot: submit EVERY post-chain program to the driver WITHOUT
+     * blocking on its link, so the KHR_parallel_shader_compile window opened
+     * by settlePostProgramLinks() can link them concurrently while boot does
+     * other work. Mirrors the forward-warm insight (W2-A): renderer.compile()
+     * submits cheaply; only uniform discovery / first draw use blocked.
+     *
+     * Two target families are submitted because three's program cache keys
+     * include the output color space of the CURRENT draw target: passes that
+     * draw into composer ping-pong/HalfFloat targets key as linear-working
+     * (bound renderTarget1 — same key family warmDeferredPrograms relies on),
+     * while the final renderToScreen pass (FSR RCAS → canvas) keys against
+     * the default framebuffer's output transform. Compiling both families up
+     * front guarantees the first real post.render finds zero new programs.
+     * @param {THREE.WebGLRenderer} renderer2
+     * @returns {{materials:number, submitMs:number, newPrograms:number}}
+     */
+    submitPrograms(renderer2) {
+      const startedAt = performance.now();
+      const stats = { materials: 0, submitMs: 0, newPrograms: 0 };
+      const mats = this.postProgramMaterials();
+      stats.materials = mats.length;
+      if (mats.length === 0) return stats;
+      const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      const geo = new THREE.PlaneGeometry(2, 2); // compile never rasterizes; shape is irrelevant
+      const scratch = new THREE.Scene();
+      const meshes = mats.map((m) => {
+        const mesh = new THREE.Mesh(geo, m);
+        scratch.add(mesh);
+        return mesh;
+      });
+      const priorTarget = renderer2.getRenderTarget();
+      const beforeTotal = (renderer2.info.programs || []).length;
+      try {
+        for (const target of [composer.renderTarget1, null]) {
+          renderer2.setRenderTarget(target);
+          try { renderer2.compile(scratch, cam); } catch (_) { /* first real render owns fallback */ }
+        }
+        // W02 r2: the FIRST composer render also rasterizes the REAL scene
+        // into the composer buffer (SceneAAPass), and three's program cache
+        // keys include the current target family — a scene program compiled
+        // against the default framebuffer re-links under its render-target
+        // sibling at first post.render (the exact effect documented by
+        // compileHiddenVariantSteps' srgb/srgb-linear note). Submit the real
+        // scene bound to the gameplay target so the whole scene roster has
+        // BOTH key families ready before the veil lifts.
+        renderer2.setRenderTarget(composer.renderTarget1);
+        try { renderer2.compile(scene, camera, scene); } catch (_) { /* first real render owns fallback */ }
+        stats.submitMs = Math.round(performance.now() - startedAt);
+        stats.newPrograms = Math.max(0, (renderer2.info.programs || []).length - beforeTotal);
+      } finally {
+        renderer2.setRenderTarget(priorTarget);
+        scratch.clear();
+        geo.dispose();
+      }
+      return stats;
+    },
+
+    /**
+     * W02 cold-boot: breathe REAL frames until every submitted program
+     * reports linked, then run deferred uniform discovery so the first
+     * composer render pays zero first-use getUniforms work. Delegates to the
+     * exported settleProgramLinks() (same contract; Node-testable).
+     * @param {THREE.WebGLRenderer} renderer2
+     * @param {() => Promise<void>} breathe - one true frame boundary
+     * @returns {Promise<{parallel:boolean, rounds:number, ms:number, discovered:number}>}
+     */
+    settleProgramLinks(renderer2, breathe) {
+      return settleProgramLinks(renderer2, breathe);
+    },
+
     warmDeferredPrograms(renderer2) {
       const startedAt = performance.now();
       const priorTarget = renderer2.getRenderTarget();
@@ -2965,22 +2864,17 @@ export function createPost(renderer, scene, camera) {
         // CopyShader-family blits: uniform values don't affect linking; bind
         // the real gameplay source anyway so first REAL use is also a state
         // (not just program) cache hit.
-        lateFx.copyMaterial.uniforms.tDiffuse.value =
-          composer.renderTarget1.texture;
+        lateFx.copyMaterial.uniforms.tDiffuse.value = composer.renderTarget1.texture;
         lateFx.copyQuad.material = lateFx.copyMaterial;
         lateFx.copyQuad.render(renderer2);
-        sceneAA.copyMaterial.uniforms.tDiffuse.value =
-          composer.renderTarget1.texture;
+        sceneAA.copyMaterial.uniforms.tDiffuse.value = composer.renderTarget1.texture;
         sceneAA.copyQuad.material = sceneAA.copyMaterial;
         sceneAA.copyQuad.render(renderer2);
         // EASU at identity sizes mirrors its cheapest real configuration; the
         // governor resizes uOutputSize through the shared outputSize vector.
-        upscaler.easuMaterial.uniforms.tDiffuse.value =
-          composer.renderTarget1.texture;
+        upscaler.easuMaterial.uniforms.tDiffuse.value = composer.renderTarget1.texture;
         upscaler.easuMaterial.uniforms.uInputSize.value.set(
-          composer.renderTarget1.width,
-          composer.renderTarget1.height,
-        );
+          composer.renderTarget1.width, composer.renderTarget1.height);
         upscaler.quad.material = upscaler.easuMaterial;
         upscaler.quad.render(renderer2);
       } finally {
@@ -2999,9 +2893,7 @@ export function createPost(renderer, scene, camera) {
     aerial,
 
     /** Active TAA state (default OFF behind feature gate). */
-    get taaEnabled() {
-      return taaEnabled;
-    },
+    get taaEnabled() { return taaEnabled; },
 
     /** Feature gate setter for TAA experiment. */
     setTaaEnabled(enabled) {
@@ -3017,15 +2909,11 @@ export function createPost(renderer, scene, camera) {
     },
 
     /** Scene-only hardware AA. Display-space SMAA + FSR1 follow it. */
-    get msaaSamples() {
-      return msaaSamples;
-    },
+    get msaaSamples() { return msaaSamples; },
 
     /** Live dynamic-resolution scale (1 = full preset resolution). Probe/
      * settings-UI observability for the governor above; read-only. */
-    get dynScale() {
-      return dynScale;
-    },
+    get dynScale() { return dynScale; },
 
     /**
      * QA hook (engine-aa r1): pin the governor at a fixed scale so dpr-2
@@ -3037,13 +2925,8 @@ export function createPost(renderer, scene, camera) {
      * @returns {void}
      */
     pinDynScale(v) {
-      dynPin =
-        v == null
-          ? null
-          : Math.min(
-              1,
-              Math.max(dynamicScaleFloor(renderer.getPixelRatio(), preset), v),
-            );
+      dynPin = v == null ? null : Math.min(1,
+        Math.max(dynamicScaleFloor(renderer.getPixelRatio(), preset), v));
       if (dynPin !== null && dynPin !== dynScale) {
         dynScale = dynPin;
         if (cssW > 0 && cssH > 0) applySize(cssW, cssH);
@@ -3062,9 +2945,7 @@ export function createPost(renderer, scene, camera) {
     },
 
     /** perf-governor r1: current session trim rung (0 = untrimmed). */
-    get perfTrim() {
-      return perfTrim;
-    },
+    get perfTrim() { return perfTrim; },
 
     /** perf-governor r1: capture/shot contexts must render untrimmed. */
     resetPerfTrims() {
@@ -3097,8 +2978,57 @@ export function createPost(renderer, scene, camera) {
     },
 
     /** QA hook (probes): force a trim rung, bypassing the strike windows. */
-    forcePerfTrim(level) {
-      setPerfTrim(level);
-    },
+    forcePerfTrim(level) { setPerfTrim(level); },
   };
+}
+
+/**
+ * W02 cold-boot: breathe REAL frames until every known program reports
+ * linked (KHR_parallel_shader_compile COMPLETION_STATUS_KHR), then run
+ * deferred uniform discovery over all programs so the first composer render
+ * pays zero first-use getUniforms work — the same r5c guarantee the forward
+ * warm (main.js W2-A) gives combat frames, applied to the boot post stage.
+ *
+ * Bounded in rounds and wall time; without the extension (or when `breathe`
+ * is missing) it returns immediately with parallel:false and today's legacy
+ * behavior — the first real render resolving links serially — is the
+ * byte-identical fallback. Discovery covers every known program, not just
+ * new ones; already-discovered programs return their cached uniform maps.
+ *
+ * Module-scope so Node selftests can pin the contract with fake renderers.
+ * @param {THREE.WebGLRenderer} renderer2
+ * @param {(() => Promise<void>) | null} breathe - one true frame boundary
+ * @returns {Promise<{parallel:boolean, rounds:number, ms:number, discovered:number}>}
+ */
+export async function settleProgramLinks(renderer2, breathe) {
+  const result = { parallel: false, rounds: 0, ms: 0, discovered: 0 };
+  let ext = null;
+  try { ext = renderer2.getContext().getExtension('KHR_parallel_shader_compile'); } catch (_) { /* no GL */ }
+  const startedAt = performance.now();
+  if (!ext || typeof breathe !== 'function') return result;
+  const gl = renderer2.getContext();
+  const MAX_ROUNDS = 300; // ~5 s of 60 Hz frames behind the loading veil
+  const MAX_MS = 8000;
+  const pendingAny = () => {
+    const progs = renderer2.info.programs || [];
+    for (const pr of progs) {
+      try {
+        if (gl.getProgramParameter(pr.program, ext.COMPLETION_STATUS_KHR) === false) return true;
+      } catch (_) { /* treat as done — discovery below owns the fallback */ }
+    }
+    return false;
+  };
+  while (pendingAny()) {
+    if (result.rounds >= MAX_ROUNDS || performance.now() - startedAt > MAX_MS) break;
+    result.parallel = true;
+    await breathe();
+    result.rounds++;
+  }
+  // Deferred discovery: links are (nominally) complete, so these are
+  // metadata reads rather than link waits. Covers scene + post families.
+  for (const pr of (renderer2.info.programs || [])) {
+    try { pr.getUniforms(); result.discovered++; } catch (_) { /* warm only */ }
+  }
+  result.ms = Math.round(performance.now() - startedAt);
+  return result;
 }

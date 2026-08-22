@@ -386,3 +386,84 @@ function depthRt(name, w = 64, h = 32) {
 }
 
 console.log('post self-test passed');
+
+// --- W02 cold-boot: settleProgramLinks contract -----------------------------
+// Node-runnable with a fake renderer: pins the parallel-link window's
+// fallback semantics (the boot post stage's first composer render must never
+// regress when KHR_parallel_shader_compile is absent) and the poll/discover
+// shape when it is present.
+import { settleProgramLinks } from './post.js';
+
+function fakeGlLinkRenderer({ extension }) {
+  const programs = [];
+  let polls = 0;
+  const gl = {
+    getExtension(name) {
+      if (name !== 'KHR_parallel_shader_compile') return null;
+      return extension ? { COMPLETION_STATUS_KHR: 'COMPLETION_STATUS_KHR' } : null;
+    },
+    getProgramParameter(_program, query) {
+      if (query !== 'COMPLETION_STATUS_KHR') throw new Error('unexpected query');
+      polls++;
+      // every listed program reports linked after exactly 3 poll rounds
+      return polls > 3;
+    },
+  };
+  return {
+    gl,
+    getContext() { return gl; },
+    info: { programs },
+    addProgram(id, uniformsThrow = false) {
+      programs.push({
+        program: { id },
+        getUniforms() {
+          if (uniformsThrow) throw new Error('discovery must tolerate this');
+          return { id };
+        },
+      });
+    },
+  };
+}
+
+{
+  // 1. Without the extension: immediate legacy fallback — zero rounds, zero
+  // breathing, and NO discovery (today's behavior; the real render owns it).
+  const r = fakeGlLinkRenderer({ extension: false });
+  r.addProgram(1);
+  const out = await settleProgramLinks(r, async () => {});
+  assert.equal(out.parallel, false, 'no-extension must not claim parallel');
+  assert.equal(out.rounds, 0);
+  assert.equal(out.discovered, 0, 'fallback leaves discovery to the real render');
+}
+
+{
+  // 2. With the extension: breathes one frame per round until the batch
+  // reports complete, then discovers every program exactly once each.
+  const r = fakeGlLinkRenderer({ extension: true });
+  r.addProgram(1);
+  r.addProgram(2);
+  let breathes = 0;
+  const out = await settleProgramLinks(r, async () => { breathes++; });
+  assert.equal(out.parallel, true, 'extension present must use the window');
+  assert.equal(out.rounds, 3, 'one frame per poll round until complete');
+  assert.equal(breathes, 3, 'breathe called once per round');
+  assert.equal(out.discovered, 2, 'deferred discovery covers every program');
+}
+
+{
+  // 3. A throwing getUniforms must not escape warm-only discovery.
+  const r = fakeGlLinkRenderer({ extension: true });
+  r.addProgram(1, true);
+  r.addProgram(2, false);
+  const out = await settleProgramLinks(r, null); // null breathe: still safe
+  assert.equal(out.discovered >= 0, true);
+}
+
+{
+  // 4. Missing/invalid breathe callback: immediate return, legacy path.
+  const r = fakeGlLinkRenderer({ extension: true });
+  r.addProgram(1);
+  const out = await settleProgramLinks(r, undefined);
+  assert.equal(out.parallel, false);
+  assert.equal(out.ms >= 0, true);
+}
