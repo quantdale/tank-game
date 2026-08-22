@@ -48,7 +48,7 @@ import { setDestroyedEventSink } from './world/destructibles.js';
 import { MAP_IDS, getMapConfig, resolveMapId } from './world/maps/index.js';
 import { MAP_THUMBS } from './ui/mapThumbs.js';
 import { VISIBLE_TANK_IDS, getSpec } from './vehicles/specs.js';
-import { createTank } from './vehicles/tankFactory.js';
+import { createTank, ensureFullFleet } from './vehicles/fleetFactory.js';
 // CAMO WIRING: pattern persistence + live repaint (garage picker, AUTO biome)
 import {
   CAMO_PATTERN_IDS, CAMO_PATTERN_LABEL, getCamoSelection, setCamoSelection,
@@ -308,6 +308,7 @@ const engineCtx = {
   scene,
   camera,
   setupShadowMaterial: (mat, extraHook = null) => lighting.setupShadowMaterial(mat, extraHook),
+  releaseShadowMaterial: (mat) => lighting.releaseShadowMaterial(mat),
   anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()),
   quality: 'high',
 };
@@ -364,7 +365,14 @@ function enforceWorldCacheBudget() {
     if (cached === world || worldBuilds.has(id)) continue;
     worldCache.delete(id);
     const preserveRoots = scene.children.filter((child) => child !== cached.group);
-    const released = disposeObject3DResources(cached.group, { preserveRoots });
+    const released = disposeObject3DResources(cached.group, {
+      preserveRoots,
+      // CSM pins every registered material in its shaders Map; evicted worlds
+      // must release theirs or mobile map rotation retains them forever.
+      onDispose: (type, res) => {
+        if (type === 'material') lighting.releaseShadowMaterial(res);
+      },
+    });
     // Render lists retain object references independently of the scene graph.
     // Clear them after a whole battlefield leaves so its JS graph and buffers
     // can be reclaimed before the next mobile frame.
@@ -652,6 +660,11 @@ bus.on('module:state', (ev) => {
 // way — and the bay is sealed, so no battlefield is visible from it regardless.
 GARAGE_POS.y = hfProxy.getHeightAt(GARAGE_POS.x, GARAGE_POS.z);
 const { stage: garageStage, dressing: garageDressing } = await bootStage('garage', async () => {
+  // W2-H lazy fleet: the bay builds (t90a_burlak / m1a2 / t90m / k2) span the
+  // lazily-loaded profile families, so the chunks must be registered before
+  // the dressing pump runs. The fleet self-fetch started at module eval and
+  // overlaps everything above; this await only pays any residual eval time.
+  await ensureFullFleet();
   const gs = createGarageStage(engineCtx, GARAGE_POS);
   scene.add(gs.group);
   const gd = createGarageDressing(engineCtx, GARAGE_POS);
@@ -1046,6 +1059,15 @@ function setPedestalTank(specId, force = false) {
     .then(async () => {
       if (buildToken !== pedestalPollToken) {
         pedTrace('prebake-stale', { id: specId, tok: buildToken });
+        retirePrev();
+        return;
+      }
+      // W2-H lazy fleet: a hero spec may live in a not-yet-arrived family
+      // chunk; the fetch self-started at eval, so this usually resolves
+      // instantly and the outgoing hero keeps covering the stage meanwhile.
+      await ensureFullFleet();
+      if (buildToken !== pedestalPollToken) {
+        pedTrace('fleet-stale', { id: specId, tok: buildToken });
         retirePrev();
         return;
       }
@@ -2397,6 +2419,13 @@ async function startBattleLoading(specId, mapId = null) {
     allies: [], enemies: [],
   });
   await nextFrame();
+
+  // 0. W2-H lazy fleet: wreck bakes (world build) and the roster visuals span
+  //    every profile family, so all builder chunks must be registered before
+  //    either starts. The fetch self-started at module eval; on any session
+  //    that reached the garage it is long since resident.
+  battleLoad.progress(0.01, 'Preparing vehicles');
+  await ensureFullFleet();
 
   // 1. battlefield (0 → 55%). Already-cached maps skip straight through.
   battleLoad.progress(0.02, 'Loading battlefield');
@@ -5459,6 +5488,14 @@ await bootStage('post', async () => {
   const tFirstRender = performance.now();
   post.render(SIM_DT);
   BOOT_TIMINGS.postFirstRender = Math.round(performance.now() - tFirstRender);
+  // W2-B: that first render only links passes that DREW on it. LateFx.Copy
+  // (skips while soft FX are idle), FSR1.EASU (skips at 1:1 raster) and
+  // SceneAA.Copy (MSAA-only resolve path) would otherwise first-link on a
+  // visible frame — mid-combat smoke or the governor's first down-step.
+  // Link them here behind the veil; see post.warmDeferredPrograms().
+  const tWarmDeferred = performance.now();
+  try { post.warmDeferredPrograms(renderer); } catch (_) { /* warm only */ }
+  BOOT_TIMINGS.postWarmDeferred = Math.round(performance.now() - tWarmDeferred);
 });
 // PERF (performance_budget r1): the combat-pipeline warms below are needed
 // before FIRST COMBAT, not before readiness — they used to run synchronously
@@ -5684,7 +5721,11 @@ async function warmCombatPipelineChunked(budgetMs = 8) {
     if (_warmGen !== g) return; // the sync wrapper took over and finished
     const r = g.next();
     if (r.done) { if (_warmGen === g) _warmGen = null; return; }
-    await yieldForFrameBudget();
+    // A step may yield the hint 'frame' to demand a REAL frame boundary
+    // (KHR parallel-link breathing rounds busy-spin otherwise: their per-
+    // round work is far under any budget, so the budget yielder would never
+    // release the main thread while the driver links).
+    await yieldForFrameBudget(r.value === 'frame');
   }
 }
 function* warmCombatPipelineSteps() {
@@ -5727,6 +5768,9 @@ function* warmCombatPipelineSteps() {
     if (e.visual && e.visual.prewarmBurn) e.visual.prewarmBurn();
   }
   markWarmStage('wrecks');
+  // W2-A: aggregate per-atom attribution for the unmarked span below (the
+  // cert r1 "fx sprite-atlas bake" line) — see wreckPre/Dance/Track stages.
+  const wreckAtom = { pre: 0, dance: 0, track: 0 };
   // EVENT-SPIKE WARM part 1 (perf-r2b, measured by tmp-eventspike-probe):
   // the shared WRECK canvases (heightToNormal / roughness patch bakes via
   // getImageData in materials.js) bake per FAMILY on the first setDestroyed —
@@ -5740,19 +5784,28 @@ function* warmCombatPipelineSteps() {
       // perf-r5: the char/ember canvases are the dance's hidden atom — bake
       // them CHUNKED first (a slice per painter stage), then the dance and
       // every later kill hit the cache.
+      let atomAt = performance.now();
       try { yield* prebakeBurntSteps(e.specId, engineCtx.anisotropy ?? 4); } catch (_) { /* warm only */ }
+      wreckAtom.pre += performance.now() - atomAt;
+      atomAt = performance.now();
       try { e.visual.setDestroyed({}); e.visual.resetDestroyed(); } catch (_) { /* warm only */ }
+      wreckAtom.dance += performance.now() - atomAt;
       // Build the lazy thrown-track ribbon before the hidden-variant compile
       // so a first live de-track never allocates or links it mid-fight.
       if (e.visual.setTrackState) {
+        atomAt = performance.now();
         try {
           e.visual.setTrackState('trackL', true);
           e.visual.setTrackState('trackL', false);
         } catch (_) { /* warm only */ }
+        wreckAtom.track += performance.now() - atomAt;
       }
       yield; // one wreck-dance per slice
     }
   }
+  warmTrace.stages.wreckPre = Math.round(wreckAtom.pre);   // W2-A: name the
+  warmTrace.stages.wreckDance = Math.round(wreckAtom.dance); // unmarked span's
+  warmTrace.stages.wreckTrack = Math.round(wreckAtom.track); // atoms
   // EVENT-SPIKE WARM part 2: fire one silent instance of every combat effect
   // family at a far map corner while the loading screen owns the frame — the
   // lazy sprite-atlas bakes (flash/fbm getImageData work inside particles.js)
@@ -5765,12 +5818,18 @@ function* warmCombatPipelineSteps() {
     const wn = new THREE.Vector3(0, 1, 0);
     const wd = new THREE.Vector3(0, 0, 1);
     try {
+      const _fxT0 = performance.now();
       fx.muzzleFlash(wp, wd, 120);
+      // W2-A: split the monster span — synchronous emit cost vs the first
+      // rendered frame after the pools flip visible (program/texture
+      // first-use lands in that frame's rAF wait, not in the emit itself).
+      warmTrace.stages.fxMuzzleCall = Math.round(performance.now() - _fxT0);
       // MOBILE-QA r11 (idle profiler): the volley ran as ONE generator slice
       // (~1.1 s of garage-idle jank — every family's lazy sprite/atlas bake
       // in a single task). Yields between effect families; call order and
       // the trailing resetAll are unchanged (bake caches persist).
       yield;
+      markWarmStage('fxMuzzleWait');
       for (const kind of ['pen', 'nonpen', 'ricochet', 'he_pen', 'he_splash', 'era', 'spaced_absorb', 'terrain']) {
         fx.impact(kind, wp, wn, 120);
         yield;
@@ -5778,10 +5837,12 @@ function* warmCombatPipelineSteps() {
       fx.dust(wp, wd, 1);
       fx.exhaust(wp, 1, true);
       yield;
+      markWarmStage('fxImpacts');
       fx.destruction(wp, null, 'shot');
       yield;
       fx.destruction(wp, null, 'ammorack');
       yield;
+      markWarmStage('fxDestruct');
       // perf-r2f (journey probe): the prop-destruction families bake their
       // splinter/debris sprites on FIRST break — ramming your first fence
       // measured a 1.1 s frame. One silent break per family joins the volley
@@ -5939,18 +6000,62 @@ const warmRender = createOffscreenSceneWarmer(renderer, scene, camera);
 // Fall back to the same Three program objects, but consume each newly-created
 // forward variant separately and yield before creating the next. The final
 // warmRender still owns real texture/state/depth initialization.
+//
+// W2-A (SA-11 follow-up b, cert r4/r5: forwardWarm 36.2-36.3 s per battle
+// open, cold AND disk-cache-warm profiles): calling getUniforms() immediately
+// after each object's compile() blocks THAT TASK on the driver finishing the
+// link serially — program after program — even when Chrome's shader disk
+// cache makes the actual link work trivial. With KHR_parallel_shader_compile
+// the driver links every submitted program concurrently: submit all compiles
+// first (cheap), breathe one REAL frame per poll round until the batch
+// reports complete (yield hint 'frame' — see warmCombatPipelineChunked),
+// then run the deferred uniform discovery per program. Discovery still runs
+// for EVERY new program before this generator returns, so the first-combat
+// frame keeps paying zero first-use uniform work (the r5c guarantee); only
+// the serial link-wait collapses into the parallel window. Without the
+// extension (or if the bounded wait expires) the exact legacy immediate-
+// discovery behavior runs, so worst case is today's cost.
+// FORWARD_WARM_PARALLEL is the A/B switch for that claim: false reproduces
+// the legacy per-program blocking discovery byte-for-byte (cert baseline),
+// true enables the parallel window (cert candidate).
+const FORWARD_WARM_PARALLEL = true; // W2-A candidate: KHR_parallel_shader_compile window
 function* initializeForwardProgramsSteps() {
+  // W2-A diagnostic: split the stage into link (renderer.compile) vs uniform
+  // discovery (getUniforms) wall time + program/object counts, so a warm-skip
+  // policy can be judged on measured atoms instead of stage totals only.
+  const fwdStats = { objects: 0, newPrograms: 0, compileMs: 0, uniformsMs: 0, parallel: false };
+  if (typeof window !== 'undefined') window.__FORWARD_WARM_STATS = fwdStats;
   let sliceAt = performance.now();
   const objects = [];
   scene.traverseVisible((object) => {
     if (object.isMesh || object.isPoints || object.isLine || object.isSprite) objects.push(object);
   });
+  fwdStats.objects = objects.length;
+
+  const gl = renderer.getContext();
+  if (_linkExtMain === undefined) {
+    _linkExtMain = gl.getExtension('KHR_parallel_shader_compile') || null;
+  }
+  // WebGLProgram objects awaiting uniform discovery this pass.
+  const pendingDiscovery = (_linkExtMain && FORWARD_WARM_PARALLEL) ? [] : null;
+
   for (const object of objects) {
     const before = (renderer.info.programs || []).length;
+    const tCompile = performance.now();
     try { renderer.compile(object, camera, scene); } catch (_) { /* warm only */ }
+    fwdStats.compileMs += performance.now() - tCompile;
     const programs = renderer.info.programs || [];
     for (let i = before; i < programs.length; i++) {
-      try { programs[i].getUniforms(); } catch (_) { /* warm only */ }
+      if (pendingDiscovery) {
+        pendingDiscovery.push(programs[i]);
+      } else {
+        // Legacy path (no KHR extension): block on the link now, exactly as
+        // before the parallel-window optimization existed.
+        const tU = performance.now();
+        try { programs[i].getUniforms(); } catch (_) { /* warm only */ }
+        fwdStats.uniformsMs += performance.now() - tU;
+      }
+      fwdStats.newPrograms++;
       yield;
       sliceAt = performance.now();
     }
@@ -5958,6 +6063,39 @@ function* initializeForwardProgramsSteps() {
       yield;
       sliceAt = performance.now();
     }
+  }
+
+  if (!pendingDiscovery || pendingDiscovery.length === 0) return;
+  // Parallel window: breathe a real frame per round while any submitted
+  // program is still linking. Bounded both in rounds and wall time so a
+  // linker that never reports done cannot stall the warm — expiry just
+  // falls back to blocking discovery.
+  fwdStats.parallel = true;
+  const MAX_LINK_ROUNDS = 300; // ~5 s of 60 Hz frames on the loading screen
+  const linkWaitStartedAt = performance.now();
+  const MAX_LINK_WAIT_MS = 8000;
+  for (let round = 0; round < MAX_LINK_ROUNDS; round++) {
+    let allDone = true;
+    for (const pr of pendingDiscovery) {
+      try {
+        if (gl.getProgramParameter(pr.program, _linkExtMain.COMPLETION_STATUS_KHR) === false) {
+          allDone = false;
+          break;
+        }
+      } catch (_) { /* treat as done — discovery below owns the fallback */ }
+    }
+    if (allDone) break;
+    if (performance.now() - linkWaitStartedAt > MAX_LINK_WAIT_MS) break;
+    yield 'frame'; // demand a true frame boundary (see chunked wrapper)
+  }
+  // Deferred uniform discovery: links are (nominally) complete, so these are
+  // metadata reads rather than link waits. One program per step keeps the
+  // slice pacing identical to the legacy path.
+  for (const pr of pendingDiscovery) {
+    const tU = performance.now();
+    try { pr.getUniforms(); } catch (_) { /* warm only */ }
+    fwdStats.uniformsMs += performance.now() - tU;
+    yield;
   }
 }
 

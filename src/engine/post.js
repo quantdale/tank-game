@@ -2722,6 +2722,55 @@ export function createPost(renderer, scene, camera) {
       lateFx.prepare(renderer);
     },
 
+    /**
+     * W2-B: link the fullscreen-quad programs whose passes SKIP or branch on
+     * ordinary frames, so none of them can first-link on a visible frame.
+     * The boot composer render (main.js 'post' stage) already resolves every
+     * pass that draws that frame; these three do not draw on it:
+     *  - LateFxPass.Copy early-returns until soft combat FX go active, so its
+     *    program linked mid-combat on the first smoke activation.
+     *  - FSR1.EASU draws only when the composer raster differs from the
+     *    native canvas — covered from boot on capped/retina tiers, but on a
+     *    1:1 host its first draw landed exactly on the governor's first
+     *    down-step (the most loaded visible frames).
+     *  - SceneAAPass.Copy exists only on the stock MSAA resolve path (or
+     *    after a live preset crossing MSAA 0 <-> N); a warm draw is a cache
+     *    hit where the boot render already linked it.
+     * TAA stays unwarmed: the SA-12 gate keeps it unreachable from persisted
+     * state, so its program cannot link in normal play.
+     * Mirrors the srgb-linear variant warm in main.js: each quad draws bound
+     * to composer.renderTarget1 so the program keys match gameplay-frame
+     * conditions. Between-frame hidden call only — never beside post.render.
+     * @param {THREE.WebGLRenderer} renderer2
+     * @returns {number} ms spent (for __BOOT_TIMINGS)
+     */
+    warmDeferredPrograms(renderer2) {
+      const startedAt = performance.now();
+      const priorTarget = renderer2.getRenderTarget();
+      try {
+        renderer2.setRenderTarget(composer.renderTarget1);
+        // CopyShader-family blits: uniform values don't affect linking; bind
+        // the real gameplay source anyway so first REAL use is also a state
+        // (not just program) cache hit.
+        lateFx.copyMaterial.uniforms.tDiffuse.value = composer.renderTarget1.texture;
+        lateFx.copyQuad.material = lateFx.copyMaterial;
+        lateFx.copyQuad.render(renderer2);
+        sceneAA.copyMaterial.uniforms.tDiffuse.value = composer.renderTarget1.texture;
+        sceneAA.copyQuad.material = sceneAA.copyMaterial;
+        sceneAA.copyQuad.render(renderer2);
+        // EASU at identity sizes mirrors its cheapest real configuration; the
+        // governor resizes uOutputSize through the shared outputSize vector.
+        upscaler.easuMaterial.uniforms.tDiffuse.value = composer.renderTarget1.texture;
+        upscaler.easuMaterial.uniforms.uInputSize.value.set(
+          composer.renderTarget1.width, composer.renderTarget1.height);
+        upscaler.quad.material = upscaler.easuMaterial;
+        upscaler.quad.render(renderer2);
+      } finally {
+        renderer2.setRenderTarget(priorTarget);
+      }
+      return Math.round(performance.now() - startedAt);
+    },
+
     bloom,
     gtao,
     // Probe/measurement hooks for paired quality and depth-composite runs.

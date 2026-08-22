@@ -3263,6 +3263,9 @@ export async function prebakeSharedTextures(spec, aniso, quality = 'ai', tick = 
     if (isMaterialTextureQualityUpgrade(entry.quality, quality)) {
       await run(bakeSharedCanvasesSteps(entry, quality));
       finalizeEntryResize(entry);
+      // W2-A: the repaint disposed the derived char/ember pair — try the
+      // disk cache before acquire's ensureBurntTextures repaints it.
+      await hydrateBurntFromDiskAwaited(entry, aniso);
     }
     return;
   }
@@ -3282,6 +3285,11 @@ export async function prebakeSharedTextures(spec, aniso, quality = 'ai', tick = 
   entry.normalTex = canvasTex(entry.normalCanvas, { srgb: false, aniso, repeat: true });
   entry.roughTex = canvasTex(entry.roughCanvas, { srgb: false, aniso, repeat: true });
   TEX_CACHE.set(key, entry);
+  // W2-A (SA-11 follow-up c): offer the derived-atlas disk cache BEFORE the
+  // visual build's ensureBurntTextures paints char/ember synchronously. A
+  // hit installs both textures so acquire's eager ensure becomes a no-op;
+  // a miss just falls through to the legacy paint (which then persists).
+  await hydrateBurntFromDiskAwaited(entry, aniso);
 }
 
 /**
@@ -3336,6 +3344,208 @@ function releaseSharedTextures(shared) {
   }
 }
 
+// ===========================================================================
+// W2-A derived-atlas disk cache (SA-11 follow-up c). The char/ember wreck
+// canvases are fully deterministic per TEX_CACHE key (painter seed = f(key)),
+// but they repaint on every battle open — cert r1 attributed that unmarked
+// span at 16.6 s (~22 s under co-tenant load). Persist both atlases as
+// lossless PNG blobs in IndexedDB and rehydrate them on later sessions:
+//
+//   key   = sha256(cacheKey | atlas dims | BURNT_CACHE_VERSION |
+//                  sha256(camoCanvas RGBA))          — input content hash
+//   value = { px: sha256(burnt+ember RGBA), burnt, ember }  — output integrity
+//
+// The camo hash in the KEY invalidates automatically whenever the source
+// albedo changes (quality upgrade / camo repaint dispose burntTex); the
+// stored pixel hash catches any painter drift the version bump misses.
+// PNG round-trip is pixel-lossless, so hydrated visuals are identical to
+// painter output. EVERY failure path — no indexedDB (Node selftests),
+// crypto.subtle missing, private mode, quota, decode error, hash mismatch,
+// abandonment after ~10 s of warm slices — degrades to the exact legacy
+// synchronous repaint in burntBakeSteps.
+// ===========================================================================
+const BURNT_CACHE_VERSION = 1;
+let _burntDbPromise;
+
+function burntSha256Hex(bytes) {
+  return crypto.subtle.digest('SHA-256', bytes).then((buf) => {
+    const hex = [];
+    for (const b of new Uint8Array(buf)) hex.push(b.toString(16).padStart(2, '0'));
+    return hex.join('');
+  });
+}
+
+/** sha256 over a canvas's RGBA pixels; null when the platform can't. */
+function canvasPixelHash(cv) {
+  try {
+    if (typeof crypto === 'undefined' || !crypto.subtle) return Promise.resolve(null);
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    const img = ctx.getImageData(0, 0, cv.width, cv.height);
+    return burntSha256Hex(img.data.buffer);
+  } catch (_) {
+    return Promise.resolve(null);
+  }
+}
+
+function openBurntCacheDb() {
+  if (!_burntDbPromise) {
+    _burntDbPromise = new Promise((resolve, reject) => {
+      const req = indexedDB.open('cot-derived-fx', 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains('burnt')) req.result.createObjectStore('burnt');
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('idb open failed'));
+    }).catch(() => null);
+  }
+  return _burntDbPromise;
+}
+
+function idbGet(store, key) {
+  return new Promise((resolve, reject) => {
+    const rq = store.get(key);
+    rq.onsuccess = () => resolve(rq.result || null);
+    rq.onerror = () => reject(rq.error);
+  });
+}
+
+async function burntInputKey(entry) {
+  const camoHash = await canvasPixelHash(entry.camoCanvas);
+  if (!camoHash) return null;
+  const S = texSize(1024);
+  const enc = new TextEncoder().encode(
+    `${entry.cacheKey}|${S}|${256}|${BURNT_CACHE_VERSION}|${camoHash}`);
+  return burntSha256Hex(enc);
+}
+
+function canvasToPngBlob(cv) {
+  return new Promise((resolve, reject) => {
+    try {
+      cv.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('toBlob null'))), 'image/png');
+    } catch (err) { reject(err); }
+  });
+}
+
+function pngBlobToCanvas(blob, w, h) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => {
+      try {
+        URL.revokeObjectURL(url);
+        const cv = makeCanvas(w, h);
+        cv.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(cv);
+      } catch (err) { URL.revokeObjectURL(url); reject(err); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('atlas decode failed')); };
+    img.src = url;
+  });
+}
+
+/** Fire-and-forget persist of a freshly baked char/ember pair. */
+async function persistBurntCanvases(entry) {
+  try {
+    if (typeof indexedDB === 'undefined') return;
+    const stats = burntDiskStats();
+    const db = await openBurntCacheDb();
+    if (!db) return;
+    const key = await burntInputKey(entry);
+    if (!key) return;
+    // Integrity hash covers BOTH atlases' final pixels.
+    const burntHash = await canvasPixelHash(entry.burntTex.image);
+    const emberHash = await canvasPixelHash(entry.emberTex.image);
+    if (!burntHash || !emberHash) return;
+    const [burntBlob, emberBlob] = await Promise.all([
+      canvasToPngBlob(entry.burntTex.image), canvasToPngBlob(entry.emberTex.image),
+    ]);
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('burnt', 'readwrite');
+      tx.objectStore('burnt').put({ v: BURNT_CACHE_VERSION, px: `${burntHash}:${emberHash}`, burnt: burntBlob, ember: emberBlob }, key);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('idb aborted'));
+    });
+    stats.persisted++;
+  } catch (_) { /* cache is strictly best-effort */ }
+}
+
+// W2-A diagnostic counters (browser only): direct evidence that the derived
+// cache is live — hits skip the char/ember painter entirely.
+function burntDiskStats() {
+  if (typeof window === 'undefined') {
+    return { offer: 0, hit: 0, miss: 0, persisted: 0 };
+  }
+  if (!window.__BURNT_DISK_STATS) {
+    window.__BURNT_DISK_STATS = { offer: 0, hit: 0, miss: 0, persisted: 0 };
+  }
+  return window.__BURNT_DISK_STATS;
+}
+
+/**
+ * Start an async rehydrate of entry's burnt/ember pair from the disk cache.
+ * Returns a poll handle for generator consumers (settled/applied/abandoned)
+ * or null when this platform has no cache. Installs the textures itself on
+ * success — byte-equivalent to what burntBakeSteps would have painted.
+ */
+function hydrateBurntFromDisk(entry, aniso) {
+  try {
+    if (typeof indexedDB === 'undefined') return null;
+    const handle = { settled: false, applied: false, abandoned: false };
+    burntDiskStats().offer++;
+    (async () => {
+      const db = await openBurntCacheDb();
+      if (!db) return;
+      const key = await burntInputKey(entry);
+      if (!key || handle.abandoned || entry.burntTex) return;
+      const rec = await idbGet(db.transaction('burnt', 'readonly').objectStore('burnt'), key);
+      if (!rec || rec.v !== BURNT_CACHE_VERSION || handle.abandoned || entry.burntTex) return;
+      const S = texSize(1024);
+      const E = 256;
+      const [burntCv, emberCv] = await Promise.all([
+        pngBlobToCanvas(rec.burnt, S, S), pngBlobToCanvas(rec.ember, E, E),
+      ]);
+      if (handle.abandoned || entry.burntTex) return;
+      // Output integrity: decoded pixels must match what was persisted.
+      const burntHash = await canvasPixelHash(burntCv);
+      const emberHash = await canvasPixelHash(emberCv);
+      if (!burntHash || !emberHash || `${burntHash}:${emberHash}` !== rec.px) return;
+      if (handle.abandoned || entry.burntTex) return;
+      entry.burntTex = canvasTex(burntCv, { aniso, repeat: true });
+      entry.emberTex = canvasTex(emberCv, { aniso: 2, repeat: true });
+      handle.applied = true;
+      burntDiskStats().hit++;
+    })().catch(() => { /* fall through to legacy paint */ }).finally(() => {
+      handle.settled = true;
+    });
+    return handle;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Awaited variant for prebakeSharedTextures: resolve (or give up on) the
+ * disk rehydrate before the caller returns, so the visual build's eager
+ * ensureBurntTextures finds the pair already installed. Bounded — a slow or
+ * missing record costs at most the timeout, then the legacy paint runs.
+ */
+async function hydrateBurntFromDiskAwaited(entry, aniso) {
+  if (entry.burntTex) return;
+  const handle = hydrateBurntFromDisk(entry, aniso);
+  if (!handle) {
+    burntDiskStats().miss++;
+    return;
+  }
+  const t0 = performance.now();
+  while (!handle.settled && performance.now() - t0 < 4000) {
+    await new Promise((r) => setTimeout(r, 16));
+  }
+  handle.abandoned = true; // stop a straggler from installing mid-render
+  if (!handle.applied) burntDiskStats().miss++;
+}
+
 /**
  * Charred variant of the shared camo albedo + a patchy ember emissive map,
  * built lazily and cached with the per-spec textures. The wreck keeps faint
@@ -3344,9 +3554,13 @@ function releaseSharedTextures(shared) {
  * @param {object} entry TEX_CACHE entry @param {number} aniso
  */
 function ensureBurntTextures(entry, aniso) {
+  if (entry.burntTex) return;
   const g = burntBakeSteps(entry, aniso);
   let r = g.next();
   while (!r.done) r = g.next();
+  // W2-A: first paint of this session persists the pair for later sessions
+  // (fire-and-forget; failure is silently ignored by the cache layer).
+  void persistBurntCanvases(entry);
 }
 
 /**
@@ -3355,17 +3569,32 @@ function ensureBurntTextures(entry, aniso) {
  * drain-deadline stragglers, inside the COUNTDOWN). The warm pipeline
  * yield*s this per fielded family so each stage gets its own slice; the
  * kill-time ensureBurntTextures path then always hits the cache.
+ *
+ * W2-A (SA-11 follow-up c; cert r1 attributed the unmarked span at
+ * 16.6-21.9 s per battle open): before painting, offer a rehydrate from the
+ * derived-atlas disk cache (IndexedDB, keyed by content hash — see
+ * hydrateBurntFromDisk). The rehydrate polls across this generator's yield
+ * points so consumers keep their exact slice pacing; expiry or ANY failure
+ * falls through to the byte-identical legacy repaint below.
  * @param {string} specId @param {number} aniso
  */
 export function* prebakeBurntSteps(specId, aniso, selection = null) {
   const entry = TEX_CACHE.get(sharedTextureIdentity(specId, selection).key);
   if (!entry || entry.burntTex) return;
+  const diskLoad = hydrateBurntFromDisk(entry, aniso);
+  if (diskLoad) {
+    // ~600 slices ≈ 10 s of loading-screen frames; PNG decode + hash check
+    // for two atlases lands well inside that on any real machine.
+    for (let i = 0; i < 600 && !diskLoad.settled; i++) yield;
+    if (!diskLoad.settled) diskLoad.abandoned = true;
+    if (diskLoad.applied) return;
+  }
   yield* burntBakeSteps(entry, aniso);
+  void persistBurntCanvases(entry);
 }
 
 function* burntBakeSteps(entry, aniso) {
-  if (entry.burntTex) return;
-  const S = texSize(1024); // MOBILE r1: central tier scale (S-relative painter)
+  if (entry.burntTex) return;  const S = texSize(1024); // MOBILE r1: central tier scale (S-relative painter)
   const cv = makeCanvas(S, S);
   const ctx = cv.getContext('2d');
   ctx.drawImage(entry.camoCanvas, 0, 0, S, S);
@@ -4998,7 +5227,17 @@ vec4 burntTri( sampler2D m, vec3 p, vec3 n, float sc ) {
       for (const [id, n] of decalRefs) releaseDecalMaterial(decalStore, id, n);
       decalRefs.clear(); // a second dispose() must not re-release shared decals
       for (const rec of paintableRecs) shared.paintable.delete(rec);
-      for (const r of disposables) r.dispose();
+      for (const r of disposables) {
+        // W2-F: release the CSM shader-registry entry BEFORE the material dies.
+        // Every material here went through setupShadowMaterial (CSM.setupMaterial
+        // pins it in a session-long Map — see lighting.releaseShadowMaterial);
+        // skipping the release left each disposed tank's full vocabulary set
+        // registered forever (~16 MB/battle soak growth).
+        if (r && r.isMaterial && engineCtx?.releaseShadowMaterial) {
+          engineCtx.releaseShadowMaterial(r);
+        }
+        r.dispose();
+      }
       releaseSharedTextures(shared);
     },
   };

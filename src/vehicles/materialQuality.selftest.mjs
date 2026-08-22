@@ -53,6 +53,7 @@ const {
   isMaterialTextureQualityUpgrade,
   materialTextureDimensions,
   normalizeMaterialTextureQuality,
+  prebakeBurntSteps,
   trackLibraryStats,
 } = await import('./materials.js');
 const { texSize } = await import('../engine/quality.js');
@@ -158,6 +159,25 @@ assert.equal(sig(matsA3.dark), sig(matsA3.trackLink), 'gunmetal and track steel 
 assert.equal(sig(matsA3.dark), sig(matsA3.spareTrack), 'spare track steel shares the gunmetal signature');
 assert.ok(matsA3.hull.isMeshPhysicalMaterial && matsA3.hull.clearcoat > 0, 'hull keeps its physical paint response');
 matsA3.dispose();
+
+// ---------------------------------------------------------------------------
+// W2-A derived-atlas disk cache (SA-11 follow-up c): Node has no indexedDB,
+// so every cache offer must degrade silently to the legacy painters.
+// Contract here: (1) acquire's eager char/ember ensure makes prebakeBurntSteps
+// a pure cache hit (drains 0 slices); (2) prebakeSharedTextures runs its
+// bounded disk-offer await and still completes a full fresh bake headless;
+// (3) nothing above throws without indexedDB/crypto present.
+// ---------------------------------------------------------------------------
+{
+  const burnSpecId = ALL_TANK_IDS[1];
+  const drain = (g) => { let n = 0; while (!g.next().done) n++; return n; };
+  const burnMats = createTankMaterials(getSpec(burnSpecId), engineCtx, 4000, 'low');
+  assert.equal(drain(prebakeBurntSteps(burnSpecId, 4)), 0,
+    'prebake after eager ensure is a pure cache hit');
+  burnMats.dispose();
+  const burnMats2 = createTankMaterials(getSpec(burnSpecId), engineCtx, 4000, 'low');
+  burnMats2.dispose();
+}
 
 await import('./factoryCamo.selftest.mjs');
 

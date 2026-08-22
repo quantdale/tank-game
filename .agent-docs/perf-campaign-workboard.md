@@ -58,5 +58,6 @@
 - [ ] Full npm test after integration (running)
 - [ ] Commits per category
 - [ ] Wave 2
+  - [x] W2-A final call r1 (2026-08-22): uniform-discovery parallel window + burnt-atlas IDB cache verified landed, affected selftests green; muzzleFlash first-use wait span reclassified → Wave-3 BLOCKER (B14), not fixed per campaign rules
 - [ ] After-probe + screenshots + build gates
 - [ ] Docs + final push
