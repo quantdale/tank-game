@@ -37,11 +37,12 @@ Concurrency budget: ~16 slots. Evidence root: `.qa-dev/w3/<worker>/`. Port bands
 | W16a | redteam-recon | recon | read-only | distrust-the-campaign review plan + static hunt on post-be5bf437 deltas | RUN |
 | W15 | docs-reconcile | impl | main tree | reconcile campaign matrix vs evidence (draft; finalized at end) | RUN |
 
-## Phase plan
+## Phase log
 
-- **Phase 1** (now): code/recon above; integrate landed branches sequentially (lead wires package.json).
-- **Phase 2** (browser-heavy, staggered for host quiet): B14/boot verification runs, battle-open implementation (W03b), memory soak ≥16 cycles + alloc sampling, AI live cert across maps, multiplayer soak (2/4/7), audio live pass, fleet visual sample, journey+mobile+sniper re-certs.
-- **Phase 3**: perf A/B vs ff4708af on quiet host (cold+returning), follow-up fixes from findings, independent final reviews A-D, docs finalization, clean-worktree gates, push.
+- **Phase 1 COMPLETE** (integrated commits 7ab783c4..3996cfa1): B14 FX precompile merged+tested; boot postFirstRender −94.5% (33.8s→1.85s) merged; asset verdicts (KTX2 defer/Meshopt keep); bundle census (no further splits); harness promoted with contamination rejection; controls probes reconciled; render debt C fixed/D+E retired; soak tool W04a protocol; doc matrix draft; red-team static clean (no P0/P1); AI fire-corridor defect FOUND+FIXED (launch-ray vs aimPoint divergence) + all-map Leg-A cert 69/80 (residuals → W06c).
+- **Phase 2a RUNNING**: W03b battle-open reductions (worktree), W04b memory soak 16-cycle pinned+muted-split (R3 gate), W07b multiplayer runbook soak, W09c journey/mobile/sniper re-certs, W08b audio audit live, W13b fleet visual sweep (~24 vehicles), W06c AI residual closures.
+- **Phase 2b** (queued): fleet-family expansions if W13b finds defects; net/journey follow-ups; B14+boot quiet-host verification runs.
+- **Phase 3** (quiet host): perf A/B vs ff4708af cold+returning (wt-perfbase ready), independent final reviews A-D, docs finalization with real numbers, clean-worktree full gates, push.
 
 ## Integration rules
 
