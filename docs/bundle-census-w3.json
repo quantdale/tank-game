@@ -1,0 +1,407 @@
+{
+  "label": "w11 private build census @ HEAD 30a7e38d (+ any landed wave-3 work)",
+  "builtWith": "vite build (rolldown), no manualChunks (documented no-op)",
+  "entries": {
+    "indexEagerMB": 2.91,
+    "galleryEagerMB": 1.74,
+    "homeDocsKBEager": "<0.02"
+  },
+  "oversized500kB": [
+    {
+      "chunk": "map",
+      "file": "map-D8kghA2Z.js",
+      "kB": 1461.8,
+      "gzipkB": 261.2
+    },
+    {
+      "chunk": "main",
+      "file": "main-DjBjbrHG.js",
+      "kB": 1045,
+      "gzipkB": 353
+    }
+  ],
+  "chunks": [
+    {
+      "chunk": "map",
+      "file": "map-D8kghA2Z.js",
+      "kB": 1461.8,
+      "gzipkB": 261.2
+    },
+    {
+      "chunk": "main",
+      "file": "main-DjBjbrHG.js",
+      "kB": 1045,
+      "gzipkB": 353
+    },
+    {
+      "chunk": "specs",
+      "file": "specs-BkPNQ3G6.js",
+      "kB": 391.7,
+      "gzipkB": 105.3
+    },
+    {
+      "chunk": "g4CasemateAsia",
+      "file": "g4CasemateAsia-Mwu4H2Wv.js",
+      "kB": 357.6,
+      "gzipkB": 103.6
+    },
+    {
+      "chunk": "three.module",
+      "file": "three.module-Bz_UeZH7.js",
+      "kB": 335.8,
+      "gzipkB": 80.9
+    },
+    {
+      "chunk": "ghillieSuit",
+      "file": "ghillieSuit-R92hLB9i.js",
+      "kB": 316,
+      "gzipkB": 104
+    },
+    {
+      "chunk": "casemate",
+      "file": "casemate-6AKWQg_l.js",
+      "kB": 291.1,
+      "gzipkB": 88.4
+    },
+    {
+      "chunk": "t72",
+      "file": "t72-DrpASHGX.js",
+      "kB": 243.3,
+      "gzipkB": 74.2
+    },
+    {
+      "chunk": "fleetFactory",
+      "file": "fleetFactory-k2i9XtpS.js",
+      "kB": 168.9,
+      "gzipkB": 47.9
+    },
+    {
+      "chunk": "challenger",
+      "file": "challenger-BbZReq7m.js",
+      "kB": 162.1,
+      "gzipkB": 46.3
+    },
+    {
+      "chunk": "abrams",
+      "file": "abrams-Dp0g2YYm.js",
+      "kB": 138.8,
+      "gzipkB": 42.4
+    },
+    {
+      "chunk": "g2East",
+      "file": "g2East-ClFrx6dT.js",
+      "kB": 134.8,
+      "gzipkB": 40.2
+    },
+    {
+      "chunk": "terrain",
+      "file": "terrain-DiYVAfJR.js",
+      "kB": 126.8,
+      "gzipkB": 47.3
+    },
+    {
+      "chunk": "modern3",
+      "file": "modern3-C8LW-rKp.js",
+      "kB": 114.6,
+      "gzipkB": 32.8
+    },
+    {
+      "chunk": "g3UsMisc",
+      "file": "g3UsMisc-9XhC1l1x.js",
+      "kB": 101.7,
+      "gzipkB": 33.8
+    },
+    {
+      "chunk": "studio",
+      "file": "studio-B4GOr-VM.js",
+      "kB": 91.6,
+      "gzipkB": 29.3
+    },
+    {
+      "chunk": "misc",
+      "file": "misc-CIaJFop-.js",
+      "kB": 81.8,
+      "gzipkB": 25.5
+    },
+    {
+      "chunk": "maps",
+      "file": "maps-mCLt0i_4.js",
+      "kB": 59.2,
+      "gzipkB": 17.2
+    },
+    {
+      "chunk": "gallery",
+      "file": "gallery-D5yDoX7a.js",
+      "kB": 56,
+      "gzipkB": 17.9
+    },
+    {
+      "chunk": "playMenu",
+      "file": "playMenu-Cw-vOTEM.js",
+      "kB": 54.9,
+      "gzipkB": 16.9
+    },
+    {
+      "chunk": "specialActions",
+      "file": "specialActions-U___ATRW.js",
+      "kB": 48.8,
+      "gzipkB": 17.6
+    },
+    {
+      "chunk": "botRoutePlanner",
+      "file": "botRoutePlanner-C7SxIBAG.js",
+      "kB": 44.9,
+      "gzipkB": 18
+    },
+    {
+      "chunk": "g1Nato",
+      "file": "g1Nato-_gtiCfox.js",
+      "kB": 41.9,
+      "gzipkB": 13
+    },
+    {
+      "chunk": "state",
+      "file": "state-CyFriSoS.js",
+      "kB": 34.1,
+      "gzipkB": 13.4
+    },
+    {
+      "chunk": "matchRuntime",
+      "file": "matchRuntime-BbxB9Fhm.js",
+      "kB": 27.8,
+      "gzipkB": 8.1
+    },
+    {
+      "chunk": "privateMatchHandoff",
+      "file": "privateMatchHandoff-BRm_I1Qj.js",
+      "kB": 21.2,
+      "gzipkB": 8.7
+    },
+    {
+      "chunk": "docsTopic",
+      "file": "docsTopic-DUqj-_wG.js",
+      "kB": 20,
+      "gzipkB": 8.2
+    },
+    {
+      "chunk": "browserBattleBridge",
+      "file": "browserBattleBridge-DWPlaYl9.js",
+      "kB": 17.7,
+      "gzipkB": 6.4
+    },
+    {
+      "chunk": "randomPreviews",
+      "file": "randomPreviews-DdLSNUcI.js",
+      "kB": 14.6,
+      "gzipkB": 4
+    },
+    {
+      "chunk": "snapshot",
+      "file": "snapshot-BcAZQfWX.js",
+      "kB": 10.7,
+      "gzipkB": 3.7
+    },
+    {
+      "chunk": "channelTransport",
+      "file": "channelTransport-9ZpGe315.js",
+      "kB": 8.5,
+      "gzipkB": 2.9
+    },
+    {
+      "chunk": "roomChat",
+      "file": "roomChat-UzGkXTS8.js",
+      "kB": 8.1,
+      "gzipkB": 3
+    },
+    {
+      "chunk": "lobby",
+      "file": "lobby-BpqDbNJw.js",
+      "kB": 7.1,
+      "gzipkB": 2.6
+    },
+    {
+      "chunk": "collision",
+      "file": "collision-DRbEITMN.js",
+      "kB": 5.8,
+      "gzipkB": 2.4
+    },
+    {
+      "chunk": "mediaArchive",
+      "file": "mediaArchive-Rx2sJTBf.js",
+      "kB": 4,
+      "gzipkB": 1.6
+    },
+    {
+      "chunk": "githubStars",
+      "file": "githubStars-2r8ElnUf.js",
+      "kB": 3.9,
+      "gzipkB": 1.8
+    },
+    {
+      "chunk": "camoPolicy",
+      "file": "camoPolicy-DdfwQNG-.js",
+      "kB": 3.6,
+      "gzipkB": 1.6
+    },
+    {
+      "chunk": "cellLifecycle",
+      "file": "cellLifecycle-BSa5XmRW.js",
+      "kB": 3.5,
+      "gzipkB": 1.5
+    },
+    {
+      "chunk": "networkStatus",
+      "file": "networkStatus-DVyYFoV1.js",
+      "kB": 3.3,
+      "gzipkB": 1.6
+    },
+    {
+      "chunk": "protocol",
+      "file": "protocol-BaY3Lwmp.js",
+      "kB": 3,
+      "gzipkB": 1.4
+    },
+    {
+      "chunk": "rankedServiceClient",
+      "file": "rankedServiceClient-DOfBku-a.js",
+      "kB": 2.7,
+      "gzipkB": 1.2
+    },
+    {
+      "chunk": "dedicatedClient",
+      "file": "dedicatedClient-BvBGd8te.js",
+      "kB": 2.6,
+      "gzipkB": 1.2
+    },
+    {
+      "chunk": "publicPages",
+      "file": "publicPages-DOWR_sIK.js",
+      "kB": 2.4,
+      "gzipkB": 1.1
+    },
+    {
+      "chunk": "tier",
+      "file": "tier-a5vMQTEA.js",
+      "kB": 1.8,
+      "gzipkB": 0.9
+    },
+    {
+      "chunk": "fonts",
+      "file": "fonts-DBDHev7E.js",
+      "kB": 1.6,
+      "gzipkB": 0.7
+    },
+    {
+      "chunk": "docs",
+      "file": "docs-C6Lgiuxb.js",
+      "kB": 1.5,
+      "gzipkB": 0.7
+    },
+    {
+      "chunk": "preload-helper",
+      "file": "preload-helper-Czpn1I53.js",
+      "kB": 1.2,
+      "gzipkB": 0.7
+    },
+    {
+      "chunk": "roomInvite",
+      "file": "roomInvite-XkfP-RLq.js",
+      "kB": 0.9,
+      "gzipkB": 0.5
+    },
+    {
+      "chunk": "playerNames",
+      "file": "playerNames-78XJYEyY.js",
+      "kB": 0.6,
+      "gzipkB": 0.4
+    },
+    {
+      "chunk": "consumables",
+      "file": "consumables-BQ-y46XU.js",
+      "kB": 0.5,
+      "gzipkB": 0.3
+    },
+    {
+      "chunk": "aimIntent",
+      "file": "aimIntent-B2tsUSJr.js",
+      "kB": 0.4,
+      "gzipkB": 0.3
+    },
+    {
+      "chunk": "destructibles",
+      "file": "destructibles-AiuSW-ft.js",
+      "kB": 0.4,
+      "gzipkB": 0.2
+    },
+    {
+      "chunk": "icons",
+      "file": "icons-DHrQMp-k.js",
+      "kB": 0.4,
+      "gzipkB": 0.2
+    },
+    {
+      "chunk": "publicNav",
+      "file": "publicNav-BqNuRVou.js",
+      "kB": 0.1,
+      "gzipkB": 0.1
+    },
+    {
+      "chunk": "roomInvite",
+      "file": "roomInvite-BWyl2HpQ.js",
+      "kB": 0.1,
+      "gzipkB": 0.1
+    }
+  ],
+  "importGraph": {
+    "mapChunkImports": [
+      "specs",
+      "three.module",
+      "destructibles",
+      "maps",
+      "ghillieSuit",
+      "cellLifecycle",
+      "collision",
+      "terrain"
+    ],
+    "mapChunkImporters": "(none - dynamic import via preload-helper from main)",
+    "eagerIndexRefs": 26,
+    "eagerGalleryRefs": 15
+  },
+  "attribution": {
+    "map-1462kB": {
+      "src/world/props-models.json (inlined JSON vertex data)": 1242,
+      "props.js code": 77.5,
+      "vegetation.js code": 64.4,
+      "map kits": 65,
+      "wrecks.js code+roster": -31,
+      "misc world code": -16
+    },
+    "main-1045kB": {
+      "garage.js": 110.6,
+      "main.js": 92.8,
+      "hud.js": 89.2,
+      "fx/effects.js": 72.3,
+      "killcam.js": 70.7,
+      "audio.js": 52.4,
+      "post.js": 50.3,
+      "SMAAPass(three)": 46.1,
+      "particles.js": 43.2,
+      "settings.js": 36.1,
+      "rest UI/engine/sim": "~330"
+    },
+    "specs-392kB (shared dep chunk, misnomer)": {
+      "three.core.js": 262.8,
+      "specs.js tables": 51.2,
+      "combatAnatomyCalibrations": 42.4,
+      "vehicleMarkings": 10.9
+    },
+    "ghillieSuit-316kB (shared factory machinery chunk)": {
+      "tankFactoryCore.js": 111.3,
+      "materials.js": 90.2,
+      "decorations.js": 51,
+      "profiles/kit.js": 24.3,
+      "ghillieSuit.js": 17.7
+    }
+  },
+  "verdict": "No remaining high-value split. See docs/BUNDLE-CENSUS-W3.md."
+}

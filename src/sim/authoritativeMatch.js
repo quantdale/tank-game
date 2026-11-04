@@ -7,21 +7,24 @@
  * solo loopback, and dedicated Node servers can all run the same instance.
  */
 
-import { Euler, Matrix4, Quaternion, Vector3 } from 'three';
-import { getSpec } from '../vehicles/specs.js';
-import { getMapConfig } from '../world/maps/index.js';
-import { createHeightField, createLayout } from '../world/terrain.js';
+import { Euler, Matrix4, Quaternion, Vector3 } from "three";
+import { getSpec } from "../vehicles/specs.js";
+import { getMapConfig } from "../world/maps/index.js";
+import { createHeightField, createLayout } from "../world/terrain.js";
 import {
   SIM_DT,
   computeDispersionRadM,
   createTankState,
   fireRecoil,
   updateTank,
-} from './movement.js';
+} from "./movement.js";
 import {
-  applyDispersion, createShell, guideShellToward, stepShell,
-} from './ballistics.js';
-import { tankPoseFromState, traceTank } from './armor.js';
+  applyDispersion,
+  createShell,
+  guideShellToward,
+  stepShell,
+} from "./ballistics.js";
+import { tankPoseFromState, traceTank } from "./armor.js";
 import {
   createCombatState,
   isHeClass,
@@ -35,16 +38,19 @@ import {
   tickReload,
   tickFire,
   tickModuleRepairs,
-} from './damage.js';
-import { createSpottingSystem } from './spotting.js';
-import { captureWorldSnapshot } from '../net/snapshot.js';
-import { pushHullFromObstacle } from '../world/collision.js';
-import { applyEquipmentToCombat, defaultLoadoutFor } from '../game/equipment.js';
-import { botFriendlyFireRisk, createAI, roleOf } from '../game/ai.js';
-import { createBotNavigationGrid, planBotRoute } from './botRoutePlanner.js';
-import { CONSUMABLE_RULES, cooldownRemaining } from '../game/consumables.js';
-import { PLAYER_ACTION_BITS } from '../net/protocol.js';
-import { decodeAimIntent } from '../net/aimIntent.js';
+} from "./damage.js";
+import { createSpottingSystem } from "./spotting.js";
+import { captureWorldSnapshot } from "../net/snapshot.js";
+import { pushHullFromObstacle } from "../world/collision.js";
+import {
+  applyEquipmentToCombat,
+  defaultLoadoutFor,
+} from "../game/equipment.js";
+import { botFriendlyFireRisk, createAI, roleOf } from "../game/ai.js";
+import { createBotNavigationGrid, planBotRoute } from "./botRoutePlanner.js";
+import { CONSUMABLE_RULES, cooldownRemaining } from "../game/consumables.js";
+import { PLAYER_ACTION_BITS } from "../net/protocol.js";
+import { decodeAimIntent } from "../net/aimIntent.js";
 import {
   activateSpecialAction,
   completeGuidedMissileFlight,
@@ -52,7 +58,7 @@ import {
   finishSpecialActionFire,
   specialActionGuidesShell,
   specialActionLocksShell,
-} from './specialActions.js';
+} from "./specialActions.js";
 
 const BATTLE_LIMIT_S = 15 * 60;
 const FIRE_TICK_S = 0.5;
@@ -63,15 +69,15 @@ const CRUSH_PRESS_S = 0.45;
 const CRUSH_PRESS_GAP_S = 0.2;
 const CRUSH_SPEED_KEEP = 0.94;
 const RAM_PAIR_COOLDOWN_S = 0.5;
-const TEAM_ALPHA = 'alpha';
-const TEAM_BRAVO = 'bravo';
-const TEAM_SPECTATOR = 'spectator';
+const TEAM_ALPHA = "alpha";
+const TEAM_BRAVO = "bravo";
+const TEAM_SPECTATOR = "spectator";
 
 const _spawn = new Vector3();
-const _push = new Vector3();
 const _aim = new Vector3();
 const _muzzle = new Vector3();
 const _gunDir = new Vector3();
+const _launchAim = new Vector3();
 const _segmentDir = new Vector3();
 const _hullMatrix = new Matrix4();
 const _turretMatrix = new Matrix4();
@@ -82,7 +88,7 @@ const _unit = new Vector3(1, 1, 1);
 const terrainCache = new Map();
 
 function sharedTerrain(mapId) {
-  const key = String(mapId || 'verdant');
+  const key = String(mapId || "verdant");
   let cached = terrainCache.get(key);
   if (cached) return cached;
   const config = getMapConfig(key);
@@ -104,7 +110,7 @@ function mulberry32(seed) {
   let state = seed >>> 0;
   return () => {
     state |= 0;
-    state = (state + 0x6D2B79F5) | 0;
+    state = (state + 0x6d2b79f5) | 0;
     let value = Math.imul(state ^ (state >>> 15), 1 | state);
     value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
     return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
@@ -116,8 +122,11 @@ function finite(value, fallback = 0) {
 }
 
 function normalizeTeam(value) {
-  return value === TEAM_BRAVO ? TEAM_BRAVO
-    : value === TEAM_SPECTATOR ? TEAM_SPECTATOR : TEAM_ALPHA;
+  return value === TEAM_BRAVO
+    ? TEAM_BRAVO
+    : value === TEAM_SPECTATOR
+      ? TEAM_SPECTATOR
+      : TEAM_ALPHA;
 }
 
 function makeInput() {
@@ -190,13 +199,19 @@ function botOpeningGoal(entity, teamSlot, entities, opponents) {
   // only the distance the map can spare while retaining a ~340 m front;
   // faster roles may probe beyond it and snipers remain slightly behind.
   const spareAdvance = Math.max(0, (distance - 340) * 0.5);
-  const roleAdvance = role === 'scout' ? 1.16
-    : role === 'flanker' ? 1.07
-      : role === 'brawler' ? 0.94 : 0.82;
+  const roleAdvance =
+    role === "scout"
+      ? 1.16
+      : role === "flanker"
+        ? 1.07
+        : role === "brawler"
+          ? 0.94
+          : 0.82;
   const advanceM = Math.min(distance * 0.34, spareAdvance * roleAdvance);
-  const laneOrder = allies.length <= 1 ? [1] : [-1, 1, -0.35, 0.35, -1.5, 1.5, 0];
-  const laneScale = role === 'flanker' || role === 'scout' ? 1.2
-    : role === 'sniper' ? 1 : 0.85;
+  const laneOrder =
+    allies.length <= 1 ? [1] : [-1, 1, -0.35, 0.35, -1.5, 1.5, 0];
+  const laneScale =
+    role === "flanker" || role === "scout" ? 1.2 : role === "sniper" ? 1 : 0.85;
   const laneM = Math.min(110, Math.max(55, distance * 0.14));
   const lane = laneOrder[teamSlot % laneOrder.length] * laneM * laneScale;
   return {
@@ -208,11 +223,18 @@ function botOpeningGoal(entity, teamSlot, entities, opponents) {
 function gunWorldPose(entity) {
   const state = entity.state;
   const armor = entity.spec.armor || {};
-  const turretPivot = armor.turretPivot || [0, entity.spec.dims.heightM * 0.7, 0];
+  const turretPivot = armor.turretPivot || [
+    0,
+    entity.spec.dims.heightM * 0.7,
+    0,
+  ];
   const gunPivot = armor.gunPivot || [0, entity.spec.dims.heightM * 0.15, 0];
-  const barrelM = Math.max(0.5, finite(armor.gunBarrel && armor.gunBarrel.lengthM, 3));
+  const barrelM = Math.max(
+    0.5,
+    finite(armor.gunBarrel && armor.gunBarrel.lengthM, 3),
+  );
 
-  _euler.set(-state.visualPitch, state.yaw, state.visualRoll, 'YXZ');
+  _euler.set(-state.visualPitch, state.yaw, state.visualRoll, "YXZ");
   _quat.setFromEuler(_euler);
   _hullMatrix.compose(state.pos, _quat, _unit);
   _localMatrix.makeRotationY(state.turretYaw);
@@ -221,8 +243,12 @@ function gunWorldPose(entity) {
 
   const sinPitch = Math.sin(state.gunPitch);
   const cosPitch = Math.cos(state.gunPitch);
-  _gunDir.set(0, sinPitch, cosPitch).transformDirection(_turretMatrix).normalize();
-  _muzzle.set(gunPivot[0], gunPivot[1], gunPivot[2])
+  _gunDir
+    .set(0, sinPitch, cosPitch)
+    .transformDirection(_turretMatrix)
+    .normalize();
+  _muzzle
+    .set(gunPivot[0], gunPivot[1], gunPivot[2])
     .applyMatrix4(_turretMatrix)
     .addScaledVector(_gunDir, barrelM);
   return { muzzle: _muzzle, direction: _gunDir };
@@ -262,14 +288,22 @@ function firstTankTrace(shell, entities) {
   let bestDistance = Infinity;
   const segmentLength = shell.prevPos.distanceTo(shell.pos);
   for (const target of entities) {
-    if (target.id === shell.shooterId || !target.state || !target.combat) continue;
-    const radius = finite(target.spec.armor && target.spec.armor.boundingRadiusM,
-      target.spec.dims.hullLengthM * 0.65);
+    if (target.id === shell.shooterId || !target.state || !target.combat)
+      continue;
+    const radius = finite(
+      target.spec.armor && target.spec.armor.boundingRadiusM,
+      target.spec.dims.hullLengthM * 0.65,
+    );
     const centerDistance = target.state.pos.distanceTo(shell.prevPos);
     if (centerDistance > segmentLength + radius + 2) continue;
     const pose = tankPoseFromState(target.state);
-    const hits = traceTank(shell.prevPos, shell.pos, pose, target.spec.armor,
-      target.combat.eraSpent);
+    const hits = traceTank(
+      shell.prevPos,
+      shell.pos,
+      pose,
+      target.spec.armor,
+      target.combat.eraSpent,
+    );
     if (!hits.length) continue;
     const distance = shell.prevPos.distanceTo(hits[0].point);
     if (distance < bestDistance) {
@@ -281,20 +315,22 @@ function firstTankTrace(shell, entities) {
 }
 
 function segmentWorldHit(worldCollision, heightField, from, to) {
-  if (worldCollision && typeof worldCollision.raycast === 'function') {
+  if (worldCollision && typeof worldCollision.raycast === "function") {
     _segmentDir.subVectors(to, from);
     const distance = _segmentDir.length();
     if (distance <= 1e-9) return null;
     _segmentDir.multiplyScalar(1 / distance);
     const hit = worldCollision.raycast(from, _segmentDir, distance);
-    return hit ? {
-      t: Math.max(0, Math.min(1, hit.dist / distance)),
-      kind: hit.kind,
-      record: hit.record || null,
-    } : null;
+    return hit
+      ? {
+          t: Math.max(0, Math.min(1, hit.dist / distance)),
+          kind: hit.kind,
+          record: hit.record || null,
+        }
+      : null;
   }
   const t = segmentTerrainHit(heightField, from, to);
-  return t == null ? null : { t, kind: 'terrain' };
+  return t == null ? null : { t, kind: "terrain" };
 }
 
 /**
@@ -305,18 +341,24 @@ function segmentWorldHit(worldCollision, heightField, from, to) {
  */
 export function createAuthoritativeMatch({
   players = [],
-  mapId = 'verdant',
+  mapId = "verdant",
   seed = 6000,
   battleLimitS = BATTLE_LIMIT_S,
   countdownS = 5,
   worldCollision = null,
 } = {}) {
   if (!Array.isArray(players) || players.length < 1 || players.length > 14) {
-    throw new TypeError('players must contain 1-14 records');
+    throw new TypeError("players must contain 1-14 records");
   }
   const ids = new Set();
-  if (worldCollision && worldCollision.mapId && worldCollision.mapId !== mapId) {
-    throw new Error(`world collision map mismatch: expected ${mapId}, got ${worldCollision.mapId}`);
+  if (
+    worldCollision &&
+    worldCollision.mapId &&
+    worldCollision.mapId !== mapId
+  ) {
+    throw new Error(
+      `world collision map mismatch: expected ${mapId}, got ${worldCollision.mapId}`,
+    );
   }
   const shared = sharedTerrain(mapId);
   const heightField = worldCollision?.heightField || shared.heightField;
@@ -335,12 +377,16 @@ export function createAuthoritativeMatch({
   let fireTickAcc = 0;
   let result = null;
   let resultReason = null;
-  let phase = 'loading';
+  let phase = "loading";
   let countdownRemainingS = Math.max(0, finite(countdownS, 5));
-  const staticObstacles = worldCollision && typeof worldCollision.getObstacles === 'function'
-    ? worldCollision.getObstacles() : [];
+  const staticObstacles =
+    worldCollision && typeof worldCollision.getObstacles === "function"
+      ? worldCollision.getObstacles()
+      : [];
   const nearbyObstacles = [];
-  const obstacleIndex = new Map(staticObstacles.map((obstacle, index) => [obstacle, index]));
+  const obstacleIndex = new Map(
+    staticObstacles.map((obstacle, index) => [obstacle, index]),
+  );
   const obstacleByPropIdx = new Map();
   for (const obstacle of staticObstacles) {
     if (obstacle.propIdx != null && !obstacleByPropIdx.has(obstacle.propIdx)) {
@@ -353,13 +399,15 @@ export function createAuthoritativeMatch({
   const ramPairTime = new Map();
 
   for (const record of players) {
-    const id = String(record && record.id || '').trim();
-    if (!id || ids.has(id)) throw new TypeError('player ids must be non-empty and unique');
+    const id = String((record && record.id) || "").trim();
+    if (!id || ids.has(id))
+      throw new TypeError("player ids must be non-empty and unique");
     ids.add(id);
     const team = normalizeTeam(record.team);
     if (team === TEAM_SPECTATOR) continue;
-    const spec = getSpec(String(record.specId || ''));
-    if (!spec) throw new TypeError(`unknown vehicle spec: ${String(record.specId)}`);
+    const spec = getSpec(String(record.specId || ""));
+    if (!spec)
+      throw new TypeError(`unknown vehicle spec: ${String(record.specId)}`);
     const pad = spawnFor(teamIndex[team]++, team, layout, record.spawn);
     _spawn.set(pad.x, heightField.getHeightAt(pad.x, pad.z), pad.z);
     const state = createTankState(spec, _spawn, pad.yaw);
@@ -369,7 +417,9 @@ export function createAuthoritativeMatch({
     const bot = !!record.bot;
     const equipment = applyEquipmentToCombat(
       combat,
-      Array.isArray(record.equipment) ? record.equipment : defaultLoadoutFor(spec),
+      Array.isArray(record.equipment)
+        ? record.equipment
+        : defaultLoadoutFor(spec),
       spec,
     );
     const entity = {
@@ -394,22 +444,28 @@ export function createAuthoritativeMatch({
     for (let n = 0; n < 30; n++) updateTank(entity, heightField, SIM_DT);
   }
 
-  const spottingRaycast = worldCollision && typeof worldCollision.raycast === 'function'
-    ? (origin, direction, maxDistance) => worldCollision.raycast(origin, direction, maxDistance)
-    : (origin, direction, maxDistance) => {
-      _aim.set(
-        origin.x + direction.x * maxDistance,
-        origin.y + direction.y * maxDistance,
-        origin.z + direction.z * maxDistance,
-      );
-      const hitT = segmentTerrainHit(heightField, origin, _aim);
-      return hitT == null ? null : { dist: hitT * maxDistance, kind: 'terrain' };
-    };
+  const spottingRaycast =
+    worldCollision && typeof worldCollision.raycast === "function"
+      ? (origin, direction, maxDistance) =>
+          worldCollision.raycast(origin, direction, maxDistance)
+      : (origin, direction, maxDistance) => {
+          _aim.set(
+            origin.x + direction.x * maxDistance,
+            origin.y + direction.y * maxDistance,
+            origin.z + direction.z * maxDistance,
+          );
+          const hitT = segmentTerrainHit(heightField, origin, _aim);
+          return hitT == null
+            ? null
+            : { dist: hitT * maxDistance, kind: "terrain" };
+        };
   const spotting = createSpottingSystem({
     getTanks: () => entities,
     raycast: spottingRaycast,
-    concealers: worldCollision && typeof worldCollision.getConcealment === 'function'
-      ? worldCollision.getConcealment() : [],
+    concealers:
+      worldCollision && typeof worldCollision.getConcealment === "function"
+        ? worldCollision.getConcealment()
+        : [],
     getEquipment: (entity) => entity.equip,
     getCamoBonus: () => 0,
     rng: mulberry32(seed + 31000),
@@ -417,20 +473,24 @@ export function createAuthoritativeMatch({
   });
   const botNavigation = entities.some((entity) => entity.bot)
     ? createBotNavigationGrid({
-      heightField,
-      queryObstacles: worldCollision?.queryObstacles || null,
-      getObstacles: () => staticObstacles,
-    })
+        heightField,
+        queryObstacles: worldCollision?.queryObstacles || null,
+        getObstacles: () => staticObstacles,
+      })
     : null;
 
   for (let index = 0; index < entities.length; index++) {
     const entity = entities[index];
     if (!entity.bot) continue;
     const opponents = entities.filter((entry) => entry.team !== entity.team);
-    const allies = entities.filter((entry) => entry !== entity && entry.team === entity.team);
+    const allies = entities.filter(
+      (entry) => entry !== entity && entry.team === entity.team,
+    );
     const botRng = mulberry32(seed + 41000 + index * 997);
     entity.aiCtl = createAI(entity, {
-      difficulty: players.find((record) => String(record.id) === entity.id)?.difficulty || 'normal',
+      difficulty:
+        players.find((record) => String(record.id) === entity.id)?.difficulty ||
+        "normal",
       rng: botRng,
       deps: {
         heightField,
@@ -445,19 +505,24 @@ export function createAuthoritativeMatch({
         },
       },
     });
-    const teamSlot = entities.filter((entry) => entry.team === entity.team).indexOf(entity);
+    const teamSlot = entities
+      .filter((entry) => entry.team === entity.team)
+      .indexOf(entity);
     const goal = opponents.length
       ? botOpeningGoal(entity, teamSlot, entities, opponents)
       : null;
     if (goal) {
-      entity.aiCtl.setWaypoints(planBotRoute({
-        start: entity.state.pos,
-        goal,
-        navigation: botNavigation,
-        rng: botRng,
-        role: roleOf(entity.spec),
-        spec: entity.spec,
-      }), { loop: false });
+      entity.aiCtl.setWaypoints(
+        planBotRoute({
+          start: entity.state.pos,
+          goal,
+          navigation: botNavigation,
+          rng: botRng,
+          role: roleOf(entity.spec),
+          spec: entity.spec,
+        }),
+        { loop: false },
+      );
     }
   }
 
@@ -481,8 +546,12 @@ export function createAuthoritativeMatch({
     entity.input.fire = input.fire;
     entity.input.actionBits = input.actionBits | 0;
     if (!specialActionLocksShell(entity)) {
-      const shellSlot = Math.min(entity.spec.gun.shells.length - 1, input.shellSlot);
-      if (shellSlot !== entity.combat.shellSlot) selectShell(entity.combat, shellSlot, entity.spec);
+      const shellSlot = Math.min(
+        entity.spec.gun.shells.length - 1,
+        input.shellSlot,
+      );
+      if (shellSlot !== entity.combat.shellSlot)
+        selectShell(entity.combat, shellSlot, entity.spec);
       entity.input.shellSlot = shellSlot;
     }
     decodeAimIntent(input, entity.state.pos, _aim);
@@ -504,29 +573,51 @@ export function createAuthoritativeMatch({
     const rx = fz;
     const rz = -fx;
     const broadRadius = Math.hypot(halfL, halfW) + 0.01;
-    const candidates = worldCollision && typeof worldCollision.queryObstacles === 'function'
-      ? worldCollision.queryObstacles(
-        pos.x - broadRadius, pos.z - broadRadius,
-        pos.x + broadRadius, pos.z + broadRadius,
-        nearbyObstacles,
-      )
-      : staticObstacles;
+    const candidates =
+      worldCollision && typeof worldCollision.queryObstacles === "function"
+        ? worldCollision.queryObstacles(
+            pos.x - broadRadius,
+            pos.z - broadRadius,
+            pos.x + broadRadius,
+            pos.z + broadRadius,
+            nearbyObstacles,
+          )
+        : staticObstacles;
     for (const obstacle of candidates) {
       if (obstacle.crushed || pos.y > obstacle.max[1] + 0.5) continue;
-      const closestX = Math.max(obstacle.min[0], Math.min(pos.x, obstacle.max[0]));
-      const closestZ = Math.max(obstacle.min[2], Math.min(pos.z, obstacle.max[2]));
+      const closestX = Math.max(
+        obstacle.min[0],
+        Math.min(pos.x, obstacle.max[0]),
+      );
+      const closestZ = Math.max(
+        obstacle.min[2],
+        Math.min(pos.z, obstacle.max[2]),
+      );
       const dx = pos.x - closestX;
       const dz = pos.z - closestZ;
       if (dx * dx + dz * dz >= broadRadius * broadRadius) continue;
       const beforeX = outPush.x;
       const beforeZ = outPush.z;
-      if (!pushHullFromObstacle(
-        pos, fx, fz, rx, rz, halfL, halfW, obstacle, outPush,
-      )) continue;
+      if (
+        !pushHullFromObstacle(
+          pos,
+          fx,
+          fz,
+          rx,
+          rz,
+          halfL,
+          halfW,
+          obstacle,
+          outPush,
+        )
+      )
+        continue;
       if (obstacle.crushable) {
-        let crushNow = Math.abs(entity.state.speed) > (obstacle.crushMin ?? CRUSH_MIN_MPS);
+        let crushNow =
+          Math.abs(entity.state.speed) > (obstacle.crushMin ?? CRUSH_MIN_MPS);
         if (!crushNow && Math.abs(entity.input.throttle || 0) > 0.35) {
-          if (timeS - (obstacle._pressT || -1e9) > CRUSH_PRESS_GAP_S) obstacle._pressS = 0;
+          if (timeS - (obstacle._pressT || -1e9) > CRUSH_PRESS_GAP_S)
+            obstacle._pressS = 0;
           obstacle._pressT = timeS;
           obstacle._pressS = (obstacle._pressS || 0) + SIM_DT;
           crushNow = obstacle._pressS >= CRUSH_PRESS_S;
@@ -536,7 +627,7 @@ export function createAuthoritativeMatch({
           outPush.z = beforeZ;
           if (!pendingCrushSet.has(obstacle)) {
             pendingCrushSet.add(obstacle);
-            pendingCrush.push({ obstacle, entity, cause: 'ram' });
+            pendingCrush.push({ obstacle, entity, cause: "ram" });
           }
         }
       }
@@ -549,7 +640,10 @@ export function createAuthoritativeMatch({
     for (const other of entities) {
       if (other === entity || !other.state) continue;
       const otherHalfW = other.spec.dims.widthM * 0.5;
-      const otherSeg = Math.max(other.spec.dims.hullLengthM * 0.5 - otherHalfW, 0);
+      const otherSeg = Math.max(
+        other.spec.dims.hullLengthM * 0.5 - otherHalfW,
+        0,
+      );
       const minDistance = halfW + otherHalfW;
       const dx = pos.x - other.state.pos.x;
       const dz = pos.z - other.state.pos.z;
@@ -561,9 +655,8 @@ export function createAuthoritativeMatch({
       const alongSelf = dx * fx + dz * fz;
       const alongOther = dx * ofx + dz * ofz;
       const denom = 1 - parallel * parallel;
-      let selfT = denom > 1e-6
-        ? (parallel * alongOther - alongSelf) / denom
-        : -alongSelf;
+      let selfT =
+        denom > 1e-6 ? (parallel * alongOther - alongSelf) / denom : -alongSelf;
       selfT = Math.max(-mySeg, Math.min(mySeg, selfT));
       let otherT = alongOther + parallel * selfT;
       otherT = Math.max(-otherSeg, Math.min(otherSeg, otherT));
@@ -588,15 +681,27 @@ export function createAuthoritativeMatch({
     return outPush.x !== 0 || outPush.z !== 0;
   }
 
-  function destroyObstacle(obstacle, entity, cause = 'ram') {
+  function destroyObstacle(obstacle, entity, cause = "ram") {
     if (!obstacle || obstacle.crushed) return false;
-    const directionSign = entity?.state ? Math.sign(entity.state.speed || 1) : 1;
-    const directionX = entity?.state ? Math.sin(entity.state.yaw) * directionSign : 0;
-    const directionZ = entity?.state ? Math.cos(entity.state.yaw) * directionSign : 1;
+    const directionSign = entity?.state
+      ? Math.sign(entity.state.speed || 1)
+      : 1;
+    const directionX = entity?.state
+      ? Math.sin(entity.state.yaw) * directionSign
+      : 0;
+    const directionZ = entity?.state
+      ? Math.cos(entity.state.yaw) * directionSign
+      : 1;
     const speedMps = entity?.state ? Math.abs(entity.state.speed) : 0;
-    const destroyed = worldCollision && typeof worldCollision.crushObstacle === 'function'
-      ? worldCollision.crushObstacle(obstacle, directionX, directionZ, speedMps)
-      : true;
+    const destroyed =
+      worldCollision && typeof worldCollision.crushObstacle === "function"
+        ? worldCollision.crushObstacle(
+            obstacle,
+            directionX,
+            directionZ,
+            speedMps,
+          )
+        : true;
     if (destroyed === false) return false;
     obstacle.crushed = true;
     const destroyedIndex = obstacleIndex.get(obstacle);
@@ -604,12 +709,13 @@ export function createAuthoritativeMatch({
       destroyedObstacleIndices.push(destroyedIndex);
       destructibleRevision++;
     }
-    if (entity?.state) entity.state.speed *= obstacle.crushKeep ?? CRUSH_SPEED_KEEP;
-    emit('world_prop_destroyed', {
+    if (entity?.state)
+      entity.state.speed *= obstacle.crushKeep ?? CRUSH_SPEED_KEEP;
+    emit("world_prop_destroyed", {
       obstacleIndex: destroyedIndex,
       propIdx: obstacle.propIdx,
       treeIdx: obstacle.treeIdx,
-      kind: obstacle.kind || (obstacle.treeIdx != null ? 'tree' : 'prop'),
+      kind: obstacle.kind || (obstacle.treeIdx == null ? "prop" : "tree"),
       cause,
       directionX,
       directionZ,
@@ -630,8 +736,10 @@ export function createAuthoritativeMatch({
     if (!pendingRams.length) return;
     const best = new Map();
     for (const contact of pendingRams) {
-      const key = contact.a.id < contact.b.id
-        ? `${contact.a.id}|${contact.b.id}` : `${contact.b.id}|${contact.a.id}`;
+      const key =
+        contact.a.id < contact.b.id
+          ? `${contact.a.id}|${contact.b.id}`
+          : `${contact.b.id}|${contact.a.id}`;
       const current = best.get(key);
       if (!current || contact.closing > current.closing) best.set(key, contact);
     }
@@ -642,7 +750,11 @@ export function createAuthoritativeMatch({
       const a = contact.a;
       const b = contact.b;
       if (!a.combat || !b.combat || a.combat.destroyed) continue;
-      const damage = ramDamage(a.spec.weightTons, b.spec.weightTons, contact.closing);
+      const damage = ramDamage(
+        a.spec.weightTons,
+        b.spec.weightTons,
+        contact.closing,
+      );
       if (damage.total <= 0) continue;
       ramPairTime.set(key, timeS);
       const bWasDestroyed = b.combat.destroyed;
@@ -652,7 +764,7 @@ export function createAuthoritativeMatch({
       if (!bWasDestroyed) b.combat.hp = Math.max(0, b.combat.hp - damageB);
       a.combat.destroyed = a.combat.hp <= 0;
       if (!bWasDestroyed) b.combat.destroyed = b.combat.hp <= 0;
-      emit('tank_ram', {
+      emit("tank_ram", {
         aId: a.id,
         bId: b.id,
         damageA,
@@ -664,11 +776,15 @@ export function createAuthoritativeMatch({
       });
       if (!bWasDestroyed && b.combat.destroyed) {
         a.kills += 1;
-        emit('tank_destroyed', { id: b.id, killerId: a.id, cause: 'ram' });
+        emit("tank_destroyed", { id: b.id, killerId: a.id, cause: "ram" });
       }
       if (a.combat.destroyed) {
         if (!bWasDestroyed) b.kills += 1;
-        emit('tank_destroyed', { id: a.id, killerId: bWasDestroyed ? null : b.id, cause: 'ram' });
+        emit("tank_destroyed", {
+          id: a.id,
+          killerId: bWasDestroyed ? null : b.id,
+          cause: "ram",
+        });
       }
     }
   }
@@ -679,12 +795,12 @@ export function createAuthoritativeMatch({
     if (!bits || entity.combat.destroyed) return;
     if (bits & PLAYER_ACTION_BITS.RELOAD_MAGAZINE) {
       if (startMagazineReload(entity.combat, entity.spec)) {
-        emit('magazine_reload', { id: entity.id });
+        emit("magazine_reload", { id: entity.id });
       }
     }
     if (bits & PLAYER_ACTION_BITS.SPECIAL_ACTION) {
       const result = activateSpecialAction(entity);
-      emit(result.ok ? 'special_action' : 'special_action_denied', {
+      emit(result.ok ? "special_action" : "special_action_denied", {
         id: entity.id,
         kind: result.kind,
         active: !!result.active,
@@ -694,18 +810,29 @@ export function createAuthoritativeMatch({
     for (let slot = 0; slot < CONSUMABLE_RULES.length; slot++) {
       const bit = 1 << slot;
       if (!(bits & bit)) continue;
-      const remainingS = cooldownRemaining(timeS, entity.consumableReadyAt[slot]);
+      const remainingS = cooldownRemaining(
+        timeS,
+        entity.consumableReadyAt[slot],
+      );
       if (remainingS > 0) {
-        emit('consumable_denied', { id: entity.id, slot, reason: 'COOLDOWN', remainingS });
+        emit("consumable_denied", {
+          id: entity.id,
+          slot,
+          reason: "COOLDOWN",
+          remainingS,
+        });
         continue;
       }
       let used = false;
       if (bit === PLAYER_ACTION_BITS.REPAIR) {
         const modules = repairAllModules(entity.combat);
         used = modules.length > 0;
-        for (const module of modules) emit('module_state', {
-          id: entity.id, module, state: 'ok',
-        });
+        for (const module of modules)
+          emit("module_state", {
+            id: entity.id,
+            module,
+            state: "ok",
+          });
       } else if (bit === PLAYER_ACTION_BITS.FIRST_AID) {
         for (const crew of Object.keys(entity.combat.crew)) {
           if (entity.combat.crew[crew] === false) {
@@ -713,21 +840,24 @@ export function createAuthoritativeMatch({
             used = true;
           }
         }
-      } else if (bit === PLAYER_ACTION_BITS.EXTINGUISHER && entity.combat.fire.burning) {
+      } else if (
+        bit === PLAYER_ACTION_BITS.EXTINGUISHER &&
+        entity.combat.fire.burning
+      ) {
         entity.combat.fire.burning = false;
         entity.combat.fire.ticksLeft = 0;
         entity.combat.fire.tickTimer = 0;
         used = true;
-        emit('tank_fire', { id: entity.id, burning: false });
+        emit("tank_fire", { id: entity.id, burning: false });
       }
       if (!used) {
-        emit('consumable_denied', { id: entity.id, slot, reason: 'NOTHING' });
+        emit("consumable_denied", { id: entity.id, slot, reason: "NOTHING" });
         continue;
       }
       const cooldownS = CONSUMABLE_RULES[slot].cooldownS;
       const readyAt = timeS + cooldownS;
       entity.consumableReadyAt[slot] = readyAt;
-      emit('consumable_used', { id: entity.id, slot, cooldownS, readyAt });
+      emit("consumable_used", { id: entity.id, slot, cooldownS, readyAt });
     }
   }
 
@@ -735,14 +865,36 @@ export function createAuthoritativeMatch({
     const combat = entity.combat;
     if (!entity.input.fire || combat.destroyed || combat.reload.t > 0) return;
     if (combat.magazine && combat.magazine.rounds <= 0) return;
-    if (combat.modules.gun && combat.modules.gun.state === 'red') return;
+    if (combat.modules.gun && combat.modules.gun.state === "red") return;
     const shellSpec = entity.spec.gun.shells[combat.shellSlot];
     if (!shellSpec) return;
-    const guidedSpecial = !!(shellSpec.guided && entity.specialAction?.active &&
-      entity.specialAction.pendingFire && combat.shellSlot === entity.specialAction.missileSlot);
+    const guidedSpecial = !!(
+      shellSpec.guided &&
+      entity.specialAction?.active &&
+      entity.specialAction.pendingFire &&
+      combat.shellSlot === entity.specialAction.missileSlot
+    );
+    // W06b: shells launch along the LIVE bore (gun.direction), not toward
+    // input.aimPoint - mid-traverse the two rays diverge, so a corridor
+    // checked along aimPoint cleared shots whose actual launch ray swept an
+    // ally. Project the intended range along the live bore and run the same
+    // rule on that point; settled shots are unaffected (rays coincide).
+    const gun = gunWorldPose(entity);
+    _gunDir.copy(gun.direction);
     if (entity.bot) {
+      const dxAim = entity.input.aimPoint.x - gun.muzzle.x;
+      const dzAim = entity.input.aimPoint.z - gun.muzzle.z;
+      const shotLen = Math.max(4, Math.hypot(dxAim, dzAim));
+      _launchAim.set(
+        gun.muzzle.x + _gunDir.x * shotLen,
+        entity.input.aimPoint.y,
+        gun.muzzle.z + _gunDir.z * shotLen,
+      );
       const friendlyRisk = botFriendlyFireRisk(
-        entity, entity.input.aimPoint, shellSpec, entities,
+        entity,
+        _launchAim,
+        shellSpec,
+        entities,
       );
       if (friendlyRisk) {
         if (entity.aiCtl?.notifyFriendlyBlocked) {
@@ -751,30 +903,41 @@ export function createAuthoritativeMatch({
         return;
       }
     }
-    const gun = gunWorldPose(entity);
-    _gunDir.copy(gun.direction);
     const sigma = computeDispersionRadM(entity.spec, entity.state, 100) / 200;
     applyDispersion(_gunDir, sigma, rng);
-    const shell = createShell(shellSpec, entity.id, true, gun.muzzle, _gunDir, nextShellId++);
+    const shell = createShell(
+      shellSpec,
+      entity.id,
+      true,
+      gun.muzzle,
+      _gunDir,
+      nextShellId++,
+    );
     shells.push(shell);
     startPostShotReload(combat, entity.spec);
     fireRecoil(entity.state, entity.spec, shellSpec);
     spotting.notifyFired(entity.id, timeS, shellSpec.caliberMm);
     if (!entity.bot) {
       const respondingBots = entities
-        .filter((entry) => entry.bot && entry.team !== entity.team && entry.aiCtl)
-        .sort((a, b) => a.state.pos.distanceToSquared(entity.state.pos) -
-          b.state.pos.distanceToSquared(entity.state.pos));
+        .filter(
+          (entry) => entry.bot && entry.team !== entity.team && entry.aiCtl,
+        )
+        .sort(
+          (a, b) =>
+            a.state.pos.distanceToSquared(entity.state.pos) -
+            b.state.pos.distanceToSquared(entity.state.pos),
+        );
       for (let index = 0; index < respondingBots.length; index++) {
         respondingBots[index].aiCtl.notifyPlayerFired(entity, index);
       }
     }
-    emit('shell_fired', {
+    emit("shell_fired", {
       shellId: shell.id,
       shooterId: entity.id,
       shellType: shellSpec.type,
       shellName: shellSpec.name,
-      weaponSound: shellSpec.soundProfile || entity.spec.gun.soundProfile || null,
+      weaponSound:
+        shellSpec.soundProfile || entity.spec.gun.soundProfile || null,
       caliberMm: shellSpec.caliberMm,
       velocityMps: shellSpec.velocityMps,
       x: gun.muzzle.x,
@@ -791,16 +954,18 @@ export function createAuthoritativeMatch({
     const target = hit.targetId ? entityById.get(hit.targetId) : null;
     const shooter = entityById.get(shell.shooterId);
     if (shooter && hit.damage > 0) shooter.damage += hit.damage;
-    if (shooter?.aiCtl) shooter.aiCtl.notifyShellResult({
-      ...hit,
-      targetId: target?.id || null,
-    });
+    if (shooter?.aiCtl)
+      shooter.aiCtl.notifyShellResult({
+        ...hit,
+        targetId: target?.id || null,
+      });
     if (shooter && target && hit.damage > 0) {
       for (const ally of entities) {
-        if (ally.team === target.team && ally.aiCtl) ally.aiCtl.notifyUnderFire(shooter);
+        if (ally.team === target.team && ally.aiCtl)
+          ally.aiCtl.notifyUnderFire(shooter);
       }
     }
-    emit('shell_hit', {
+    emit("shell_hit", {
       ...hit,
       shooterId: shell.shooterId,
       attackerId: shell.shooterId,
@@ -811,20 +976,22 @@ export function createAuthoritativeMatch({
       targetHp: Math.max(0, Math.round(target?.combat.hp || 0)),
     });
     if (target && Array.isArray(hit.modulesHit)) {
-      for (const module of hit.modulesHit) emit('module_state', {
-        id: target.id,
-        module: module.module,
-        state: module.newState,
-        source: 'hit',
-      });
+      for (const module of hit.modulesHit)
+        emit("module_state", {
+          id: target.id,
+          module: module.module,
+          state: module.newState,
+          source: "hit",
+        });
     }
-    if (target && hit.fireStarted) emit('tank_fire', { id: target.id, burning: true });
+    if (target && hit.fireStarted)
+      emit("tank_fire", { id: target.id, burning: true });
     if (target && !wasDestroyed && target.combat.destroyed) {
       if (shooter) shooter.kills += 1;
-      emit('tank_destroyed', {
+      emit("tank_destroyed", {
         id: target.id,
         killerId: shell.shooterId,
-        cause: hit.ammoRacked ? 'ammo_rack' : 'shot',
+        cause: hit.ammoRacked ? "ammo_rack" : "shot",
       });
     }
   }
@@ -837,28 +1004,47 @@ export function createAuthoritativeMatch({
         guideShellToward(shell, shooter.input?.aimPoint, dt);
       }
       stepShell(shell, dt);
-      const worldHit = segmentWorldHit(worldCollision, heightField, shell.prevPos, shell.pos);
+      const worldHit = segmentWorldHit(
+        worldCollision,
+        heightField,
+        shell.prevPos,
+        shell.pos,
+      );
       const tankHit = firstTankTrace(shell, entities);
       const segmentLength = shell.prevPos.distanceTo(shell.pos);
-      if (worldHit && (!tankHit || worldHit.t * segmentLength < tankHit.distance)) {
+      if (
+        worldHit &&
+        (!tankHit || worldHit.t * segmentLength < tankHit.distance)
+      ) {
         shell.pos.lerpVectors(shell.prevPos, shell.pos, worldHit.t);
         if (isHeClass(shell.spec.type)) {
           destroyedBeforeBurst.clear();
           for (const entity of entities) {
             destroyedBeforeBurst.set(entity.id, entity.combat.destroyed);
           }
-          const hits = resolveHeBurst(shell, shell.pos, entities, null, null, rng);
-          for (const hit of hits) recordShellHit(
-            shell, hit, hit.targetId ? destroyedBeforeBurst.get(hit.targetId) : false,
+          const hits = resolveHeBurst(
+            shell,
+            shell.pos,
+            entities,
+            null,
+            null,
+            rng,
           );
+          for (const hit of hits)
+            recordShellHit(
+              shell,
+              hit,
+              hit.targetId ? destroyedBeforeBurst.get(hit.targetId) : false,
+            );
         } else {
           shell.dead = true;
         }
         if (worldHit.record?.propIdx != null) {
           const propObstacle = obstacleByPropIdx.get(worldHit.record.propIdx);
-          if (propObstacle?.crushable) destroyObstacle(propObstacle, null, 'shell');
+          if (propObstacle?.crushable)
+            destroyObstacle(propObstacle, null, "shell");
         }
-        emit('shell_impact', {
+        emit("shell_impact", {
           shellId: shell.id,
           shooterId: shell.shooterId,
           kind: worldHit.kind,
@@ -876,11 +1062,19 @@ export function createAuthoritativeMatch({
           destroyedBeforeBurst.set(entity.id, entity.combat.destroyed);
         }
         const hits = resolveHeBurst(
-          shell, burstPoint, entities, tankHit.target, tankHit.hits, rng,
+          shell,
+          burstPoint,
+          entities,
+          tankHit.target,
+          tankHit.hits,
+          rng,
         );
-        for (const hit of hits) recordShellHit(
-          shell, hit, hit.targetId ? destroyedBeforeBurst.get(hit.targetId) : false,
-        );
+        for (const hit of hits)
+          recordShellHit(
+            shell,
+            hit,
+            hit.targetId ? destroyedBeforeBurst.get(hit.targetId) : false,
+          );
       } else {
         const wasDestroyed = tankHit.target.combat.destroyed;
         const hit = resolveShellHit(shell, tankHit.target, tankHit.hits, rng);
@@ -891,11 +1085,11 @@ export function createAuthoritativeMatch({
       if (!shell.dead) continue;
       const shooter = entityById.get(shell.shooterId);
       if (completeGuidedMissileFlight(shooter, shell.id)) {
-        emit('special_action', {
+        emit("special_action", {
           id: shooter.id,
           kind: shooter.specialAction.kind,
           active: false,
-          reason: 'IMPACT',
+          reason: "IMPACT",
         });
       }
     }
@@ -906,7 +1100,7 @@ export function createAuthoritativeMatch({
 
   function updateVisibility() {
     for (const event of spotting.update(SIM_DT, timeS)) {
-      emit('tank_spotted', event);
+      emit("tank_spotted", event);
     }
   }
 
@@ -919,26 +1113,37 @@ export function createAuthoritativeMatch({
       else if (entity.team === TEAM_BRAVO) bravo++;
     }
     if (alpha === 0 || bravo === 0 || timeS >= battleLimitS) {
-      resultReason = alpha === 0 || bravo === 0 ? 'elimination' : 'time_limit';
-      result = alpha === bravo ? 'draw' : alpha > bravo ? TEAM_ALPHA : TEAM_BRAVO;
-      emit('match_ended', { result, reason: resultReason });
+      resultReason = alpha === 0 || bravo === 0 ? "elimination" : "time_limit";
+      result =
+        alpha === bravo ? "draw" : alpha > bravo ? TEAM_ALPHA : TEAM_BRAVO;
+      emit("match_ended", { result, reason: resultReason });
     }
   }
 
   const simulation = {
     entities,
     entityById,
-    requiredPeerIds: entities.filter((entity) => !entity.bot).map((entity) => entity.id),
+    requiredPeerIds: entities
+      .filter((entity) => !entity.bot)
+      .map((entity) => entity.id),
     heightField,
-    get timeS() { return timeS; },
-    get result() { return result; },
-    get resultReason() { return resultReason; },
-    get phase() { return phase; },
+    get timeS() {
+      return timeS;
+    },
+    get result() {
+      return result;
+    },
+    get resultReason() {
+      return resultReason;
+    },
+    get phase() {
+      return phase;
+    },
 
     onMatchReady() {
-      if (phase !== 'loading') return;
-      phase = countdownRemainingS > 0 ? 'countdown' : 'playing';
-      emit(phase === 'countdown' ? 'match_countdown' : 'match_started', {
+      if (phase !== "loading") return;
+      phase = countdownRemainingS > 0 ? "countdown" : "playing";
+      emit(phase === "countdown" ? "match_countdown" : "match_started", {
         countdownMs: Math.round(countdownRemainingS * 1000),
       });
     },
@@ -964,17 +1169,17 @@ export function createAuthoritativeMatch({
       if (Math.abs(dt - SIM_DT) > 1e-9) {
         throw new Error(`authoritative match requires ${SIM_DT}s fixed steps`);
       }
-      if (phase === 'countdown') {
+      if (phase === "countdown") {
         countdownRemainingS = Math.max(0, countdownRemainingS - dt);
         for (const entity of entities) applyNetworkInput(entity, null);
         if (countdownRemainingS === 0) {
-          phase = 'playing';
-          emit('match_started', { countdownMs: 0 });
+          phase = "playing";
+          emit("match_started", { countdownMs: 0 });
         }
         updateVisibility();
         return;
       }
-      if (phase !== 'playing') return;
+      if (phase !== "playing") return;
       timeS += dt;
       for (const entity of entities) {
         if (entity.bot) entity.aiCtl?.update(dt, timeS);
@@ -983,8 +1188,9 @@ export function createAuthoritativeMatch({
       }
       for (const entity of entities) {
         if (entity.combat.destroyed) continue;
-        updateTank(entity, heightField, dt,
-          (pos, radius, out) => collideFor(entity, pos, radius, out));
+        updateTank(entity, heightField, dt, (pos, radius, out) =>
+          collideFor(entity, pos, radius, out),
+        );
       }
       resolvePendingCrushes();
       resolvePendingRams();
@@ -1002,17 +1208,24 @@ export function createAuthoritativeMatch({
         for (const entity of entities) {
           if (entity.combat.destroyed) continue;
           const fire = tickFire(entity, rng);
-          if (fire.extinguished) emit('tank_fire', { id: entity.id, burning: false });
-          if (fire.destroyed) emit('tank_destroyed', {
-            id: entity.id,
-            killerId: entity.id,
-            cause: 'fire',
-          });
+          if (fire.extinguished)
+            emit("tank_fire", { id: entity.id, burning: false });
+          if (fire.destroyed)
+            emit("tank_destroyed", {
+              id: entity.id,
+              killerId: entity.id,
+              cause: "fire",
+            });
         }
       }
       for (const entity of entities) {
         for (const module of tickModuleRepairs(entity.combat, dt)) {
-          emit('module_state', { id: entity.id, module, state: 'yellow', repaired: true });
+          emit("module_state", {
+            id: entity.id,
+            module,
+            state: "yellow",
+            repaired: true,
+          });
         }
       }
       updateVisibility();
@@ -1021,24 +1234,31 @@ export function createAuthoritativeMatch({
 
     snapshot({ tick, serverTimeMs, viewerId, ackInputSeq }) {
       const viewer = entityById.get(viewerId);
-      const canObserve = (_id, entity) => !viewer || entity.team === viewer.team ||
-        entity.combat.destroyed || spotting.isSpotted(entity.id, viewer.team, viewer);
+      const canObserve = (_id, entity) =>
+        !viewer ||
+        entity.team === viewer.team ||
+        entity.combat.destroyed ||
+        spotting.isSpotted(entity.id, viewer.team, viewer);
       const canObserveShell = (_id, shell) => {
         const shooter = entityById.get(shell.shooterId);
         return !shooter || canObserve(viewerId, shooter);
       };
       const canObserveEvent = (_id, event) => {
         if (!viewer) return true;
-        if (event.type === 'world_prop_destroyed') return true;
+        if (event.type === "world_prop_destroyed") return true;
         for (const id of [
-          event.id, event.shooterId, event.targetId, event.killerId,
-          event.aId, event.bId,
+          event.id,
+          event.shooterId,
+          event.targetId,
+          event.killerId,
+          event.aId,
+          event.bId,
         ]) {
           if (!id) continue;
           const entity = entityById.get(id);
           if (entity && canObserve(viewerId, entity)) return true;
         }
-        return event.type === 'match_ended';
+        return event.type === "match_ended";
       };
       return captureWorldSnapshot({
         tick,

@@ -6,10 +6,18 @@
 // calling window.__SHOTS.set(name) before each capture.
 // Exits non-zero and prints page console errors if the game fails to load.
 
-import { createServer } from 'vite';
-import puppeteer from 'puppeteer';
-import { mkdirSync, rmdirSync, statSync, writeFileSync, readdirSync, unlinkSync, utimesSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { createServer } from "vite";
+import puppeteer from "puppeteer";
+import {
+  mkdirSync,
+  rmdirSync,
+  statSync,
+  writeFileSync,
+  readdirSync,
+  unlinkSync,
+  utimesSync,
+} from "node:fs";
+import { resolve, join } from "node:path";
 
 // Exclusive run lock (controls_gunnery r3): parallel harness instances on one
 // machine starve each other's vite/Chromium cold starts into spurious
@@ -24,8 +32,8 @@ import { resolve, join } from 'node:path';
 // so handoff is first-come-first-served and starvation-free among
 // ticket-aware tools, while old-protocol tools remain mutually excluded by
 // the same mkdir. Keep this block in sync with tools/perfprobe.mjs.
-const LOCK_DIR = '/tmp/cot-shots.lock';
-const QUEUE_DIR = '/tmp/cot-shots.queue';
+const LOCK_DIR = "/tmp/cot-shots.lock";
+const QUEUE_DIR = "/tmp/cot-shots.queue";
 const LOCK_STALE_MS = 5 * 60 * 1000;
 const TICKET_STALE_MS = 60 * 60 * 1000; // pid-reuse safety net for reaping
 let lockHeld = false;
@@ -36,12 +44,17 @@ function ticketPid(name) {
 function ticketAlive(name) {
   const pid = ticketPid(name);
   if (pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
 }
 async function acquireLock(timeoutMs) {
   mkdirSync(QUEUE_DIR, { recursive: true });
   // zero-padded ms timestamp + pid: lexicographic name order == arrival order
-  const myTicket = `${String(Date.now()).padStart(15, '0')}-${process.pid}.t`;
+  const myTicket = `${String(Date.now()).padStart(15, "0")}-${process.pid}.t`;
   writeFileSync(join(QUEUE_DIR, myTicket), String(process.pid));
   const t0 = Date.now();
   try {
@@ -49,43 +62,95 @@ async function acquireLock(timeoutMs) {
       // find the queue head among LIVE tickets (reap dead/stale ones)
       let head = null;
       let names = [];
-      try { names = readdirSync(QUEUE_DIR).filter((n) => n.endsWith('.t')).sort(); } catch (_) { names = [myTicket]; }
+      try {
+        names = readdirSync(QUEUE_DIR)
+          .filter((n) => n.endsWith(".t"))
+          .sort();
+      } catch (_) {
+        names = [myTicket];
+      }
       for (const n of names) {
-        if (n === myTicket) { head = head || n; break; }
+        if (n === myTicket) {
+          head = head || n;
+          break;
+        }
         let stale = false;
-        try { stale = Date.now() - statSync(join(QUEUE_DIR, n)).mtimeMs > TICKET_STALE_MS; } catch (_) { continue; }
-        if (stale || !ticketAlive(n)) { try { unlinkSync(join(QUEUE_DIR, n)); } catch (_) { /* raced */ } continue; }
-        head = n; break;
+        try {
+          stale =
+            Date.now() - statSync(join(QUEUE_DIR, n)).mtimeMs > TICKET_STALE_MS;
+        } catch (_) {
+          continue;
+        }
+        if (stale || !ticketAlive(n)) {
+          try {
+            unlinkSync(join(QUEUE_DIR, n));
+          } catch (_) {
+            /* raced */
+          }
+          continue;
+        }
+        head = n;
+        break;
       }
       // only the head contends — everyone else parks (no thundering herd)
       if (head === myTicket) {
-        try { mkdirSync(LOCK_DIR); lockHeld = true; return; } catch (_) { /* held */ }
         try {
-          if (Date.now() - statSync(LOCK_DIR).mtimeMs > LOCK_STALE_MS) { try { rmdirSync(LOCK_DIR); } catch (e) { if (e.code === 'ENOTDIR') unlinkSync(LOCK_DIR); else throw e; } continue; }
-        } catch (_) { continue; } // vanished between calls — retry immediately
+          mkdirSync(LOCK_DIR);
+          lockHeld = true;
+          return;
+        } catch (_) {
+          /* held */
+        }
+        try {
+          if (Date.now() - statSync(LOCK_DIR).mtimeMs > LOCK_STALE_MS) {
+            try {
+              rmdirSync(LOCK_DIR);
+            } catch (e) {
+              if (e.code === "ENOTDIR") unlinkSync(LOCK_DIR);
+              else throw e;
+            }
+            continue;
+          }
+        } catch (_) {
+          continue;
+        } // vanished between calls — retry immediately
       }
-      if (Date.now() - t0 > timeoutMs) throw new Error('cot-shots lock timeout');
+      if (Date.now() - t0 > timeoutMs)
+        throw new Error("cot-shots lock timeout");
       await new Promise((r) => setTimeout(r, head === myTicket ? 300 : 1000));
     }
   } finally {
     // ticket never outlives the wait — removed on acquire AND on timeout
-    try { unlinkSync(join(QUEUE_DIR, myTicket)); } catch (_) { /* fine */ }
+    try {
+      unlinkSync(join(QUEUE_DIR, myTicket));
+    } catch (_) {
+      /* fine */
+    }
   }
 }
 function releaseLock() {
   if (!lockHeld) return;
   lockHeld = false;
-  try { rmdirSync(LOCK_DIR); } catch (_) { /* fine */ }
+  try {
+    rmdirSync(LOCK_DIR);
+  } catch (_) {
+    /* fine */
+  }
 }
 await acquireLock(20 * 60 * 1000);
-process.on('exit', releaseLock);
+process.on("exit", releaseLock);
 // performance_budget r4: a full 13-view capture under machine load can exceed
 // the 5-minute staleness horizon — without a refresher a sibling reclaims the
 // LIVE lock mid-capture and two Chromium instances share the GPU (this is one
 // of the ways review-window perf evidence kept getting contended). Same
 // refresher tools/perfprobe.mjs has carried since r2.
 const lockRefresher = setInterval(() => {
-  try { const now = new Date(); utimesSync(LOCK_DIR, now, now); } catch (_) { /* fine */ }
+  try {
+    const now = new Date();
+    utimesSync(LOCK_DIR, now, now);
+  } catch (_) {
+    /* fine */
+  }
 }, 60 * 1000);
 lockRefresher.unref();
 
@@ -94,19 +159,19 @@ function opt(name, fallback) {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args[i + 1] : fallback;
 }
-const outDir = resolve(opt('out', 'shots'));
-const width = parseInt(opt('width', '1920'), 10);
-const height = parseInt(opt('height', '1080'), 10);
-const dpr = parseFloat(opt('dpr', '1'));
-const dynScaleArg = opt('dyn-scale', '');
-const dynScale = dynScaleArg === '' ? null : parseFloat(dynScaleArg);
-const onlyViews = opt('views', '') ? opt('views', '').split(',') : null;
+const outDir = resolve(opt("out", "shots"));
+const width = parseInt(opt("width", "1920"), 10);
+const height = parseInt(opt("height", "1080"), 10);
+const dpr = parseFloat(opt("dpr", "1"));
+const dynScaleArg = opt("dyn-scale", "");
+const dynScale = dynScaleArg === "" ? null : parseFloat(dynScaleArg);
+const onlyViews = opt("views", "") ? opt("views", "").split(",") : null;
 mkdirSync(outDir, { recursive: true });
 
 const port = 5200 + Math.floor(Math.random() * 700);
 const server = await createServer({
   root: process.cwd(),
-  logLevel: 'error',
+  logLevel: "error",
   // hmr:false (content r4 / r3 CB handoff item): concurrent sessions editing
   // src/ during a capture trigger a vite HMR full reload that destroys the
   // puppeteer execution context mid-evaluate ("Execution context was
@@ -115,17 +180,17 @@ const server = await createServer({
   // camo_spotting r3: watch off too — a concurrent editor session touching
   // src/ mid-capture triggered a full-reload navigation that destroyed the
   // evaluate context (spotting-check.mjs has carried this fix since r2).
-  server: { port, strictPort: false, hmr: false, watch: { ignored: ['**/*'] } },
+  server: { port, strictPort: false, hmr: false, watch: { ignored: ["**/*"] } },
   optimizeDeps: {
     // tank_models r3: pre-bundle the lazy-loaded modules so dep discovery can
     // never trigger a mid-capture page reload / stale-chunk 504
-    entries: ['index.html'],
+    entries: ["index.html"],
     include: [
-      'three',
-      'three/examples/jsm/loaders/GLTFLoader.js',
-      'three/examples/jsm/utils/SkeletonUtils.js',
-      'three/examples/jsm/utils/BufferGeometryUtils.js',
-      'three/examples/jsm/geometries/RoundedBoxGeometry.js',
+      "three",
+      "three/examples/jsm/loaders/GLTFLoader.js",
+      "three/examples/jsm/utils/SkeletonUtils.js",
+      "three/examples/jsm/utils/BufferGeometryUtils.js",
+      "three/examples/jsm/geometries/RoundedBoxGeometry.js",
     ],
   },
 });
@@ -135,8 +200,13 @@ const url = `http://localhost:${actualPort}/`;
 console.log(`[shots] vite up at ${url}`);
 
 const browser = await puppeteer.launch({
-  headless: 'new',
-  args: ['--use-gl=angle', '--enable-webgl', '--no-sandbox', '--disable-dev-shm-usage'],
+  headless: "new",
+  args: [
+    "--use-gl=angle",
+    "--enable-webgl",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+  ],
 });
 const page = await browser.newPage();
 await page.setViewport({ width, height, deviceScaleFactor: dpr });
@@ -149,24 +219,29 @@ const consoleErrors = [];
 // responses and tolerate exactly that many generic resource lines; genuine
 // game asset failures (localhost) still fail the run.
 let externalResourceFailures = 0;
-page.on('response', (r) => {
+page.on("response", (r) => {
   try {
     const host = new URL(r.url()).hostname;
-    if (r.status() >= 400 && host !== 'localhost' && host !== '127.0.0.1') {
+    if (r.status() >= 400 && host !== "localhost" && host !== "127.0.0.1") {
       externalResourceFailures += 1;
     }
-  } catch { /* opaque URLs are not external-resource lines */ }
+  } catch {
+    /* opaque URLs are not external-resource lines */
+  }
 });
-page.on('console', (msg) => {
-  if (msg.type() !== 'error' || msg.text().includes('favicon')) return;
+page.on("console", (msg) => {
+  if (msg.type() !== "error" || msg.text().includes("favicon")) return;
   const text = msg.text();
-  if (text.includes('Failed to load resource') && externalResourceFailures > 0) {
+  if (
+    text.includes("Failed to load resource") &&
+    externalResourceFailures > 0
+  ) {
     externalResourceFailures -= 1;
     return;
   }
   consoleErrors.push(text);
 });
-page.on('pageerror', (err) => consoleErrors.push(String(err)));
+page.on("pageerror", (err) => consoleErrors.push(String(err)));
 
 let failed = false;
 try {
@@ -176,52 +251,52 @@ try {
   // capture errors.
   for (let attempt = 0; ; attempt++) {
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
-      await page.waitForFunction('window.__GAME_READY === true', { timeout: 90000 });
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
+      await page.waitForFunction("window.__GAME_READY === true", {
+        timeout: 90000,
+      });
       break;
     } catch (err) {
       if (attempt >= 1) throw err;
-      console.warn(`[shots] load attempt ${attempt + 1} failed (${err.message}) — retrying`);
+      console.warn(
+        `[shots] load attempt ${attempt + 1} failed (${err.message}) — retrying`,
+      );
       consoleErrors.length = 0;
     }
   }
 
   const views = await page.evaluate(() =>
-    window.__SHOTS && Array.isArray(window.__SHOTS.views) ? window.__SHOTS.views : []
+    window.__SHOTS && Array.isArray(window.__SHOTS.views)
+      ? window.__SHOTS.views
+      : [],
   );
-  const targets = onlyViews ? views.filter((v) => onlyViews.includes(v)) : views;
-  if (targets.length === 0) throw new Error('No screenshot views exposed via window.__SHOTS.views');
+  const targets = onlyViews
+    ? views.filter((v) => onlyViews.includes(v))
+    : views;
+  if (targets.length === 0)
+    throw new Error("No screenshot views exposed via window.__SHOTS.views");
 
   for (const view of targets) {
     await page.evaluate((v) => window.__SHOTS.set(v), view);
     if (Number.isFinite(dynScale)) {
-      await page.evaluate((scale) => window.__DEBUG.post.pinDynScale(scale), dynScale);
+      await page.evaluate(
+        (scale) => window.__DEBUG.post.pinDynScale(scale),
+        dynScale,
+      );
     }
     // let the scene settle: post-processing, particles, LOD, shadows.
     // Map-switch views rebuild the whole world (terrain bake, props,
     // vegetation) — on cold vite transforms the fixed 1.2 s could capture
     // the PREVIOUS screen (terrain_environment r1), so they get ~3 s.
-    const settleMs = view.startsWith('battlefield_') ? 3000 : 1200;
-    // performance_budget r3 (capture determinism, killcam r2 follow-up): the
-    // garage view RESUMES the GLB idle queue so the pedestal hero can land —
-    // but the fixed settle raced the swap under machine load and a GREEN run
-    // shipped an empty pedestal. Wait (bounded) for the queue to drain AND
-    // hold stable before the settle; on timeout capture anyway (never hang).
-    if (view === 'garage') {
-      await page.waitForFunction(
-        `(() => {
-          const s = window.__GLB_STATS;
-          if (!s) return true;
-          const key = s.settled + '/' + s.started;
-          if (s.settled < s.started) { window.__GLB_STABLE_SHOT = null; return false; }
-          if (!window.__GLB_STABLE_SHOT || window.__GLB_STABLE_SHOT.key !== key) {
-            window.__GLB_STABLE_SHOT = { key, at: performance.now() };
-            return false;
-          }
-          return performance.now() - window.__GLB_STABLE_SHOT.at > 800;
-        })()`,
-        { timeout: 20000, polling: 200 },
-      ).catch(() => console.warn('[shots] garage GLB queue did not settle within 20 s — capturing anyway'));
+    const settleMs = view.startsWith("battlefield_") ? 3000 : 1200;
+    // performance_budget r3 (capture determinism): the garage view once waited
+    // (bounded) for the GLB idle queue to drain AND hold stable before the
+    // settle, because a GREEN run could ship an empty pedestal. GLB staging is
+    // retired — procedural fleet (W09-D): __GLB_STATS lost its producer and
+    // that wait degenerated to an instant no-op, so it is removed; the fixed
+    // settle below remains.
+    if (view === "garage") {
+      // (no-op retained for structure clarity)
     }
     await new Promise((r) => setTimeout(r, settleMs));
     const file = `${outDir}/${view}.png`;
@@ -238,23 +313,30 @@ try {
     });
     console.log(`[shots] state ${view} ${JSON.stringify(renderState)}`);
     // tank_models r3: fail instead of shipping an empty turntable.
-    if (view === 'garage') {
+    if (view === "garage") {
       const heroOk = await page.evaluate(() => {
-        const D = window.__DEBUG; if (!D) return false;
+        const D = window.__DEBUG;
+        if (!D) return false;
         let ok = false;
         D.scene.traverse((o) => {
-          if (ok || !o.name || !o.name.startsWith('tank_')) return;
+          if (ok || !o.name || !o.name.startsWith("tank_")) return;
           if (o.parent !== D.scene) return;
-          const dx = o.position.x + 1500, dz = o.position.z + 1500;
-          if (dx * dx + dz * dz > 3600) return;      // 60 m of the garage disc
+          const dx = o.position.x + 1500,
+            dz = o.position.z + 1500;
+          if (dx * dx + dz * dz > 3600) return; // 60 m of the garage disc
           if (!o.visible) return;
           let vis = 0;
-          o.traverse((c) => { if (c.isMesh && c.visible) vis++; });
-          ok = vis > 10;                              // real model, not a stub
+          o.traverse((c) => {
+            if (c.isMesh && c.visible) vis++;
+          });
+          ok = vis > 10; // real model, not a stub
         });
         return ok;
       });
-      if (!heroOk) throw new Error('garage view captured with an EMPTY pedestal (no visible hero tank)');
+      if (!heroOk)
+        throw new Error(
+          "garage view captured with an EMPTY pedestal (no visible hero tank)",
+        );
     }
     // tank_models r3: guard against a future dead-flank/stand-in restage.
     // camo r3 amendment: the from-scratch rebuild program (owner mandate)
@@ -263,21 +345,25 @@ try {
     // swap ONLY while a GLB source is registered; a procedural registration
     // gets the garage view's visible-hero check instead (real model, not a
     // stub or an empty flank).
-    if (view === 'tank_closeup_modern') {
+    if (view === "tank_closeup_modern") {
       const closeupOk = await page.evaluate(async () => {
-        const t = window.__DEBUG.game.tankById.get('m1a2');
+        const t = window.__DEBUG.game.tankById.get("m1a2");
         if (!t || !t.visual) return false;
-        const S = await import('/src/vehicles/specs.js');
+        const S = await import("/src/vehicles/specs.js");
         const src = (S.MODEL_SOURCE || {}).m1a2;
-        const wantsGlb = !!(src && src.source && src.source !== 'procedural');
-        let swapped = false, vis = 0;
+        const wantsGlb = !!(src && src.source && src.source !== "procedural");
+        let swapped = false,
+          vis = 0;
         t.visual.root.traverse((o) => {
           if (o.userData && o.userData.__glbSwapped) swapped = true;
           if (o.isMesh && o.visible) vis++;
         });
         return wantsGlb ? swapped : vis > 10;
       });
-      if (!closeupOk) throw new Error('tank_closeup_modern captured a stand-in (GLB unswapped or stub model)');
+      if (!closeupOk)
+        throw new Error(
+          "tank_closeup_modern captured a stand-in (GLB unswapped or stub model)",
+        );
     }
     console.log(`[shots] captured ${file}`);
   }

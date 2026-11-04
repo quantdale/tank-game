@@ -88,7 +88,8 @@ const server = await createServer({
   // otherwise hot-reload the page, wiping the probe's instrumentation and the
   // battle state under our feet (observed: __PROBE vanished mid-assertions).
   server: {
-    port: 7000 + Math.floor(Math.random() * 300),
+    // Stay clear of the Windows WinNAT reservation TCP 7185–7284 (EACCES).
+    port: 7000 + Math.floor(Math.random() * 185),
     strictPort: false,
     hmr: false,
     watch: null,
@@ -174,24 +175,37 @@ async function runMode(mode, { stubNoLock, width, height }) {
   const { page, pageErrors } = await boot(mode, { stubNoLock, width, height });
 
   // --- default binds sanity ---------------------------------------------------
-  // Desktop defaults are WoT-classic (Shift sniper, RMB free-look — see
-  // input.js DEFAULT_BINDINGS). Sniper stays mouse-reachable in no-lock
-  // environments through the main.js cursor-aim routing: RMB toggles sniper
-  // whenever input.isCursorAim() — asserted behaviorally per mode below.
+  // Desktop keyboard DEFAULTS have NO sniper key (input.js DEFAULT_BINDINGS):
+  // the shift-freelook migration moved ShiftLeft to freeLook and left the
+  // rebindable sniperToggle lane null (pinned by input.selftest). Sniper stays
+  // mouse-reachable through RMB hold-to-aim (settings rmbMode 'hold') and, in
+  // no-lock environments, through the main.js cursor-aim routing: RMB toggles
+  // sniper whenever input.isCursorAim() — asserted behaviorally per mode below.
   const binds = await page.evaluate(() => window.__DEBUG.input.getBindings(0));
   check(mode, 'default bind LMB=fire', binds.fire === 'Mouse0', `fire=${binds.fire}`);
-  check(mode, 'default bind Shift=sniper (desktop classic)', binds.sniperToggle === 'ShiftLeft',
-    `sniperToggle=${binds.sniperToggle}`);
+  check(mode, 'default Shift=freeLook, keyboard sniper unbound (shift-freelook migration)',
+    binds.sniperToggle === null && binds.freeLook === 'ShiftLeft',
+    `sniperToggle=${binds.sniperToggle}, freeLook=${binds.freeLook}`);
   check(mode, 'default binds WASD hull', binds.forward === 'KeyW' && binds.back === 'KeyS' &&
     binds.left === 'KeyA' && binds.right === 'KeyD');
 
   // --- BATTLE button is hit-testable at its center (gear-overlap regression)
+  // The 08-14 battle-mode-icons round (ff2495e5) put a styled `.battle-word`
+  // label span inside the button, so the geometric center legitimately lands
+  // on the button's own descendant. A click on the label IS a click on the
+  // button — accept any element whose closest('.cot-battle') is it; what
+  // must still fail is an OUTSIDE element owning the point (the original
+  // settings-gear-overlap regression).
   const btn = await page.evaluate(() => {
     const b = document.querySelector('.cot-battle');
     const r = b.getBoundingClientRect();
     const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
     const top = document.elementFromPoint(cx, cy);
-    return { cx, cy, hit: !!top && top.classList.contains('cot-battle'), topEl: top ? top.className : 'none' };
+    return {
+      cx, cy,
+      hit: !!top && top.closest('.cot-battle') === b,
+      topEl: top ? top.className : 'none',
+    };
   });
   check(mode, 'BATTLE button unobstructed at center', btn.hit, `top element: "${btn.topEl}"`);
 
@@ -251,10 +265,12 @@ async function runMode(mode, { stubNoLock, width, height }) {
   // dispatch, both stamped in-page (the value is pinned by now — reading it
   // after the entry avoids polling across the world-build long tasks)
   const blShowMs = await page.evaluate(() => window.__PROBE.blShowMs);
+  let blShowDetail;
+  if (blShowMs >= 0) blShowDetail = `class flip ${blShowMs}ms after click dispatch`;
+  else if (blShowMs === -2) blShowDetail = 'screen was up before the click';
+  else blShowDetail = 'screen never appeared';
   check(mode, 'loading screen shows inside the click gesture (<900ms)',
-    blShowMs >= 0 && blShowMs < 900,
-    blShowMs >= 0 ? `class flip ${blShowMs}ms after click dispatch`
-      : (blShowMs === -2 ? 'screen was up before the click' : 'screen never appeared'));
+    blShowMs >= 0 && blShowMs < 900, blShowDetail);
   if (phase !== 'battle') { await page.close(); return; } // everything below needs a battle
   await sleep(800); // openBattle snap + first live frames
   // The entry-click gesture is long gone once the loading screen clears — a
@@ -351,13 +367,17 @@ async function runMode(mode, { stubNoLock, width, height }) {
     check(mode, 'shot flies in reticle direction', ang < 0.12, `angle to converged aim point ${ang.toFixed(4)} rad`);
   }
 
-  // --- sniper entry: Shift toggle + RMB hold-to-aim ------------------------------
+  // --- sniper entry: keyboard toggle lane + RMB hold-to-aim ----------------------
   // gunnery r1 (owner): the RMB default is HOLD-TO-AIM in every environment —
   // hold enters sniper, release restores the prior arcade view (settings
-  // rmbMode also offers 'toggle' and the classic 'freelook'). Shift stays the
-  // mode-independent sniper toggle. Both are asserted in both probe modes.
+  // rmbMode also offers 'toggle' and the classic 'freelook'). The desktop
+  // keyboard DEFAULT has no sniper key (Shift = freeLook since the
+  // shift-freelook migration), so the toggle lane is driven the way a player
+  // reaches it from settings: bind ShiftLeft first, restore after. Both lanes
+  // are asserted in both probe modes.
   const rigView = () => page.evaluate(() =>
     ({ fov: window.__DEBUG.camera.fov, rigMode: window.__DEBUG.rig.mode }));
+  await page.evaluate(() => window.__DEBUG.input.setBinding('sniperToggle', 'ShiftLeft'));
   const fov0 = await page.evaluate(() => window.__DEBUG.camera.fov);
   await page.keyboard.down('ShiftLeft');
   await sleep(80);
@@ -373,6 +393,7 @@ async function runMode(mode, { stubNoLock, width, height }) {
   const fovBack = await rigView();
   check(mode, 'Shift again exits sniper', fovBack.rigMode === 'ARCADE' && fovBack.fov > 50,
     `fov=${fovBack.fov.toFixed(1)}, mode=${fovBack.rigMode}`);
+  await page.evaluate(() => window.__DEBUG.input.setBinding('sniperToggle', null));
   await page.mouse.down({ button: 'right' });
   await sleep(450);
   const rmbHeld = await rigView();

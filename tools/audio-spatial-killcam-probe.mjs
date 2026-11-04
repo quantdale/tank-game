@@ -92,6 +92,12 @@ try {
   });
   await sleep(800);
 
+  // Scope A/B legs below press Shift expecting SNIPER; the desktop keyboard
+  // DEFAULT has no sniper key (shift-freelook migration pins Shift=freeLook,
+  // input.selftest), so bind the rebindable sniperToggle lane like a player
+  // would from settings, and restore it once the A/B legs are done.
+  await page.evaluate(() => window.__DEBUG.input.setBinding('sniperToggle', 'ShiftLeft'));
+
   async function readTap() {
     const n = await page.evaluate(() => window.__COT_AUDIO.stopTap());
     const parts = [];
@@ -439,6 +445,7 @@ try {
   }));
   if (garageAudio.engines.length) fail(`battle engine loops leaked into garage (${garageAudio.engines.length})`);
   if (pageErrors.length) fail(`browser errors: ${pageErrors.join(' | ')}`);
+  await page.evaluate(() => window.__DEBUG.input.setBinding('sniperToggle', null));
   console.log('[audio-spatial-killcam] GREEN');
 } finally {
   if (browser) await browser.close().catch(() => {});

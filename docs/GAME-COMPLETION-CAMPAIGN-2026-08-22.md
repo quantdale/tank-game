@@ -1,7 +1,8 @@
 # GAME COMPLETION CAMPAIGN 3 — 2026-08-22
 
-Status: **WAVE 1 IN FLIGHT** (16 master workstreams dispatched)
-Starting SHA / PRIMARY non-regression waypoint: `ff4708af` (== origin/main at campaign start)
+Status: **FINAL WAVE (RELEASE CLOSURE) IN FLIGHT** — Wave 1 COMPLETE and integrated (`425218c3..16fa80d4`), Wave 2 gap-closure COMPLETE and integrated (`7147990e..be5bf437`, doc `30a7e38d`). The completion matrix below has been reconciled against commit history, the blocker ledger in §5, the Wave-2 log in §6, and the perf record in §7; historical dispatch-time wording is preserved where it documents what was believed at dispatch. Tokens of the form `<<FINAL:...>>` are placeholders filled at campaign end — never fabricate numbers into them.
+Wave-3 workboard (16 release-closure slots): `docs/WAVE3-WORKBOARD.md`
+Starting SHA / PRIMARY non-regression waypoint: `ff4708af` (== origin/main at campaign start; historical note: 16 master workstreams were dispatched at that point)
 Historical performance waypoint: `970ef9e3` (pre-Campaign-2)
 Campaign 2 record: `docs/GRAPHICS-PERF-CAMPAIGN-2-2026-08-21.md`
 
@@ -14,25 +15,34 @@ Mission: take the repository to RELEASE CANDIDATE quality per spec §23 — feat
 Legend: COMPLETE / NEEDS WORK / BLOCKED / NOT-IN-SCOPE / UNKNOWN. Statuses are evidence-based; workers update rows as they verify.
 
 | # | Subsystem | Implemented | Reachable | Correct | Content | Polish | Perf | Tested | Release-safe | Status |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | Core game loop / modes / match lifecycle | yes | yes | UNKNOWN | UNKNOWN | UNKNOWN | ok | partial | UNKNOWN | NEEDS WORK → SA-01 |
-| 2 | Movement / physics / controls / camera | yes | yes | largely (fixed-step sim verified) | n/a | UNKNOWN | ok (C2) | good sim tests | UNKNOWN | NEEDS WORK → SA-02 |
-| 3 | Ballistics / armor / damage / destruction | yes | yes | largely (~149-assertion combat selftest) | n/a | n/a | ok | good | UNKNOWN | NEEDS WORK → SA-03 |
-| 4 | AI / navigation / tactics | yes | yes | UNKNOWN | n/a | n/a | ok | partial | UNKNOWN | NEEDS WORK → SA-04 |
-| 5 | Vehicle roster (~111 registered) | yes | yes | UNKNOWN fleet-wide | UNKNOWN | UNKNOWN | ok | partial (profiles) | UNKNOWN | NEEDS WORK → SA-05 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Core game loop / modes / match lifecycle | yes | yes | yes (repeated sessions / verdict matrix / determinism / wrecks / spawns / live-fire) | covered by lifecycle suite | verified in real battle journeys | ok | src/game/matchLifecycle.selftest.mjs (wired) + journey legs | yes | DONE (W1 SA-01): openBattle stale-entry-tail phase guard, net countdown Infinity flash fix, deferred-visual kill hardening (`60f904c4`) |
+| 2 | Movement / physics / controls / camera | yes | yes | fixed-step sim verified; NaN-poison reseat guard added | n/a | analog gamepad drive connected; feel unchanged otherwise | ok (C2) | movement + movement.edge + cameraRig + extended input selftests | yes | DONE (W1 SA-02): no tunneling/stuck/camera-penetration defects found |
+| 3 | Ballistics / armor / damage / destruction | yes | yes | ~149-assertion combat selftest + W1 NaN-damage-propagation hardening (`425218c3`) | n/a | n/a | ok | good | selftest-covered; live-opponent cert tracked below | HARDENED (W1); final live ballistics evidence rides the W3 AI/live cert slot |
+| 4 | AI / navigation / tactics | yes | yes | strong unit/nav coverage (botRoutePlanner, ai.aim, ai.selftest, authoritativeMatch) | n/a | n/a | ok | good unit-level; live all-map cert missing | pending W3 W06 | OPEN → W3 W06 (deterministic live all-map AI certification; no P0/P1 allowed for RC) |
+| 5 | Vehicle roster (~121 playables) | yes | yes | certified fleet-wide ×121 structural (rosterSweep: rigs/anchors/articulation/spawn-NaN/bounds/materials/markings/recoil/dispose) | swept (manifest icons + markings) | casemate fixed-mount defect found+fixed (`78870e95`); fleet drift healthy | ok | strong: rosterSweep + fleetLazy + profiles + combatAnatomy | structural yes; browser visual sample pending | LARGELY DONE (SA-05 + W2-H lazy fleet split); stratified browser visual spot-cert → W3 W13 |
 | 6 | Maps ×16 / world / collision | yes | yes | certified per-map (`mapsCert`: load/terrain/spawns/exact-collision-shapes/grounding/AI-routes) | yes | yes | ok (C2) | mapsCert + manifest census + headed recapture (0 console errors) | yes | DONE → SA-06 |
-| 7 | Multiplayer / networking | yes (net/ + server/) | UNKNOWN reachability | selftests exist | n/a | n/a | n/a | extensive selftests | UNKNOWN | NEEDS WORK → SA-07 |
-| 8 | UI / HUD / garage / onboarding | yes | yes | UNKNOWN | UNKNOWN | UNKNOWN | ok | dom/settings selftests | UNKNOWN | NEEDS WORK → SA-08 |
-| 9 | Audio / game feel | yes (audio/ voices+timing selftests) | yes | UNKNOWN | UNKNOWN | UNKNOWN | ok | partial | UNKNOWN | NEEDS WORK → SA-09 |
-| 10 | Graphics / lighting / post polish | yes | yes | C2-verified | yes | UNKNOWN | certified (C2) | contract tests | yes | NEEDS WORK → SA-10 |
-| 11 | Performance / memory / streaming | yes | yes | C2-certified battle/garage | n/a | n/a | **baseline ff4708af locked** | probes exist | UNKNOWN | NEEDS WORK → SA-11 |
-| 12 | Settings / persistence | yes | yes | UNKNOWN edge cases | n/a | n/a | n/a | settingsControls st | UNKNOWN | NEEDS WORK → SA-12 |
+| 7 | Multiplayer / networking | yes (net/ + server/) | YES — proven live (B1 resolved in W1: signaling lifecycle, ranked queue→match→authoritative snapshots, browser-pair guest entry, mid-match disconnect; peer-disconnect server crash fixed `9628ac7b`) | extensive selftests + live lanes above | n/a | n/a | n/a | 9 net/server suites + matchRuntime.deadPeer | release-level robustness soak pending → W3 W07 | REACHABILITY CLOSED; final robustness soak → W3 W07 |
+| 8 | UI / HUD / garage / onboarding | yes | yes | all screens walked live headless+headed (SA-08) | verified HUD/pause/end-screen in real battle (`.qa-dev/sa08-headed-ui.mjs`) | 3 stacked keyboard-ownership leaks fixed (`ffaa7f02`) | ok | 16/16 ui selftests + dom/settings | yes | DONE (W1 SA-08) |
+| 9 | Audio / game feel | yes (audio/ voices+timing selftests) | yes | rapid-fire report spam gated so belt-fed weapons don't steal explosion voices (`dfe315ef`) | coordinated with recoil/camera impulse (C2 design) | full release audit open | ok | voices + audioTiming selftests | orphan-voice / repeated-match audit → W3 W08 | PARTIAL — release audio/game-feel audit → W3 W08 |
+| 10 | Graphics / lighting / post polish | yes | yes | C2-verified | yes | disposition tracked in B13 ledger (shadow-bias span, cloud IBL, FOV far-cascade) | certified (C2) | contract tests + post/offscreenWarm suites | yes | DONE (W1 SA-10 + W2-B deferred-program warm 86 ms); residual B13 items decided with evidence in W3 W09 |
+| 11 | Performance / memory / streaming | yes | yes | C2-certified battle/garage | n/a | n/a | baseline ff4708af locked; W2-A parallel shader warm landed (forwardWarm 62.3→10–13.7 s; quiet-host open 38.4 s) | cert-perf harness + memory soak + journey probes exist | heap-retention attribution OPEN (W3 W04); clean A/B cert OPEN (W3 W05) | IN PROGRESS: §7 final cert was co-tenancy-contaminated (30 fps sample rejected as evidence) — clean quiet-host A/B owned by W3 W05; memory truth by W3 W04 |
+| 12 | Settings / persistence | yes | yes | edge cases closed: persistence sanitization + reset path (`ffaa7f02`, `d5147fc4` suite), per-read auto-tier receipt validation (B6/W2-G) | n/a | n/a | n/a | settingsControls + settingsPersistence selftests | cross-device/input/mobile cert → W3 W12 | LARGELY DONE; final input/settings cert → W3 W12 |
 | 13 | Build / tooling / packaging | yes (`tools/build-public.mjs` wrapper; Windows/macOS/Linux) | yes | cross-platform verified: clean public+private builds via npm on Windows, env polarity proven in bundles, preview smoke green | n/a | n/a | n/a | wrapper validated by real clean builds | **yes** | FIXED by SA-13 (Wave 1): env-prefix defect gone |
 | 14 | Automated QA / E2E gates | yes + NEW journey E2E: 180/180 selftests wired & guard-enforced; `test:journey` boot→garage→battle→damage→victory→rematch→death→wreck-exit GREEN headed AND headless; discovery gate `test:gate` with JSON evidence | n/a | n/a | n/a | n/a | n/a | strong unit + real E2E journey | yes (docs/QA-COVERAGE.md) | WAVE-1 COMPLETE → SA-14 |
-| 15 | Code hardening / debt / security | UNKNOWN | n/a | 44 "placeholder/not-implemented" mentions need triage | n/a | n/a | n/a | n/a | UNKNOWN | NEEDS WORK → SA-15 |
-| 16 | Release certification / player journey | not yet performed | n/a | n/a | n/a | n/a | n/a | n/a | NO | NOT STARTED → SA-16 |
+| 15 | Code hardening / debt / security | triaged: 0 real stubs of 44 "placeholder/not-implemented" mentions | n/a | XSS via network nicknames escaped (`ffaa7f02`); studio boot-poll runaway timers bounded; net protocol+server input validation verified solid | n/a | n/a | n/a | dom.escapeHtml selftest wired | yes | DONE (W1 SA-15) |
+| 16 | Release certification / player journey | journey E2E green 21/21 headed AND headless (SA-14 Runs A/B, verdant + desert) | n/a | full player loop incl. rematch, death leg, wreck exit | n/a | n/a | stage timings recorded per run | test:journey + test:gate wired and green | partial — final independent RC certification outstanding | IN PROGRESS → W3 (final independent reviews A–D on final HEAD required before any RC declaration) |
+
+**Matrix reconciliation (Wave-3 draft, 2026-08-22):** every row has been
+re-statused against commit history (`425218c3..30a7e38d`), the §5 blocker
+ledger + resolution notes, the §6 Wave-2 log, and the §7 perf record.
+Dispatch-time UNKNOWN cells were replaced where evidence exists and left
+standing where it does not (AI row 4, perf/memory row 11). The §2 assignment
+table is preserved verbatim as historical record of what each slot reported.
+Tokens `<<FINAL:*>>` below are placeholders filled at campaign end.
 
 ### Known verified issues entering the campaign
+
 1. `npm run build` fails on Windows (npm→cmd.exe cannot parse `VITE_PUBLIC_BUILD=1` env-prefix). Verified 2026-08-21/22.
 2. Headless Chrome on this host cannot complete battle-open (~34 s renderer stall → frame detach). Reproduced IDENTICALLY at `970ef9e3`; environmental, not a code regression. Diagnostics in `.qa-dev/campaign2-*.json`. **[AMENDED 2026-08-22 by SA-14 — SUPERSEDED]:** the new player-journey probe (`tools/player-journey-probe.mjs`) completes the FULL journey headless 21/21 (battle-entry stage measured **190.5 s** vs Campaign-2's `openTimeoutMs=180000` watchdog — the "stall" was the budget, not the renderer; headed 138.1 s). Residual truth: headless runs GPU-less SwiftShader ~1.4× slower; keep ≥420 s budgets. Full evidence + timings: `docs/QA-COVERAGE.md`, `.qa-dev/player-journey-headless.json`.
 3. Battle-open staging takes 107–152 s even headed (SA-11 target).
@@ -45,7 +55,7 @@ Legend: COMPLETE / NEEDS WORK / BLOCKED / NOT-IN-SCOPE / UNKNOWN. Statuses are e
 ## 2. Worker assignments
 
 | Slot | Workstream | Mission (abbrev) | Report |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | SA-01 | Core game loop | full match lifecycle audit+hardening | DONE r1 (ff4708af): 3 fixes (openBattle stale-entry-tail phase guard; net countdown Infinity flash; deferred-visual kill hardening in state.js) + src/game/matchLifecycle.selftest.mjs (repeated sessions/verdict matrix/determinism/wrecks/spawns/live-fire, plain node, green); npm-test wiring requested |
 | SA-02 | Movement/physics/controls/camera | production-quality feel + edge cases | DONE (W1): NaN-poison reseat guard in updateTank; analog pad drive wired; 2 new selftests (movement.edge, cameraRig) + input.selftest extended — all green; no tunneling/stuck/camera-penetration defects found |
 | SA-03 | Ballistics/armor/damage | combat sim defect hunt | pending |
@@ -62,16 +72,17 @@ Legend: COMPLETE / NEEDS WORK / BLOCKED / NOT-IN-SCOPE / UNKNOWN. Statuses are e
 | SA-14 | QA/E2E infrastructure | player-journey gate + harness hardening | DONE (Wave 1): 8 historical unwired selftests found+verified+wired (180/180 now); NEW `tools/selftestChainGuard.selftest.mjs` in `npm test` makes unwired tracked tests a hard failure; wired SA-01 matchLifecycle, SA-05 rosterSweep, SA-06 mapsCert+movementWorldBound; NEW `tools/player-journey-probe.mjs` (`test:journey`) — full player loop via __DEBUG hooks GREEN headed 21/21 216.5 s AND headless 21/21 297.4 s (issue #2 reclassified: harness timeout budget, not renderer); NEW discovery runner `tools/release-gate.mjs` (`test:gate`, `--with-journey`) — full unit leg 180/180 green 321.5 s; coverage map + classification evidence `docs/QA-COVERAGE.md` |
 | SA-15 | Hardening/debt/security | silent errors, NaN, dead code triage | XSS fixed (network nicknames→endScreen innerHTML escaped via new dom.escapeHtml + selftest); studio boot-poll runaway timers bounded; placeholder triage clean (0 real stubs of 44 mentions); net/protocol+server input validation verified solid |
 | SA-16 | Release certification auditor | blocker list, player-journey runs | pending |
-| W2-A | SA-11 follow-ups (b)+(c): warm-skip uniform discovery + fx atlas cache | DONE r1: parallel-link window in initializeForwardProgramsSteps (forwardWarm 62.3→10-13.7 s paired headed A/B/C/D, uniformsMs 60.4 s→≤2.8 s, births/p99/doneBeforeRollout invariants held) + content-hash IndexedDB cache for char/ember wreck atlases (materials.js, lossless+integrity-hash, legacy fallback); "16.6 s atlas bake" re-attributed via new fxMuzzle/wreckPre/Dance/Track marks — see `## 4`/`## 6` |
-| W2-B | Boot post-chain first-visible-frame program links (B8(d) class): warm deferred composer passes | DONE r1: boot `'post'` stage now links the three fullscreen-quad programs whose passes skip/branch the first composer render — LateFxPass.Copy (skips while soft FX idle → linked mid-combat on first smoke), FSR1.EASU (skips at 1:1 raster → linked at the governor's first down-step), SceneAAPass.Copy (MSAA-only resolve path / live preset MSAA crossing) — via NEW `post.warmDeferredPrograms()` drawn bound to composer.renderTarget1 behind the veil (mirrors the srgb-linear variant warm); TAA left unwarmed (SA-12 gate keeps it unreachable); headless garage cert `--label w2b-postwarm`: `__BOOT_TIMINGS.postWarmDeferred` **86 ms** one-time, fpsMedian **59.9** ≥ 59.5 C2 floor, postFirstRender unchanged by design (24870 vs r6-artifact 23434 = host noise; the warm runs after that mark and covers programs that frame never links); post/offscreenWarm selftests green — see `## 6` |
-| W2-C | Sniper-mode live verification (B3) | DONE r1: NEW `tools/sniper-scope-probe.mjs` (headed, own vite 5450-5599, evidence `.qa-dev/sniper-scope/*.json` + PNGs): pointer lock engages headed via one trusted CDP canvas click (verified natively; no special Chrome args); full wheel ladder through `input.js onWheel` — arcade orbit → SNIPER ×2 entry in ≤4 notches → ×4 → ×8 → ceiling clamp → wheel-out exit — asserted BOTH through native trusted deltas and through onWheel's own `lockDenied && target===canvas` cursor-aim notch path; scope presentation asserted by pixel-sampling the `.cot-ret` buffer (corner vignette alpha arcade 0.000 → sniper 0.557, soft falloff vs top edge 0.234, green reticle-arm delta 5→43 px, `×N.N` zoom plate present with per-magnification digest change); Shift-bound lane + RMB hold-to-aim live; zero page/console errors; harness bug found+fixed en route (puppeteer v25 `mouse.wheel` takes an options object — positional args silently sent deltaY:0) — see `## 6` |
-| W2-D | External-resource errors root cause (B5, spec §14) | DONE r1: paired 403s root-caused to githubStars double-fetch; release-path 404 = analytics on non-Vercel host; fixes + clean-console proof — see `## 6` |
-| W2-F | Memory soak (spec §13) | NEW `tools/memory-soak.mjs` (headed, own server 5700-5799): garage→battle→garage cycles over verdant/desert/urban/winter + vehicle switches, forced-GC sampling of heap / renderer.info / programs / auditSceneResources (per-scene-child attribution) / listener-proxy / DOM-node counts, taper-vs-linear verdict from revisit cycles only. 12-cycle evidence: world/pedestal caches bounded, listeners+RTs flat, GPU counts oscillate with random-roster composition (NOT growth); **heap +111.7 MB net across 7 revisit cycles (~+16 MB/battle retained after gc()) = suspected unbounded per-battle retention, mechanism attribution blocked** by a concurrent Wave-2 fleet refactor that broke boot (`type74` donor missing) — see `## 6` W2-F |
-| W2-G | Gap closure: autoTier staleness (B6) + mobile smoke (B7) | DONE r1: quality.js policy-receipt validation is now PER-READ (`_autoPolicyHandled` once-per-boot gate removed; `reportSustainedOverload` pairs every verdict write with the current receipt) so a stale `cot.gfxAutoTier` written mid-session is discarded on the next read instead of owning the session; settingsPersistence.selftest extended with a B6 section (mid-session same-instance discard + receipt repair + governor-write pairing; regression proven against pre-fix logic); NEW `tools/mobile-smoke.mjs` headed iPhone-emulation smoke (?tier=mobile): touch layout engages, mobile preset owns ladder, real-flow battle entry, touch controls render in-viewport, joystick/fire reach the input layer, PNG receipts — see §5 blocker resolution notes |
+| W2-A | SA-11 follow-ups (b)+(c): warm-skip uniform discovery + fx atlas cache | (gap closure) | DONE r1: parallel-link window in initializeForwardProgramsSteps (forwardWarm 62.3→10-13.7 s paired headed A/B/C/D, uniformsMs 60.4 s→≤2.8 s, births/p99/doneBeforeRollout invariants held) + content-hash IndexedDB cache for char/ember wreck atlases (materials.js, lossless+integrity-hash, legacy fallback); "16.6 s atlas bake" re-attributed via new fxMuzzle/wreckPre/Dance/Track marks — see `## 4`/`## 6` |
+| W2-B | Boot post-chain first-visible-frame program links (B8(d) class): warm deferred composer passes | (gap closure) | DONE r1: boot `'post'` stage now links the three fullscreen-quad programs whose passes skip/branch the first composer render — LateFxPass.Copy (skips while soft FX idle → linked mid-combat on first smoke), FSR1.EASU (skips at 1:1 raster → linked at the governor's first down-step), SceneAAPass.Copy (MSAA-only resolve path / live preset MSAA crossing) — via NEW `post.warmDeferredPrograms()` drawn bound to composer.renderTarget1 behind the veil (mirrors the srgb-linear variant warm); TAA left unwarmed (SA-12 gate keeps it unreachable); headless garage cert `--label w2b-postwarm`: `__BOOT_TIMINGS.postWarmDeferred` **86 ms** one-time, fpsMedian **59.9** ≥ 59.5 C2 floor, postFirstRender unchanged by design (24870 vs r6-artifact 23434 = host noise; the warm runs after that mark and covers programs that frame never links); post/offscreenWarm selftests green — see `## 6` |
+| W2-C | Sniper-mode live verification (B3) | (gap closure) | DONE r1: NEW `tools/sniper-scope-probe.mjs` (headed, own vite 5450-5599, evidence `.qa-dev/sniper-scope/*.json` + PNGs): pointer lock engages headed via one trusted CDP canvas click (verified natively; no special Chrome args); full wheel ladder through `input.js onWheel` — arcade orbit → SNIPER ×2 entry in ≤4 notches → ×4 → ×8 → ceiling clamp → wheel-out exit — asserted BOTH through native trusted deltas and through onWheel's own `lockDenied && target===canvas` cursor-aim notch path; scope presentation asserted by pixel-sampling the `.cot-ret` buffer (corner vignette alpha arcade 0.000 → sniper 0.557, soft falloff vs top edge 0.234, green reticle-arm delta 5→43 px, `×N.N` zoom plate present with per-magnification digest change); Shift-bound lane + RMB hold-to-aim live; zero page/console errors; harness bug found+fixed en route (puppeteer v25 `mouse.wheel` takes an options object — positional args silently sent deltaY:0) — see `## 6` |
+| W2-D | External-resource errors root cause (B5, spec §14) | (gap closure) | DONE r1: paired 403s root-caused to githubStars double-fetch; release-path 404 = analytics on non-Vercel host; fixes + clean-console proof — see `## 6` |
+| W2-F | Memory soak (spec §13) | (gap closure) | NEW `tools/memory-soak.mjs` (headed, own server 5700-5799): garage→battle→garage cycles over verdant/desert/urban/winter + vehicle switches, forced-GC sampling of heap / renderer.info / programs / auditSceneResources (per-scene-child attribution) / listener-proxy / DOM-node counts, taper-vs-linear verdict from revisit cycles only. 12-cycle evidence: world/pedestal caches bounded, listeners+RTs flat, GPU counts oscillate with random-roster composition (NOT growth); **heap +111.7 MB net across 7 revisit cycles (~+16 MB/battle retained after gc()) = suspected unbounded per-battle retention, mechanism attribution blocked** by a concurrent Wave-2 fleet refactor that broke boot (`type74` donor missing) — see `## 6` W2-F |
+| W2-G | Gap closure: autoTier staleness (B6) + mobile smoke (B7) | (gap closure) | DONE r1: quality.js policy-receipt validation is now PER-READ (`_autoPolicyHandled` once-per-boot gate removed; `reportSustainedOverload` pairs every verdict write with the current receipt) so a stale `cot.gfxAutoTier` written mid-session is discarded on the next read instead of owning the session; settingsPersistence.selftest extended with a B6 section (mid-session same-instance discard + receipt repair + governor-write pairing; regression proven against pre-fix logic); NEW `tools/mobile-smoke.mjs` headed iPhone-emulation smoke (?tier=mobile): touch layout engages, mobile preset owns ladder, real-flow battle entry, touch controls render in-viewport, joystick/fire reach the input layer, PNG receipts — see §5 blocker resolution notes |
 | W2-I | Docs completion (spec §17) | post-Wave-1 doc refresh: DEVELOPMENT.md build/gates, README honest status, QA-COVERAGE cross-link, ASSET-PIPELINES.md | DONE — see `## 6` |
-| W2-H | tankFactory chunk split (B4) | DONE r1: lazy-fleet split — browser boots through NEW `src/vehicles/fleetFactory.js` (eager core/canonical/misc + 4 dynamic family groups in `src/vehicles/fleet/`); eager first-load JS **4.05 → 2.91 MB (−1.14 MB, −28%)**, largest vehicle chunk **2200 kB → 366 kB**; garage navToReady parity vs PAIRED clean-HEAD worktree baseline (46.47 s vs 47.01 s headless back-to-back); solo battle entry verified headed end-to-end through the gates (world wreck-bakes + worst-case roster visuals + combatWarm + countdown→open 198.4 s); NEW `src/vehicles/fleetLazy.selftest.mjs` wired in posttest (identity+completeness+eval-order contracts; caught strv103 double-owner + merkava/challenger gaps); boot regression r1 (`type74` donor) root-caused+fixed — see `## 6` |
+| W2-H | tankFactory chunk split (B4) | (gap closure) | DONE r1: lazy-fleet split — browser boots through NEW `src/vehicles/fleetFactory.js` (eager core/canonical/misc + 4 dynamic family groups in `src/vehicles/fleet/`); eager first-load JS **4.05 → 2.91 MB (−1.14 MB, −28%)**, largest vehicle chunk **2200 kB → 366 kB**; garage navToReady parity vs PAIRED clean-HEAD worktree baseline (46.47 s vs 47.01 s headless back-to-back); solo battle entry verified headed end-to-end through the gates (world wreck-bakes + worst-case roster visuals + combatWarm + countdown→open 198.4 s); NEW `src/vehicles/fleetLazy.selftest.mjs` wired in posttest (identity+completeness+eval-order contracts; caught strv103 double-owner + merkava/challenger gaps); boot regression r1 (`type74` donor) root-caused+fixed — see `## 6` |
 
 ## 3. Wave log
+
 - **Wave 1** (16 slots, master workstreams above): DISPATCHED 2026-08-22, **COMPLETE 2026-08-22** — all 16 reported; full `npm test` exit 0 on the combined tree (139 wired suites); integrated as commits 425218c3..16fa80d4 (10 subsystem commits). Headline fixes: dedicated-match server crash on disconnecting peer (B1 CRITICAL resolved), NaN combat damage propagation, casemate rig seating ×4, three stacked-modal UI defects, XSS via player names, Windows build P0, cold battle-open −25 s. Journey E2E green 21/21 headed (verdant + desert) and headless.
 
 ## 4. SA-11 Performance Certification Evidence (Wave 1, vs ff4708af)
@@ -99,7 +110,7 @@ touched). Pre-seeded from Wave-1 reports referenced in this doc
 known-items. Live journey verdicts appended below when runs complete.
 
 | # | Severity | Item | Rationale |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | B1 | **CRITICAL** | Multiplayer/networking reachability UNVERIFIED (matrix row 7: reachability UNKNOWN, selftests-only) | Cannot ship a networking feature certified by unit tests alone — needs one live session-vs-server proof before RC. |
 | B2 | **HIGH** | Cold-profile battle-open still 85–155 s (issue #3; SA-11 Fix A landed −25 s; warm ≈62 s `combatWarm` is deliberate C2 design) | First-battle wait of 1.5–2.5 min is a player-facing UX cost measured in minutes; remaining fixes need owner-level tradeoffs (worker offload vs first-contact hitches). |
 | B3 | **HIGH** | Sniper-mode UI never live-verified in-browser (needs pointer lock; outside journey probe coverage) → **RESOLVED by W2-C** (headed live verification `tools/sniper-scope-probe.mjs`: pointer lock engages natively, wheel ladder + scope pixels + Shift/RMB lanes all asserted in-browser; see `## 6`) | A core combat affordance verified only by code reading/selftests — silent breakage would ship undetected. |
@@ -113,11 +124,32 @@ known-items. Live journey verdicts appended below when runs complete.
 | B11 | **LOW** | Windows WinNAT reserves TCP 7185–7284 → EACCES for random-port tools (issue #6) | Host-specific tooling footgun; product port handling unaffected so far. |
 | B12 | **LOW** | Steep spawn pads on alpine/monsoon/fjord (cosmetic geometry) | Visual/feel nit; spawns are functional per mapsCert. **W2-J triaged: ACCEPTED cosmetic debt** — real-sim drivability probe (`§6 W2-J`) shows 0/24 pads functionally bad; every pad exits multi-directionally even on the weakest climber (t95, 5.8 hp/t); no flatten warranted. |
 | B13 | **LOW** | SA-10 deferred-with-evidence: shadow-bias depth span, env-bake cloud IBL, fov-transition far-cascade staleness; perfprobe.mjs vestigial `__GLB_STATS` + Windows-blind contention guard | Deferred with evidence by owner workstreams; polish debt, not defects. |
-| B14 | **MEDIUM-HIGH** (**Wave-3 BLOCKER**, W2-A final-call r1) | First rendered frame after the fx volley flips particle pools visible pays all particle-family GPU first-use in ONE frame — `fxMuzzleCall` 1-3 ms vs `fxMuzzleWait` **0.7 s quiet host → 21.8 s under co-tenant load** (W2-A runs E/F, `.qa-dev/cert-battle-w2a-{E,F}*.json`). Behind the loader (`doneBeforeRollout=true` always), so no player-visible hitch today; the risk is contention-multiplied staging time on constrained machines. Candidate fix (Wave 3): compile soft-particle/fx programs BEFORE the volley (pool materials exist from factory time) or defer pool visibility until `initializeForwardProgramsSteps`; needs owner-level ordering tradeoff like the original (b) assessment. W2-A's uniform-discovery skip does NOT cover this span (verified: runs E/F post-fix). |
+| B14 | **MEDIUM-HIGH** (**Wave-3 BLOCKER**, W2-A final-call r1) | First rendered frame after the fx volley flips particle pools visible pays all particle-family GPU first-use in ONE frame — `fxMuzzleCall` 1-3 ms vs `fxMuzzleWait` **0.7 s quiet host → 21.8 s under co-tenant load** `(W2-A runs E/F, `.qa-dev/cert-battle-w2a-{E,F}*.json`). | Behind the loader (`doneBeforeRollout=true` always), so no player-visible hitch today; the risk is contention-multiplied staging time on constrained machines. Candidate fix (Wave 3): compile soft-particle/fx programs BEFORE the volley (pool materials exist from factory time) or defer pool visibility until `initializeForwardProgramsSteps`; needs owner-level ordering tradeoff like the original (b) assessment. W2-A's uniform-discovery skip does NOT cover this span (verified: runs E/F post-fix). |
 
 No CRITICAL beyond B1 identified pre-journey; matrix rows still NEEDS WORK
 (1,2,4,5,8,9,12,15) carry UNKNOWN correctness/polish columns that Wave-2
 audits must close — tracked here once, not itemized per-row.
+[RECONCILIATION NOTE 2026-08-22: those matrix rows have since been re-statused
+in §1 against the evidence below — see the Matrix reconciliation note in §1.]
+
+### Blocker final dispositions (the "FINAL column", filled at Wave-3 close)
+
+| # | Disposition entering Wave 3 (evidence) | FINAL (Wave-3 close) |
+| --- | --- | --- |
+| B1 | RESOLVED — W1 live lanes + peer-disconnect crash fix (`9628ac7b`) | <<FINAL:B1>> |
+| B2 | OPEN — cold battle-open best-known 154 s cold / 84.7 s warm-profile / 38.4 s quiet-warm (§4); owners W3 W01/W02/W03 | <<FINAL:B2>> |
+| B3 | RESOLVED — W2-C headed sniper probe | <<FINAL:B3>> |
+| B4 | RESOLVED — W2-H lazy fleet split (−28% eager JS) | <<FINAL:B4>> |
+| B5 | RESOLVED — W2-D root causes fixed | <<FINAL:B5>> |
+| B6 | RESOLVED — W2-G per-read receipts | <<FINAL:B6>> |
+| B7 | RESOLVED — W2-G mobile smoke 9/9 on HEAD | <<FINAL:B7>> |
+| B8 | PARTIALLY RESOLVED — W2-A; residual = B14 + follow-ups (a)/(d)/(e) | <<FINAL:B8>> |
+| B9 | ACCEPTED ENVIRONMENTAL (SwiftShader headless budget policy) | <<FINAL:B9>> |
+| B10 | ACCEPTED DEV-ENV DEBT (stale :5173 server; workers spawn own servers) | <<FINAL:B10>> |
+| B11 | ACCEPTED DEV-ENV DEBT (WinNAT port band documented) | <<FINAL:B11>> |
+| B12 | ACCEPTED COSMETIC DEBT — W2-J real-sim probe, 0/24 pads functionally bad | <<FINAL:B12>> |
+| B13 | DEFERRED WITH EVIDENCE → decisions due from W3 W09 (fix-or-accept each item) | <<FINAL:B13>> |
+| B14 | OPEN — PRIMARY Wave-3 implementation blocker (fx first-use staging); owner W3 W01 | <<FINAL:B14>> |
 
 ### SA-16 live journey verdicts
 
@@ -126,7 +158,7 @@ wall 210.0 s): JOURNEY GREEN, 21/21 checks, exit 0**
 (`.qa-dev/player-journey-report.json`).
 
 | Leg | Verdict | Evidence |
-|---|---|---|
+| --- | --- | --- |
 | boot → garage | **PASS** (3/3) | `__GAME_READY` 29.8 s, phase=garage, zero page errors |
 | garage select + BATTLE button | **PASS** (2/2) | selected=m1a2 |
 | battle entry #1 (cold) | **PASS** (3/3) | mapId=verdant, 14 tanks, hp=2600, 128.8 s |
@@ -329,7 +361,8 @@ assigned 5700–5799 band, `--js-flags=--expose-gc` so samples collect before
 measuring. Drives real lifecycle cycles garage→battle→garage (`__DEBUG.beginSoloBattle`
 / `leaveBattleToGarage`, real loading path) cycling maps verdant/desert/urban/winter
 and switching vehicles m1a2/t90m/tiger1/m4a3e8 between battles; each battle aims
-+ fires (`aimAtNearest`/`forceFire`/`fastForward`) to exercise shell/fx/decal
+
+- fires (`aimAtNearest`/`forceFire`/`fastForward`) to exercise shell/fx/decal
 paths. Sampling after every battle and every cycle-end: JS heap,
 `renderer.info.memory.{geometries,textures}` + `info.programs.length`,
 `auditSceneResources` totals AND per-top-level-scene-child breakdown
@@ -404,7 +437,7 @@ earlier 6-cycle `.qa-dev/memory-soak-smoke.json`; crash receipts
   appended to the selftest convention bullet. Generated `agent-docs:auto:*` blocks left
   untouched (owned by the scaffold).
 - **NEW docs/ASSET-PIPELINES.md:** consolidated KTX2/Basis (`tools/campaign-optimize-ktx2.mjs`
-  + `src/engine/ktx2Pipeline.js`), packed ORM (`tools/campaign-pack-orm.mjs` +
+  - `src/engine/ktx2Pipeline.js`), packed ORM (`tools/campaign-pack-orm.mjs` +
   `src/world/sourcedTextures.js`, `orm|`/`sep|` cache keys), Meshopt
   (`tools/campaign-meshopt.mjs` + `src/engine/meshoptGlbLoader.js`), shared PNG codec,
   deterministic/attribution/public-boundary contracts, and a verification table. Honest
@@ -427,7 +460,7 @@ healthy; the only bug found was in my own harness (below).
 **Verified LIVE (real Chrome, real battle entry via beginSoloBattle):**
 
 | Leg | Verdict | Receipt |
-|---|---|---|
+| --- | --- | --- |
 | Pointer lock engages natively | PASS | first-click engagement twice (`clicks=1 locked=true cursorAim=false`, no special Chrome args needed) |
 | Wheel ladder through `input.js onWheel` | PASS | arcade orbit → SNIPER ×2 entry in ≤4 notches → ×4 → ×8 → ceiling CLAMP at ×8 → wheel-out ×4/×2 → exit to ARCADE; asserted through BOTH gated paths: trusted CDP deltas under lock AND onWheel's own `lockDenied && target===canvas` cursor-aim notch path when Chrome denies the lock |
 | HUD mode mirror | PASS | `frameInfo.mode 'battle'→'sniper'→'battle'`; FOV 60→30 at ×2 |
@@ -508,7 +541,6 @@ so slope stalls are distinguishable from cover blocks.
 `movementWorldBound`, `mapQuality` (16 maps), `mapsCert` (full sixteen-map
 certification). No game code changed by this slot (probe + docs only).
 
-
 ### W2-H — tankFactory chunk split (blocker B4, spec §18 first-load), DONE 2026-08-22
 
 **Design.** The 2.2 MB `tankFactory` chunk existed because the browser boot
@@ -547,7 +579,7 @@ imports.
 **Chunk sizes (private build, dist/assets):**
 
 | | before | after |
-|---|---|---|
+| --- | --- | --- |
 | largest vehicle chunk | tankFactory **2,200.13 kB** (gzip 664.0) | g4CasemateAsia **366.2 kB** (gzip 107.5) |
 | eager index.html JS (measured preload sum) | **4,245,357 B = 4.05 MB** / 20 files | **3,048,715 B = 2.91 MB** / 26 files |
 | deferred off critical path | — | g1Nato 42.9 + g2East 138.0 + g3UsMisc 104.1 + g4CasemateAsia 366.2 + casemate 298.1 + t72 249.2 kB (+ small shared) |
@@ -621,7 +653,7 @@ lossless and hash-gated, so hydrated visuals are identical to painter output.
 reused profile; co-tenant worker load varied between runs — compare pairs):**
 
 | run | tree | host | open | combatWarm | forwardWarm | uniformsMs |
-|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- |
 | A | legacy | busy | 242.7 s | 97.2 s | **62.3 s** | **60388** |
 | B/D/F | candidate | busy | 159-220 s | 42-46 s | **10.1-10.8 s** | **11-639** |
 | E | candidate | quiet | **38.4 s** | **8.9 s** | 1.2 s | 27 |
@@ -655,7 +687,7 @@ assessment. (2) follow-ups (a)/(d)/(e) untouched. Raw runs:
 One headed `cert-perf.mjs` pass per scene on integration HEAD (`be5bf437`, clean tree): pinned origin `localhost:5358` + reused profile `.qa-dev/w2a-prof` (returning-player path), verdant/m1a2/worst-case pinned roster, 45 s windows, uncontended by the harness CPU guard. References: ff4708af pristine-cold r1 (45 s) / r2 (20 s), warm r5; garage reference = headless r6.
 
 | metric | ff4708af ref | HEAD be5bf437 | verdict |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | battle fps median | 59.9 | **30.0** | REGRESSION* (cause below — environmental, not code) |
 | battle fps p5 | 29.9 r1 / 59.5 r2 | 20.0 | REGRESSION* (same cause) |
 | battle fps p99 | ≈60 vsync ceiling (not stored) | ≈60 ceiling (best frames still vsync) | n/a — quantization, see cause |
@@ -676,3 +708,50 @@ One headed `cert-perf.mjs` pass per scene on integration HEAD (`be5bf437`, clean
 \* **Pacing-regression cause (investigated per the >5% clause): host co-tenancy on GPU/presentation, NOT a code regression.** Evidence: (1) every content/scene metric is at-or-better than baseline while frame times sit exactly at 2×/3× vsync intervals with idle CPUs (cpuBusyMax 9.6% during the window); the stall shape is presentation-class (9 s first-gap at window open, ~1 s gaps clustered late), not JS/GC (heap flat, births 0); (2) the identical signature is documented twice in this doc as non-gating environmental (§6 W2-H "fps sampled low, median 30, sibling builds concurrent"; W2-A busy-vs-quiet open table); (3) the only `src/` delta since the last clean 59.9-fps sample (w2a-G) is `quality.js` per-read policy-receipt validation (boot/governor path; harness URL carries `gfxreset=1`, which short-circuits it) plus a read-only `map.js` telemetry seam — no render-loop change; census confirms preset high, dynScale 1, perfTrim 0 (no auto-tier downgrade). A confirmation rerun could not complete battle-open within the 420 s watchdog under measured 83–100% host CPU with a 32–56 chrome.exe co-tenant fleet. The Campaign-2 floor (battle fps median ~59.5 headed) holds on this unchanged render path — last clean samples w2a-F/G measured 59.9 on it.
 
 Evidence: `.qa-dev/cert-battle-w3e-head.json`, `.qa-dev/cert-garage-w3e-head.json`, logs `.qa-dev/w3e-{battle,battle-r2,garage}.log` (r2 = timed-out confirmation attempt); baselines `.qa-dev/cert-battle-ff4708af-r{1,2}.json`, `.qa-dev/perf-cert-evidence-ff4708af.json`, `.qa-dev/cert-garage-headless-r6.json`.
+
+## 8. Wave 3 — final wave / release closure (IN FLIGHT, skeleton)
+
+Workboard with full missions, port bands, and integration rules:
+`docs/WAVE3-WORKBOARD.md`. Sixteen slots dispatched 2026-08-22 against
+starting SHA `30a7e38d`. Statuses below are placeholders updated as slots land;
+no numbers are filled until measured on the integrated tree.
+
+| Slot | Workstream | Owns | Status |
+| --- | --- | --- | --- |
+| W01 | b14-fx | B14 FX GPU first-use elimination + telemetry contract + regression test (R1) | RUN |
+| W02 | boot-post | cold `postFirstRender` breakdown + safe reductions (B8(d)) | RUN |
+| W03 | loadpath → battle-open | waterfall instrumentation, top-3 reductions on critical path (R2/B2) | RUN (scout phase) |
+| W04 | memory truth | soak ≥16 cycles + allocation sampling; classify BOUNDED/TAPERING/LEAK FIXED/ARTIFACT (R3) | RUN (prep phase) |
+| W05 | clean perf A/B | quiet-host certification vs `ff4708af`, contamination rejection (R4); harness hardening first | RUN (harness phase) |
+| W06 | AI live cert | all-map deterministic live AI certification contract (matrix row 4) | RUN (build phase) |
+| W07 | multiplayer soak | release-level robustness: repeated sessions, disconnects, teardown hygiene (row 7) | RUN (prep phase) |
+| W08 | audio/game-feel | release audio audit incl. voice stealing, orphan voices, repeated-match behavior | RUN (build phase) |
+| W09 | graphics debt | B13 items decided fix-or-accept with evidence (R5) | RUN (recon phase) |
+| W10 | asset pipeline | KTX2/Meshopt production-adoption verdict from measurements (not tooling existence) | RUN |
+| W11 | bundle/lazy-load | chunk census after W2-H; only high-value natural-boundary splits | RUN |
+| W12 | input/settings cert | desktop+gamepad+sniper+mobile+settings recovery; stale controls-probe expectations fixed | RUN |
+| W13 | fleet visual sample | stratified live browser spot-cert across families/nations/builders (row 5 residual) | RUN (build phase) |
+| W14 | clean checkout/release build | fresh-worktree reproducibility: install→test→build×2→attribution→smoke; artifact scans | RUN (checklist phase) |
+| W15 | docs reconciliation | this document's matrix/ledger vs actual final state (this draft is its r1) | RUN |
+| W16 | independent red team | distrust-the-campaign audit; P0–P3 findings; final-HEAD rerun of critical paths | RUN (recon phase) |
+
+### Final-wave results ledger (filled at campaign end — no fabricated values)
+
+- Final SHA: `<<FINAL:sha>>`
+- B14 outcome (`fxMuzzleCall`/`fxMuzzleWait` before → after): `<<FINAL:b14>>`
+- Cold boot nav→ready: `<<FINAL:cold-boot>>`; returning boot: `<<FINAL:warm-boot>>`
+- Battle-open cold / returning / rematch: `<<FINAL:open-cold>>` / `<<FINAL:open-warm>>` / `<<FINAL:rematch>>`
+- Memory-soak verdict (≥16 cycles): `<<FINAL:memory-verdict>>`
+- Clean A/B vs `ff4708af` (battle fps median/p99, draws, tris, heap drift): `<<FINAL:perf-ab>>`
+- AI certification: `<<FINAL:ai-cert>>`
+- Multiplayer soak: `<<FINAL:net-soak>>`
+- Audio result: `<<FINAL:audio>>`
+- Render-debt decisions (B13): `<<FINAL:b13>>`
+- Asset-pipeline verdict: `<<FINAL:assets>>`
+- Bundle/lazy-load deltas: `<<FINAL:bundle>>`
+- Input/settings/mobile cert: `<<FINAL:input>>`
+- Fleet live-cert sample: `<<FINAL:fleet-sample>>`
+- Clean-checkout proof: `<<FINAL:clean-checkout>>`
+- Builds/test gates (npm test / build / build:private / test:journey / test:gate / attribution): `<<FINAL:gates>>`
+- P0/P1 found-fixed-remaining; accepted P2/P3 debt: `<<FINAL:blockers>>`
+- Verdict: `<<FINAL:verdict>>` (RELEASE CANDIDATE or NOT RELEASE CANDIDATE, per the RC definition)

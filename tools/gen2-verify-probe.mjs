@@ -17,35 +17,46 @@
 //
 // Usage: node tools/gen2-verify-probe.mjs [--battle-id t84]
 
-import { createServer } from 'vite';
-import puppeteer from 'puppeteer';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { createServer } from "vite";
+import puppeteer from "puppeteer";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
 function opt(name, fallback) {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args[i + 1] : fallback;
 }
-const BATTLE_ID = opt('battle-id', 't84');
-const OUT = resolve('shots/gen2-integration');
+const BATTLE_ID = opt("battle-id", "t84");
+const OUT = resolve("shots/gen2-integration");
 mkdirSync(OUT, { recursive: true });
 
 // id -> expected country chip. Historical eras are intentionally combined.
 const WAVE8 = {
-  t44: 'ru', t54: 'ru', type59: 'cn',
-  amx30: 'fr', amx30b2: 'fr', m48: 'us',
-  t80: 'ru', t80b: 'ru', t80bv: 'ru', t84: 'ua',
-  m60a2: 'us', vickers_mk1: 'gb',
+  t44: "ru",
+  t54: "ru",
+  type59: "cn",
+  amx30: "fr",
+  amx30b2: "fr",
+  m48: "us",
+  t80: "ru",
+  t80b: "ru",
+  t80bv: "ru",
+  t84: "ua",
+  m60a2: "us",
+  vickers_mk1: "gb",
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failures = 0;
-const fail = (msg) => { failures++; console.error(`  [FAIL] ${msg}`); };
+const fail = (msg) => {
+  failures++;
+  console.error(`  [FAIL] ${msg}`);
+};
 const ok = (msg) => console.log(`  ok  ${msg}`);
 
 const server = await createServer({
   root: process.cwd(),
-  logLevel: 'error',
+  logLevel: "error",
   // own 7xxx port band (never 5001/5002 — those belong to the shared servers)
   server: { port: 7311, strictPort: false, hmr: false, watch: null },
 });
@@ -54,44 +65,56 @@ const url = `http://localhost:${server.config.server.port}/`;
 console.log(`[gen2-verify] vite up at ${url}`);
 
 const browser = await puppeteer.launch({
-  headless: 'new',
-  args: ['--use-gl=angle', '--enable-webgl', '--no-sandbox', '--disable-dev-shm-usage'],
+  headless: "new",
+  args: [
+    "--use-gl=angle",
+    "--enable-webgl",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+  ],
 });
 const page = await browser.newPage();
 await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
 const pageErrors = [];
-page.on('pageerror', (e) => pageErrors.push(String(e)));
-page.on('console', (m) => {
-  if (m.type() === 'error' && !m.text().includes('favicon') &&
-      !m.text().includes('404')) pageErrors.push(m.text());
+page.on("pageerror", (e) => pageErrors.push(String(e)));
+page.on("console", (m) => {
+  if (
+    m.type() === "error" &&
+    !m.text().includes("favicon") &&
+    !m.text().includes("404")
+  )
+    pageErrors.push(m.text());
 });
 
-await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
-await page.waitForFunction('window.__GAME_READY === true', { timeout: 120000 });
-// boot hero + GLB queue settled before the walk starts
-await page.waitForFunction(() => {
-  const D = window.__DEBUG;
-  const v = D && D.pedestalVisual;
-  const s = window.__GLB_STATS;
-  return !!(v && v.root.visible !== false && (!s || s.settled >= s.started));
-}, { timeout: 60000, polling: 100 });
+await page.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
+await page.waitForFunction("window.__GAME_READY === true", { timeout: 120000 });
+// boot hero ready before the walk starts (GLB staging retired — procedural
+// fleet, W09-D: the __GLB_STATS queue term is gone)
+await page.waitForFunction(
+  () => {
+    const D = window.__DEBUG;
+    const v = D && D.pedestalVisual;
+    return !!(v && v.root.visible !== false);
+  },
+  { timeout: 60000, polling: 100 },
+);
 await sleep(2000);
-console.log('[gen2-verify] boot ready');
+console.log("[gen2-verify] boot ready");
 
 const shoot = async (name) => {
-  writeFileSync(`${OUT}/${name}.png`, await page.screenshot({ type: 'png' }));
+  writeFileSync(`${OUT}/${name}.png`, await page.screenshot({ type: "png" }));
   console.log(`  shot ${name}.png`);
 };
 
 // ---------------------------------------------------------------------------
 // Phase 1 — garage: chip, card, hero GLB, per-tank screenshot
 // ---------------------------------------------------------------------------
-console.log('[gen2-verify] phase 1: garage walk');
+console.log("[gen2-verify] phase 1: garage walk");
 const clickSel = async (selector) => {
   const box = await page.evaluate((sel) => {
     const el = document.querySelector(sel);
     if (!el) return null;
-    el.scrollIntoView({ block: 'nearest', inline: 'center' });
+    el.scrollIntoView({ block: "nearest", inline: "center" });
     const b = el.getBoundingClientRect();
     return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
   }, selector);
@@ -109,16 +132,19 @@ for (const [id, chip] of Object.entries(WAVE8)) {
   const cardInfo = await page.evaluate((tid) => {
     const card = document.querySelector(`.cot-card[data-spec-id="${tid}"]`);
     if (!card) return { present: false };
-    const img = card.querySelector('img.ti');
+    const img = card.querySelector("img.ti");
     return {
       present: true,
-      visible: card.style.display !== 'none',
-      icon: !!(img && img.getAttribute('src')),
-      nation: card.querySelector('.flag i')?.textContent || null,
-      flagIcon: !!card.querySelector('.flag img.cot-flag[data-country-code]'),
+      visible: card.style.display !== "none",
+      icon: !!(img && img.getAttribute("src")),
+      nation: card.querySelector(".flag i")?.textContent || null,
+      flagIcon: !!card.querySelector(".flag img.cot-flag[data-country-code]"),
     };
   }, id);
-  if (!cardInfo.present) { fail(`${id}: no carousel card`); continue; }
+  if (!cardInfo.present) {
+    fail(`${id}: no carousel card`);
+    continue;
+  }
   if (!cardInfo.visible) fail(`${id}: card hidden under chip '${chip}'`);
   if (!cardInfo.icon) fail(`${id}: card has no icon src`);
   if (!cardInfo.flagIcon) fail(`${id}: card has no official nation flag icon`);
@@ -129,20 +155,30 @@ for (const [id, chip] of Object.entries(WAVE8)) {
   // convergence + GLB settle (contract from garage-switch-probe)
   let conv = null;
   try {
-    await page.waitForFunction((tid) => {
-      const D = window.__DEBUG;
-      const v = D && D.pedestalVisual;
-      const s = window.__GLB_STATS;
-      return !!(v && D.selectedSpecId === tid && v.specId === tid &&
-        v.root.parent && v.root.visible !== false &&
-        v.root.children.length > 0 && (!s || s.settled >= s.started));
-    }, { timeout: 30000, polling: 120 }, id);
+    await page.waitForFunction(
+      (tid) => {
+        const D = window.__DEBUG;
+        const v = D && D.pedestalVisual;
+        return !!(
+          v &&
+          D.selectedSpecId === tid &&
+          v.specId === tid &&
+          v.root.parent &&
+          v.root.visible !== false &&
+          v.root.children.length > 0
+        );
+      },
+      { timeout: 30000, polling: 120 },
+      id,
+    );
     await sleep(700); // let the turntable/paint settle for the capture
     conv = await page.evaluate(() => {
       const D = window.__DEBUG;
       const v = D.pedestalVisual;
       let glb = false;
-      v.root.traverse((o) => { if (o.userData && o.userData.__glbSwapped) glb = true; });
+      v.root.traverse((o) => {
+        if (o.userData && o.userData.__glbSwapped) glb = true;
+      });
       return { id: v.specId, glb };
     });
   } catch (e) {
@@ -154,13 +190,17 @@ for (const [id, chip] of Object.entries(WAVE8)) {
   // (t80/t80b/t80bv/t84/m60a2/vickers_mk1...) legitimately play our custom
   // procedural build, so the old all-GLB wave assertion went stale.
   const wantGlb = await page.evaluate(async (tid) => {
-    const m = await import('/src/vehicles/specs.js');
-    return (m.MODEL_SOURCE[tid] && m.MODEL_SOURCE[tid].source) === 'glb';
+    const m = await import("/src/vehicles/specs.js");
+    return (m.MODEL_SOURCE[tid] && m.MODEL_SOURCE[tid].source) === "glb";
   }, id);
   if (conv.glb !== wantGlb) {
-    fail(`${id}: hero ${conv.glb ? 'IS' : 'is NOT'} a sourced GLB but runtime MODEL_SOURCE says ${wantGlb ? 'glb' : 'procedural'}`);
+    fail(
+      `${id}: hero ${conv.glb ? "IS" : "is NOT"} a sourced GLB but runtime MODEL_SOURCE says ${wantGlb ? "glb" : "procedural"}`,
+    );
   } else {
-    ok(`${id}: chip '${chip}' · card+icon+flag (${cardInfo.nation}) · ${wantGlb ? 'GLB' : 'custom procedural'} hero on pedestal`);
+    ok(
+      `${id}: chip '${chip}' · card+icon+flag (${cardInfo.nation}) · ${wantGlb ? "GLB" : "custom procedural"} hero on pedestal`,
+    );
   }
   await shoot(`garage_${id}`);
 }
@@ -169,18 +209,24 @@ for (const [id, chip] of Object.entries(WAVE8)) {
 // Phase 2 — battle E2E in a wave-8 vehicle: drive + fire
 // ---------------------------------------------------------------------------
 console.log(`[gen2-verify] phase 3: battle E2E in ${BATTLE_ID}`);
-await clickSel(`.cot-country-chip[data-country="${WAVE8[BATTLE_ID] || 'ru'}"]`);
+await clickSel(`.cot-country-chip[data-country="${WAVE8[BATTLE_ID] || "ru"}"]`);
 await sleep(250);
 await clickSel(`.cot-card[data-spec-id="${BATTLE_ID}"]`);
-await page.waitForFunction((tid) =>
-  window.__DEBUG && window.__DEBUG.selectedSpecId === tid, { timeout: 20000 }, BATTLE_ID);
+await page.waitForFunction(
+  (tid) => window.__DEBUG && window.__DEBUG.selectedSpecId === tid,
+  { timeout: 20000 },
+  BATTLE_ID,
+);
 await sleep(400);
-if (!(await clickSel('.cot-battle'))) fail('BATTLE button not found');
+if (!(await clickSel(".cot-battle"))) fail("BATTLE button not found");
 try {
-  await page.waitForFunction(() => {
-    const D = window.__DEBUG;
-    return D && D.game && D.game.phase === 'battle';
-  }, { timeout: 120000, polling: 200 });
+  await page.waitForFunction(
+    () => {
+      const D = window.__DEBUG;
+      return D && D.game && D.game.phase === "battle";
+    },
+    { timeout: 120000, polling: 200 },
+  );
 } catch (e) {
   const phase = await page.evaluate(() => window.__DEBUG?.game?.phase);
   fail(`battle never staged (phase=${phase}): ${e.message}`);
@@ -195,8 +241,12 @@ const battleInfo = await page.evaluate((tid) => {
     enemies: D.game.tanks.filter((t) => t !== p).map((t) => t.specId),
   };
 }, BATTLE_ID);
-if (battleInfo.playerSpec !== BATTLE_ID) fail(`player spec is ${battleInfo.playerSpec}, wanted ${BATTLE_ID}`);
-else ok(`battle staged: player ${battleInfo.playerSpec} vs [${battleInfo.enemies.join(', ')}]`);
+if (battleInfo.playerSpec !== BATTLE_ID)
+  fail(`player spec is ${battleInfo.playerSpec}, wanted ${BATTLE_ID}`);
+else
+  ok(
+    `battle staged: player ${battleInfo.playerSpec} vs [${battleInfo.enemies.join(", ")}]`,
+  );
 
 // drive: W for 2.6 s must displace the hull. NO canvas focus-click here —
 // LMB in battle FIRES, and the accidental round put the aimed shot below
@@ -206,35 +256,51 @@ const pos0 = await page.evaluate(() => {
   const r = p.visual && p.visual.root;
   return r ? [r.position.x, r.position.z] : null;
 });
-await page.keyboard.down('KeyW');
+await page.keyboard.down("KeyW");
 await sleep(2600);
-await page.keyboard.up('KeyW');
+await page.keyboard.up("KeyW");
 const pos1 = await page.evaluate(() => {
   const p = window.__DEBUG.game.player;
   const r = p.visual && p.visual.root;
   return r ? [r.position.x, r.position.z] : null;
 });
-const dist = pos0 && pos1 ? Math.hypot(pos1[0] - pos0[0], pos1[1] - pos0[1]) : 0;
+const dist =
+  pos0 && pos1 ? Math.hypot(pos1[0] - pos0[0], pos1[1] - pos0[1]) : 0;
 if (dist < 3) fail(`drive: hull moved only ${dist.toFixed(2)} m under W`);
 else ok(`drive: hull displaced ${dist.toFixed(1)} m under W`);
 
 // fire: aim at the nearest enemy, LMB, expect a playerShellLog row (retry
 // once after a full reload period in case an input replay burned the round)
-const shells0 = await page.evaluate(() => (window.__DEBUG.playerShellLog || []).length);
-await page.evaluate(() => window.__DEBUG.aimAtNearest && window.__DEBUG.aimAtNearest());
+const shells0 = await page.evaluate(
+  () => (window.__DEBUG.playerShellLog || []).length,
+);
+await page.evaluate(
+  () => window.__DEBUG.aimAtNearest && window.__DEBUG.aimAtNearest(),
+);
 await sleep(900);
-await page.mouse.down(); await sleep(90); await page.mouse.up();
+await page.mouse.down();
+await sleep(90);
+await page.mouse.up();
 await sleep(1200);
-let shells1 = await page.evaluate(() => (window.__DEBUG.playerShellLog || []).length);
+let shells1 = await page.evaluate(
+  () => (window.__DEBUG.playerShellLog || []).length,
+);
 if (shells1 <= shells0) {
   await sleep(8000); // longest wave-8 reload is the M60A2's 11.5 s — t84 is 6.8
-  await page.evaluate(() => window.__DEBUG.aimAtNearest && window.__DEBUG.aimAtNearest());
+  await page.evaluate(
+    () => window.__DEBUG.aimAtNearest && window.__DEBUG.aimAtNearest(),
+  );
   await sleep(400);
-  await page.mouse.down(); await sleep(90); await page.mouse.up();
+  await page.mouse.down();
+  await sleep(90);
+  await page.mouse.up();
   await sleep(1200);
-  shells1 = await page.evaluate(() => (window.__DEBUG.playerShellLog || []).length);
+  shells1 = await page.evaluate(
+    () => (window.__DEBUG.playerShellLog || []).length,
+  );
 }
-if (shells1 <= shells0) fail(`fire: playerShellLog did not grow (${shells0} -> ${shells1})`);
+if (shells1 <= shells0)
+  fail(`fire: playerShellLog did not grow (${shells0} -> ${shells1})`);
 else ok(`fire: shell logged (${shells0} -> ${shells1})`);
 await shoot(`battle_${BATTLE_ID}`);
 
@@ -245,7 +311,9 @@ if (pageErrors.length) {
 }
 await browser.close();
 await server.close();
-console.log(failures
-  ? `[gen2-verify] FAIL — ${failures} problem(s)`
-  : '[gen2-verify] PASS — garage walk and battle E2E both clean');
+console.log(
+  failures
+    ? `[gen2-verify] FAIL — ${failures} problem(s)`
+    : "[gen2-verify] PASS — garage walk and battle E2E both clean",
+);
 process.exit(failures ? 1 : 0);

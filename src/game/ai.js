@@ -15,20 +15,27 @@
  * `dt` / `timeS` parameters.
  */
 
-import { Euler, Quaternion, Vector3 } from 'three';
-import { computeDispersionRadM } from '../sim/movement.js';
-import { solveBallisticGunLay } from '../sim/ballistics.js';
-import { tankPoseFromState, queryAimArmor } from '../sim/armor.js';
-import { blastRadiusM, estimatePenRatio, isHeClass } from '../sim/damage.js';
-import { terrainTravelCostFactor } from '../sim/terrainMobility.js';
+import { Euler, Quaternion, Vector3 } from "three";
+import { computeDispersionRadM } from "../sim/movement.js";
+import { solveBallisticGunLay } from "../sim/ballistics.js";
+import { tankPoseFromState, queryAimArmor } from "../sim/armor.js";
+import { blastRadiusM, estimatePenRatio, isHeClass } from "../sim/damage.js";
+import { terrainTravelCostFactor } from "../sim/terrainMobility.js";
 
 /**
  * Canonical deterministic PRNG (ARCHITECTURE.md §1.4, copied verbatim).
  * @param {number} a seed
  * @returns {() => number} generator of floats in [0,1)
  */
-export function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
-  t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+export function mulberry32(a) {
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -50,12 +57,39 @@ const DIFFICULTY_TIERS = {
   // (~350-450 m on every map) or bots idle outside it while spotted targets
   // trade: r7 raised normal 330→400 and hard 420→500 so a known contact is
   // always worth advancing on at full throttle.
-  easy:   { fireFactor: 0.6, reactionS: 1.2, aimErrMult: 2.0, playerSpreadMult: 1.3, probeLevel: 0, engageRangeM: 300, holdRangeM: 180, coverIQ: 0.35 },
+  easy: {
+    fireFactor: 0.6,
+    reactionS: 1.2,
+    aimErrMult: 2.0,
+    playerSpreadMult: 1.3,
+    probeLevel: 0,
+    engageRangeM: 300,
+    holdRangeM: 180,
+    coverIQ: 0.35,
+  },
   // Shared-combat r1: normal is the default live battle tier. Faster target
   // confirmation, tighter lays and stronger reload-cover discipline make
   // both allied and enemy bots competent without hard-tier perfect aim.
-  normal: { fireFactor: 1.0, reactionS: 0.55, aimErrMult: 1.25, playerSpreadMult: 0.85, probeLevel: 1, engageRangeM: 450, holdRangeM: 260, coverIQ: 0.82 },
-  hard:   { fireFactor: 1.2, reactionS: 0.3, aimErrMult: 1.0, playerSpreadMult: 0,   probeLevel: 2, engageRangeM: 500, holdRangeM: 300, coverIQ: 1.0  },
+  normal: {
+    fireFactor: 1.0,
+    reactionS: 0.55,
+    aimErrMult: 1.25,
+    playerSpreadMult: 0.85,
+    probeLevel: 1,
+    engageRangeM: 450,
+    holdRangeM: 260,
+    coverIQ: 0.82,
+  },
+  hard: {
+    fireFactor: 1.2,
+    reactionS: 0.3,
+    aimErrMult: 1.0,
+    playerSpreadMult: 0,
+    probeLevel: 2,
+    engageRangeM: 500,
+    holdRangeM: 300,
+    coverIQ: 1.0,
+  },
 };
 
 /**
@@ -65,8 +99,19 @@ const DIFFICULTY_TIERS = {
  */
 const PROBE_SETS = [
   [[0.48, 0]],
-  [[0.48, 0], [0.28, 0]],
-  [[0.48, 0], [0.28, 0], [0.72, 0], [0.5, 0.28], [0.5, -0.28], [0.32, 0.28], [0.32, -0.28]],
+  [
+    [0.48, 0],
+    [0.28, 0],
+  ],
+  [
+    [0.48, 0],
+    [0.28, 0],
+    [0.72, 0],
+    [0.5, 0.28],
+    [0.5, -0.28],
+    [0.32, 0.28],
+    [0.32, -0.28],
+  ],
 ];
 
 /**
@@ -85,14 +130,14 @@ const PROBE_SETS = [
  */
 export function roleOf(spec) {
   const c = spec && spec.class;
-  if (c === 'light' || c === 'ifv') return 'scout';
-  if (c === 'td' || c === 'spg') return 'sniper';
-  if (c === 'heavy') return 'brawler';
-  if (c === 'mbt') {
+  if (c === "light" || c === "ifv") return "scout";
+  if (c === "td" || c === "spg") return "sniper";
+  if (c === "heavy") return "brawler";
+  if (c === "mbt") {
     const pw = (spec.enginePowerHp || 0) / Math.max(1, spec.weightTons || 1);
-    return (spec.topSpeedKmh >= 66 && pw >= 21) ? 'flanker' : 'brawler';
+    return spec.topSpeedKmh >= 66 && pw >= 21 ? "flanker" : "brawler";
   }
-  return 'flanker'; // medium + unknown classes
+  return "flanker"; // medium + unknown classes
 }
 
 /**
@@ -109,8 +154,8 @@ export function roleOf(spec) {
 const ROLE_TUNE = {
   brawler: { hold: 0.72, engage: 1.0, cover: 0.75, angle: 0.5, scootAfter: 2 },
   flanker: { hold: 1.0, engage: 1.0, cover: 1.15, angle: 0.18, scootAfter: 1 },
-  sniper:  { hold: 1.5, engage: 1.15, cover: 1.3, angle: 0, scootAfter: 1 },
-  scout:   { hold: 1.15, engage: 1.0, cover: 0.9, angle: 0, scootAfter: 1 },
+  sniper: { hold: 1.5, engage: 1.15, cover: 1.3, angle: 0, scootAfter: 1 },
+  scout: { hold: 1.15, engage: 1.0, cover: 0.9, angle: 0, scootAfter: 1 },
 };
 // scout kiting: closer than this to any live opponent → break off and orbit
 const SCOUT_KITE_M = 130;
@@ -137,31 +182,31 @@ const FRIENDLY_PREDICT_MAX_S = 1.5;
 const FRIENDLY_LANE_RELOCATE_S = 1.2;
 const FRIENDLY_SEPARATION_LOOK_M = 18;
 
-const LOS_INTERVAL_S    = 0.14;   // target-acquisition / LOS cadence
-const PROBE_INTERVAL_S  = 0.55;   // weak-spot + shell-slot probe cadence
-const COVER_INTERVAL_S  = 6.0;    // hull-down re-search cadence
-const OBSTACLE_REFRESH_S = 5.0;   // static AABB cache refresh
-const TARGET_MEMORY_S   = 5.0;    // chase last-seen position this long after LOS loss
-const FLANK_TIMEOUT_S   = 20.0;
-const FLANK_ASPECT_RAD  = Math.PI / 3;  // 60° off target nose = flank achieved
-const STUCK_TIME_S      = 2.0;
-const UNSTICK_TIME_S    = 1.4;
+const LOS_INTERVAL_S = 0.14; // target-acquisition / LOS cadence
+const PROBE_INTERVAL_S = 0.55; // weak-spot + shell-slot probe cadence
+const COVER_INTERVAL_S = 6.0; // hull-down re-search cadence
+const OBSTACLE_REFRESH_S = 5.0; // static AABB cache refresh
+const TARGET_MEMORY_S = 5.0; // chase last-seen position this long after LOS loss
+const FLANK_TIMEOUT_S = 20.0;
+const FLANK_ASPECT_RAD = Math.PI / 3; // 60° off target nose = flank achieved
+const STUCK_TIME_S = 2.0;
+const UNSTICK_TIME_S = 1.4;
 const SLOPE_BLOCK_RECOVERY_S = 0.35;
 const TERRAIN_ROUTE_LOOK_M = 28;
 const TERRAIN_ROUTE_STEP_M = 4;
 const TERRAIN_ROUTE_FAN_RAD = Object.freeze([
   0.42, -0.42, 0.78, -0.78, 1.12, -1.12, 1.48, -1.48,
 ]);
-const GUN_LIMIT_NUDGE_S = 1.5;    // gun pinned this long → back up for depression
-const EYE_FRAC          = 0.85;   // eye/turret-top height as fraction of heightM
-const ARRIVE_DIST_M     = 6.0;
-const MAX_FIRE_RANGE_M  = 620;
+const GUN_LIMIT_NUDGE_S = 1.5; // gun pinned this long → back up for depression
+const EYE_FRAC = 0.85; // eye/turret-top height as fraction of heightM
+const ARRIVE_DIST_M = 6.0;
+const MAX_FIRE_RANGE_M = 620;
 // UNDER-FIRE REACTION + PLAYER THREAT (controls_gunnery r2): being shot
 // reveals the shooter for a chase window, and the PLAYER's distance is
 // weighted down during target selection so enemy aggression doesn't all
 // drain onto the allied bots pushing ahead of the player (r2 critic: enemies
 // fired 21-34 shells across three battles, zero directed at the player).
-const UNDER_FIRE_WINDOW_S = 15;       // chase/engage window after a team hit
+const UNDER_FIRE_WINDOW_S = 15; // chase/engage window after a team hit
 const UNDER_FIRE_RANGE_BONUS_M = 180; // engage-envelope extension toward the shooter
 const PLAYER_THREAT_DIST_MULT = 0.35; // player counts as 35% of its true d² when ranking targets
 // PLAYER ATTACKER-OF-RECORD (controls_gunnery r4): the single underFire slot
@@ -195,8 +240,8 @@ const MUZZLE_INTEL_WINDOW_S = 18;
 // zero shells returned). Repeat shots escalate the window so the chase
 // survives the drive.
 const MUZZLE_INTEL_REPEAT_WINDOW_S = 45;
-const STALEMATE_SILENT_S = 12;   // no shot fired this long w/ contact → push
-const STALEMATE_PUSH_S = 8;      // duration of one forced push window
+const STALEMATE_SILENT_S = 12; // no shot fired this long w/ contact → push
+const STALEMATE_PUSH_S = 8; // duration of one forced push window
 // RETURN-FIRE LOCK (controls_gunnery r4): three rounds of aggro plumbing
 // (r4 sticky slot, r5 muzzle intel + hard-commit) still measured 76 enemy
 // shells / 2 aimed at the player / 0 hits across 5 battles. Two remaining
@@ -210,7 +255,7 @@ const STALEMATE_PUSH_S = 8;      // duration of one forced push window
 // as target outright for PLAYER_LOCK_S — no d² ally bias, no cover roll, no
 // memory expiry — refreshed on every subsequent player shot.
 const PLAYER_LOCK_S = 9;
-const PLAYER_LOCK_RANK = 2;      // the three nearest earshot enemies qualify
+const PLAYER_LOCK_RANK = 2; // the three nearest earshot enemies qualify
 // PLAYER PRIORITY BUMP + FIRST-AIMED-SHOT BUDGET (controls_gunnery r6): with
 // the player parked FULLY BROADSIDE in the open at 196 m, botPressure showed
 // aimedAtPlayer stuck at 0 for 30+ s while the bots put 11 shells into the
@@ -221,8 +266,8 @@ const PLAYER_LOCK_RANK = 2;      // the three nearest earshot enemies qualify
 // CLAIMED as target within PLAYER_ENGAGE_BUDGET_S — WoT bots punish a
 // stationary flank at 200 m in seconds, not minutes.
 const PLAYER_NEAR_BONUS_D2 = 300 * 300; // priority x2 (d² x0.5) inside 300 m
-const PLAYER_ENGAGE_BUDGET_S = 8;       // max s a visible near player goes unclaimed
-const PLAYER_BUDGET_D2 = 250 * 250;     // budget applies inside 250 m
+const PLAYER_ENGAGE_BUDGET_S = 8; // max s a visible near player goes unclaimed
+const PLAYER_BUDGET_D2 = 250 * 250; // budget applies inside 250 m
 
 // HEADING COMMITMENT (controls_gunnery r3): approach/chase legs used to steer
 // at the LIVE target position every tick, so bots wove continuously (speed
@@ -241,14 +286,17 @@ const _vC = new Vector3();
 const _vD = new Vector3();
 const _vE = new Vector3();
 const _vF = new Vector3();
-const _hullEuler = new Euler(0, 0, 0, 'YXZ');
+const _vG = new Vector3();
+const _hullEuler = new Euler(0, 0, 0, "YXZ");
 const _hullQuat = new Quaternion();
 
 // ---------------------------------------------------------------------------
 // Small math helpers
 // ---------------------------------------------------------------------------
 
-function clamp(x, lo, hi) { return x < lo ? lo : x > hi ? hi : x; }
+function clamp(x, lo, hi) {
+  return x < lo ? lo : x > hi ? hi : x;
+}
 
 function wrapAngle(a) {
   a = (a + Math.PI) % TAU;
@@ -285,32 +333,46 @@ function tankSafetyRadius(ent) {
 export function botFriendlyFireRisk(shooter, aimPoint, shellSpec, candidates) {
   if (!shooter || !shooter.state || !aimPoint || !shellSpec) return null;
   const sp = shooter.state.pos;
-  const sx = sp.x, sz = sp.z;
-  let dx = aimPoint.x - sx, dz = aimPoint.z - sz;
+  const sx = sp.x,
+    sz = sp.z;
+  let dx = aimPoint.x - sx,
+    dz = aimPoint.z - sz;
   const shotLen = Math.hypot(dx, dz);
   if (shotLen < 4) return null;
   dx /= shotLen;
   dz /= shotLen;
   const velocity = Math.max(100, shellSpec.velocityMps || 700);
   const heRadius = isHeClass(shellSpec.type)
-    ? blastRadiusM(shellSpec.caliberMm || 0) : 0;
+    ? blastRadiusM(shellSpec.caliberMm || 0)
+    : 0;
   const list = candidates || [];
 
   for (let i = 0; i < list.length; i++) {
     const ally = list[i];
-    if (!ally || ally === shooter || !ally.state || !ally.spec ||
-        (ally.combat && ally.combat.destroyed)) continue;
-    if (shooter.team != null && ally.team != null && ally.team !== shooter.team) continue;
+    if (
+      !ally ||
+      ally === shooter ||
+      !ally.state ||
+      !ally.spec ||
+      (ally.combat && ally.combat.destroyed)
+    )
+      continue;
+    if (shooter.team != null && ally.team != null && ally.team !== shooter.team)
+      continue;
 
     const ap = ally.state.pos;
-    const relX = ap.x - sx, relZ = ap.z - sz;
+    const relX = ap.x - sx,
+      relZ = ap.z - sz;
     const initialAlong = relX * dx + relZ * dz;
-    const travelS = Math.min(FRIENDLY_PREDICT_MAX_S,
-      Math.max(0, initialAlong) / velocity);
+    const travelS = Math.min(
+      FRIENDLY_PREDICT_MAX_S,
+      Math.max(0, initialAlong) / velocity,
+    );
     const speed = ally.state.speed || 0;
     const ax = ap.x + Math.sin(ally.state.yaw || 0) * speed * travelS;
     const az = ap.z + Math.cos(ally.state.yaw || 0) * speed * travelS;
-    const px = ax - sx, pz = az - sz;
+    const px = ax - sx,
+      pz = az - sz;
     const along = px * dx + pz * dz;
     const radius = tankSafetyRadius(ally);
 
@@ -320,7 +382,11 @@ export function botFriendlyFireRisk(shooter, aimPoint, shellSpec, candidates) {
       const lateral = Math.abs(px * dz - pz * dx);
       const clearance = lateral - radius;
       if (clearance < FRIENDLY_CORRIDOR_PAD_M) {
-        return { allyId: ally.id || '', kind: 'corridor', clearanceM: clearance };
+        return {
+          allyId: ally.id || "",
+          kind: "corridor",
+          clearanceM: clearance,
+        };
       }
     }
 
@@ -328,7 +394,7 @@ export function botFriendlyFireRisk(shooter, aimPoint, shellSpec, candidates) {
       const burstD = Math.hypot(ax - aimPoint.x, az - aimPoint.z);
       const clearance = burstD - radius - heRadius;
       if (clearance < FRIENDLY_HE_PAD_M) {
-        return { allyId: ally.id || '', kind: 'blast', clearanceM: clearance };
+        return { allyId: ally.id || "", kind: "blast", clearanceM: clearance };
       }
     }
   }
@@ -362,28 +428,42 @@ export function botFriendlyFireRisk(shooter, aimPoint, shellSpec, candidates) {
  */
 export function createAI(entity, opts = {}) {
   if (!entity || !entity.spec || !entity.state) {
-    throw new Error('createAI: entity must carry spec and state');
+    throw new Error("createAI: entity must carry spec and state");
   }
   const deps = opts.deps;
-  if (!deps || !deps.heightField || typeof deps.raycast !== 'function' ||
-      typeof deps.getEnemies !== 'function' || typeof deps.getObstacles !== 'function') {
-    throw new Error('createAI: opts.deps must provide heightField, raycast, getEnemies, getObstacles');
+  if (
+    !deps ||
+    !deps.heightField ||
+    typeof deps.raycast !== "function" ||
+    typeof deps.getEnemies !== "function" ||
+    typeof deps.getObstacles !== "function"
+  ) {
+    throw new Error(
+      "createAI: opts.deps must provide heightField, raycast, getEnemies, getObstacles",
+    );
   }
-  const tier = DIFFICULTY_TIERS[opts.difficulty ?? 'normal'];
-  if (!tier) throw new Error(`createAI: unknown difficulty '${opts.difficulty}'`);
-  const rng = typeof opts.rng === 'function' ? opts.rng : mulberry32(DEFAULT_SEED);
+  const tier = DIFFICULTY_TIERS[opts.difficulty ?? "normal"];
+  if (!tier)
+    throw new Error(`createAI: unknown difficulty '${opts.difficulty}'`);
+  const rng =
+    typeof opts.rng === "function" ? opts.rng : mulberry32(DEFAULT_SEED);
   const hfRaw = deps.heightField;
   // perf-r3b: AI terrain probes (cover eval, hull-down checks, LOS eyelines)
   // are pure reads that never seat geometry — serve them from the baked 1 m
   // grid when the heightfield provides one (headless fixtures don't).
   // Prototype delegation (NOT a spread): the live proxy's getters must keep
   // resolving against the active world.
-  const hf = typeof hfRaw.getHeightAtFast === 'function'
-    ? Object.create(hfRaw, { getHeightAt: { value: (x, z) => hfRaw.getHeightAtFast(x, z) } })
-    : hfRaw;
+  const hf =
+    typeof hfRaw.getHeightAtFast === "function"
+      ? Object.create(hfRaw, {
+          getHeightAt: { value: (x, z) => hfRaw.getHeightAtFast(x, z) },
+        })
+      : hfRaw;
   // SPOTTING WIRING: optional concealment gate (absent in headless fixtures)
-  const spotting = deps.spotting && typeof deps.spotting.isSpotted === 'function'
-    ? deps.spotting : null;
+  const spotting =
+    deps.spotting && typeof deps.spotting.isSpotted === "function"
+      ? deps.spotting
+      : null;
   // camo_spotting r2: the under-fire/muzzle-intel windows NO LONGER bypass
   // the concealment formula. Fire reveal now resolves INSIDE the spotting sim
   // (spotting.js: notifyFired pulls the shooter's next check in, and the
@@ -398,7 +478,14 @@ export function createAI(entity, opts = {}) {
 
   // Ensure the shared input record exists (integration normally creates it).
   if (!entity.input) {
-    entity.input = { throttle: 0, steer: 0, brake: false, fire: false, aimPoint: new Vector3(), shellSlot: 0 };
+    entity.input = {
+      throttle: 0,
+      steer: 0,
+      brake: false,
+      fire: false,
+      aimPoint: new Vector3(),
+      shellSlot: 0,
+    };
   } else if (!entity.input.aimPoint) {
     entity.input.aimPoint = new Vector3();
   }
@@ -415,13 +502,17 @@ export function createAI(entity, opts = {}) {
   // splash fallbacks and the no-pen fire gate work on every magazine).
   let heSlot = spec.gun.shells.length - 1;
   for (let i = 0; i < spec.gun.shells.length; i++) {
-    if (spec.gun.shells[i] && isHeClass(spec.gun.shells[i].type)) { heSlot = i; break; }
+    if (spec.gun.shells[i] && isHeClass(spec.gun.shells[i].type)) {
+      heSlot = i;
+      break;
+    }
   }
   const angleRad = casemate ? 0 : tune.angle;
   const roleEngageR = () => tier.engageRangeM * tune.engage;
   const roleHoldR = () =>
     Math.min(tier.holdRangeM * tune.hold, roleEngageR() - 60);
-  const getAllies = typeof deps.getAllies === 'function' ? deps.getAllies : null;
+  const getAllies =
+    typeof deps.getAllies === "function" ? deps.getAllies : null;
   const selfEyeM = spec.dims.heightM * EYE_FRAC;
   // A real match opens with a deployment/read phase, not both teams driving
   // straight into an immediate DPM check.  Roles release progressively:
@@ -429,33 +520,44 @@ export function createAI(entity, opts = {}) {
   // overwatch.  Close contacts still trigger a fight, and return-fire/aggro
   // paths intentionally bypass this gate, so this is tactics rather than an
   // invulnerability timer.
-  const deploymentUntilS = role === 'scout' ? 120
-    : role === 'flanker' ? 135
-      : role === 'brawler' ? 150 : 165;
-  const deploymentEngageM = role === 'scout' ? 100
-    : role === 'flanker' ? 95
-      : role === 'brawler' ? 90 : 85;
+  const deploymentUntilS =
+    role === "scout"
+      ? 120
+      : role === "flanker"
+        ? 135
+        : role === "brawler"
+          ? 150
+          : 165;
+  const deploymentEngageM =
+    role === "scout"
+      ? 100
+      : role === "flanker"
+        ? 95
+        : role === "brawler"
+          ? 90
+          : 85;
   // Gun trunnion height above ground contact — the movement sim aims the
   // barrel from here (movement.js gunPivotHeight), so the alignment gate must
   // measure the wanted pitch from the same origin, not from the eye point.
-  const selfGunM = spec.armor && spec.armor.turretPivot && spec.armor.gunPivot
-    ? spec.armor.turretPivot[1] + spec.armor.gunPivot[1]
-    : spec.dims.heightM * 0.85;
+  const selfGunM =
+    spec.armor && spec.armor.turretPivot && spec.armor.gunPivot
+      ? spec.armor.turretPivot[1] + spec.armor.gunPivot[1]
+      : spec.dims.heightM * 0.85;
 
   // ---- persistent controller state ----------------------------------------
-  let mode = 'patrol';                       // 'patrol'|'engage'|'seekCover'|'flank'
-  let target = null;                         // TankEntity or null
+  let mode = "patrol"; // 'patrol'|'engage'|'seekCover'|'flank'
+  let target = null; // TankEntity or null
   let losClear = false;
-  let acquiredAtS = -Infinity;               // when current target was first seen
+  let acquiredAtS = -Infinity; // when current target was first seen
   let lastSeenAtS = -Infinity;
   const lastSeen = { x: 0, z: 0 };
 
-  const waypoints = [];                      // [{x,z}] patrol route
+  const waypoints = []; // [{x,z}] patrol route
   let wpIndex = 0;
   let autoPatrolBuilt = false;
   let loopWaypoints = true;
 
-  const moveTarget = { x: 0, z: 0 };         // hull-down / approach point
+  const moveTarget = { x: 0, z: 0 }; // hull-down / approach point
   let hasMoveTarget = false;
   // LOS vantage seek: when the bot KNOWS where the enemy is (team intel)
   // but its own ray is blocked for a while, beelining lastSeen just parks
@@ -469,8 +571,10 @@ export function createAI(entity, opts = {}) {
   // otherwise re-picks the exact same cell and the bot loops {pick, wedge,
   // drop, re-pick} for half a minute (winter is1 trace: 29 s at one wall).
   const vantageVeto = [
-    { x: 0, z: 0, untilS: -1 }, { x: 0, z: 0, untilS: -1 },
-    { x: 0, z: 0, untilS: -1 }, { x: 0, z: 0, untilS: -1 },
+    { x: 0, z: 0, untilS: -1 },
+    { x: 0, z: 0, untilS: -1 },
+    { x: 0, z: 0, untilS: -1 },
+    { x: 0, z: 0, untilS: -1 },
   ];
   let vantageVetoIdx = 0;
   function vetoVantage() {
@@ -500,10 +604,14 @@ export function createAI(entity, opts = {}) {
   let lastPlayerEngageS = 0;
   const coverPoint = { x: 0, z: 0 };
   let hasCoverPoint = false;
-  let coverRollPassed = false;               // coverIQ roll for the current reload cycle
+  let coverRollPassed = false; // coverIQ roll for the current reload cycle
   let coverRolled = false;
 
-  const flankPoints = [{ x: 0, z: 0 }, { x: 0, z: 0 }, { x: 0, z: 0 }];
+  const flankPoints = [
+    { x: 0, z: 0 },
+    { x: 0, z: 0 },
+    { x: 0, z: 0 },
+  ];
   let flankIndex = 0;
   let flankUntilS = 0;
   let nonPenCount = 0;
@@ -515,8 +623,8 @@ export function createAI(entity, opts = {}) {
   let shotsFromSpot = 0;
   const scootPoint = { x: 0, z: 0 };
   let scootUntilS = -1;
-  let relocations = 0;   // probe-visible shoot-and-scoot counter
-  let prevReloadT = 0;   // reload-edge watch (a jump up = a shot left the gun)
+  let relocations = 0; // probe-visible shoot-and-scoot counter
+  let prevReloadT = 0; // reload-edge watch (a jump up = a shot left the gun)
   // universal retreat-toward-support (tracked/low): time-boxed reverse window
   const fallbackPoint = { x: 0, z: 0 };
   let fallbackUntilS = -1;
@@ -550,11 +658,11 @@ export function createAI(entity, opts = {}) {
   let friendlyBlockCount = 0;
   let friendlyLaneMoves = 0;
   let lastFriendlyRisk = null;
-  let underFire = null;            // shooter entity revealed by hitting us/a teammate
+  let underFire = null; // shooter entity revealed by hitting us/a teammate
   let underFireUntilS = -Infinity; // reaction window end (sim seconds)
-  let playerAggro = null;          // sticky PLAYER attacker-of-record (r4)
+  let playerAggro = null; // sticky PLAYER attacker-of-record (r4)
   let playerAggroUntilS = -Infinity;
-  let playerShotsInWindow = 0;     // player shots inside the live intel window (r2)
+  let playerShotsInWindow = 0; // player shots inside the live intel window (r2)
   let playerLockUntilS = -Infinity; // RETURN-FIRE LOCK window (r4, see tuning)
   // PLAYER-HUNTER BIAS (controls_gunnery r4): r3's flat 0.35 d² weighting
   // still let every bot farm the closer allied escorts while the player
@@ -582,7 +690,7 @@ export function createAI(entity, opts = {}) {
   let playerPitchRad = 0;
 
   // Timers (count down with dt).
-  let losTimer = rng() * LOS_INTERVAL_S;     // stagger AI work across ticks
+  let losTimer = rng() * LOS_INTERVAL_S; // stagger AI work across ticks
   let probeTimer = rng() * PROBE_INTERVAL_S;
   let coverTimer = 0;
   let errTimer = 0;
@@ -602,7 +710,7 @@ export function createAI(entity, opts = {}) {
   let progZ = entity.state.pos.z;
   let progressRate = 2; // m/s EMA of real displacement
   let stuckStrikes = 0; // consecutive unstick cycles without real progress
-  let freeMoveT = 0;    // r7: sustained-free-movement clock (strike clearing)
+  let freeMoveT = 0; // r7: sustained-free-movement clock (strike clearing)
   // Blocked-route detour: after repeated strikes the straight line is a
   // wall/rock face — drive at a sideways-offset ghost target for a few
   // seconds (side flips on the next strike) so the route bends around the
@@ -611,7 +719,7 @@ export function createAI(entity, opts = {}) {
   let detourSide = 1;
   let gunLimitT = 0;
   let nudgeUntilS = -1;
-  let arcLimitedT = 0;              // gun pinned at an elevation/depression stop
+  let arcLimitedT = 0; // gun pinned at an elevation/depression stop
   // STALEMATE BREAKER (controls_gunnery r5): mid-battle enemy fire rate
   // collapsed to 1-2 shells/10 s (bots posturing in patrol/seekCover with
   // live contacts). Track the last time the trigger was actually pulled;
@@ -624,18 +732,20 @@ export function createAI(entity, opts = {}) {
   // instead of endlessly rolling hull-down/cover searches between shots.
   // BATTLE-AI r7: role-scaled — snipers/flankers duck between shots more
   // (reload discipline), brawlers hold the line they pushed.
-  const effCoverIQ = () => (nowS < pressUntilS
-    ? 0
-    : clamp(tier.coverIQ * tune.cover, 0, 1) * clamp(1.15 - nowS / 240, 0.35, 1));
+  const effCoverIQ = () =>
+    nowS < pressUntilS
+      ? 0
+      : clamp(tier.coverIQ * tune.cover, 0, 1) *
+        clamp(1.15 - nowS / 240, 0.35, 1);
 
-  const scanPhase = rng() * TAU;             // idle turret sweep phase
+  const scanPhase = rng() * TAU; // idle turret sweep phase
   // r4: per-controller vantage fan bias — clustered bots hunting the same
   // contact used to fan identical bearings, converge on one candidate and
   // wedge against each other at full throttle (probe: thr=1.0, spd=0.1).
   const vantageBias = (rng() - 0.5) * 0.9;
   let obstacles = deps.getObstacles();
   const nearbyObstacles = [];
-  let nowS = 0;                              // last timeS seen by update()
+  let nowS = 0; // last timeS seen by update()
 
   resampleAimError();
 
@@ -645,7 +755,7 @@ export function createAI(entity, opts = {}) {
     const m = tier.aimErrMult;
     const extra = Math.sqrt(Math.max(0, m * m - 1));
     // Fully-aimed sigma in radians: baseAccuracy is 2σ @ 100 m (§3.5.1 lock).
-    const sigma = ((spec.gun.baseAccuracy / 2) / 100) * extra;
+    const sigma = (spec.gun.baseAccuracy / 2 / 100) * extra;
     errYawRad = gauss(rng) * sigma;
     errPitchRad = gauss(rng) * sigma;
     // camo_spotting r5: blind-fire spread — shelling a REMEMBERED muzzle
@@ -654,10 +764,10 @@ export function createAI(entity, opts = {}) {
     // 1.0 makes the tier sigma exactly zero; ~10 mrad yaw / 6 mrad pitch
     // puts a 2.5 m sigma on a 250 m blind shot — real suppression, not a
     // laser.
-    blindYawRad = gauss(rng) * 0.010;
+    blindYawRad = gauss(rng) * 0.01;
     blindPitchRad = gauss(rng) * 0.006;
     playerYawRad = gauss(rng) * 0.0045;
-    playerPitchRad = gauss(rng) * 0.0030;
+    playerPitchRad = gauss(rng) * 0.003;
     errTimer = 1.1 + rng() * 0.5;
   }
 
@@ -712,13 +822,17 @@ export function createAI(entity, opts = {}) {
     return !hit || hit.dist > dist - 2.0;
   }
 
-  function eyeY(e) { return e.state.pos.y + e.spec.dims.heightM * EYE_FRAC; }
+  function eyeY(e) {
+    return e.state.pos.y + e.spec.dims.heightM * EYE_FRAC;
+  }
 
   function acquireTarget(timeS) {
     const st = entity.state;
     const list = aliveEnemies();
     refreshFocusCounts();
-    const ex = st.pos.x, ey = st.pos.y + selfEyeM, ez = st.pos.z;
+    const ex = st.pos.x,
+      ey = st.pos.y + selfEyeM,
+      ez = st.pos.z;
 
     // RETURN-FIRE LOCK (controls_gunnery r4): a live lock — or a live
     // REPEAT-OFFENDER window (2+ muzzle flashes from one position: the bots
@@ -732,9 +846,12 @@ export function createAI(entity, opts = {}) {
     // geometrically clear 250 m ray (r4 unstaged probe). Scope-limited to
     // the self-revealed repeat offender + time-boxed windows, per the r2
     // hardClaim precedent — a one-shot ambusher stays camo-protected.
-    if (playerAggro && enemyAlive(playerAggro) &&
-        (timeS < playerLockUntilS ||
-         (playerShotsInWindow >= 2 && timeS < playerAggroUntilS))) {
+    if (
+      playerAggro &&
+      enemyAlive(playerAggro) &&
+      (timeS < playerLockUntilS ||
+        (playerShotsInWindow >= 2 && timeS < playerAggroUntilS))
+    ) {
       const pp = playerAggro.state.pos;
       if (target !== playerAggro) {
         target = playerAggro;
@@ -752,7 +869,8 @@ export function createAI(entity, opts = {}) {
       // stamped (refreshed per shot) and aimAndFire's blind-lock path
       // shells that point with blind-fire spread instead.
       if (isVisibleToTeam(playerAggro)) {
-        lastSeen.x = pp.x; lastSeen.z = pp.z;
+        lastSeen.x = pp.x;
+        lastSeen.z = pp.z;
         lastSeenAtS = timeS;
       }
       return;
@@ -767,25 +885,30 @@ export function createAI(entity, opts = {}) {
     // while the player IS the target, so bots alternate between the human
     // and the escorts instead of permanently tunneling either. No wallhack:
     // spotting gate + personal ray both still required.
-    if ((!target || !target.isPlayer) &&
-        timeS - lastPlayerEngageS > PLAYER_ENGAGE_BUDGET_S) {
+    if (
+      (!target || !target.isPlayer) &&
+      timeS - lastPlayerEngageS > PLAYER_ENGAGE_BUDGET_S
+    ) {
       for (let i = 0; i < list.length; i++) {
         const p = list[i];
         if (!p || !p.isPlayer) continue;
         if (!enemyAlive(p) || !isVisibleToTeam(p)) break;
         if ((focusCounts.get(p.id) || 0) >= 1) break;
         const pp = p.state.pos;
-        const bdx = pp.x - ex, bdz = pp.z - ez;
-        const budgetD2 = timeS < deploymentUntilS
-          ? Math.min(PLAYER_BUDGET_D2, deploymentEngageM * deploymentEngageM)
-          : PLAYER_BUDGET_D2;
+        const bdx = pp.x - ex,
+          bdz = pp.z - ez;
+        const budgetD2 =
+          timeS < deploymentUntilS
+            ? Math.min(PLAYER_BUDGET_D2, deploymentEngageM * deploymentEngageM)
+            : PLAYER_BUDGET_D2;
         if (bdx * bdx + bdz * bdz > budgetD2) break;
         if (!hasLos(ex, ey, ez, pp.x, eyeY(p), pp.z)) break;
         target = p;
         losClear = true;
         acquiredAtS = timeS;
         lastSeenAtS = timeS;
-        lastSeen.x = pp.x; lastSeen.z = pp.z;
+        lastSeen.x = pp.x;
+        lastSeen.z = pp.z;
         nonPenCount = 0;
         probeTimer = 0;
         return;
@@ -800,10 +923,11 @@ export function createAI(entity, opts = {}) {
     // seconds, so the player's claim never survived to an LOS tick (probe:
     // 5 player shots, 3 hits, zero shells back in 90 s).
     const aggro =
-      (playerAggro && timeS < playerAggroUntilS && enemyAlive(playerAggro))
+      playerAggro && timeS < playerAggroUntilS && enemyAlive(playerAggro)
         ? playerAggro
-        : (underFire && timeS < underFireUntilS && enemyAlive(underFire))
-          ? underFire : null;
+        : underFire && timeS < underFireUntilS && enemyAlive(underFire)
+          ? underFire
+          : null;
     if (aggro && aggro !== target) {
       const up = aggro.state.pos;
       // camo_spotting r2: the aggro slot only takes the target slot when the
@@ -815,8 +939,10 @@ export function createAI(entity, opts = {}) {
       // a personal ray — repeated muzzle flash/tracer from one position is
       // unambiguous intel, and the blocked-LOS engage path converts the
       // claim into a vantage push (2 s hard commit for player targets).
-      const seen = isVisibleToTeam(aggro) && hasLos(ex, ey, ez, up.x, eyeY(aggro), up.z);
-      const hardClaim = !seen && aggro === playerAggro && playerShotsInWindow >= 2;
+      const seen =
+        isVisibleToTeam(aggro) && hasLos(ex, ey, ez, up.x, eyeY(aggro), up.z);
+      const hardClaim =
+        !seen && aggro === playerAggro && playerShotsInWindow >= 2;
       if (seen || hardClaim) {
         target = aggro;
         losClear = seen;
@@ -826,7 +952,8 @@ export function createAI(entity, opts = {}) {
         // keeps the muzzle position notifyPlayerFired recorded at the shot.
         if (seen) {
           lastSeenAtS = timeS;
-          lastSeen.x = up.x; lastSeen.z = up.z;
+          lastSeen.x = up.x;
+          lastSeen.z = up.z;
         }
         nonPenCount = 0;
         probeTimer = 0;
@@ -842,7 +969,8 @@ export function createAI(entity, opts = {}) {
       const vis = isVisibleToTeam(target);
       losClear = vis && hasLos(ex, ey, ez, tp.x, eyeY(target), tp.z);
       if (vis) {
-        lastSeen.x = tp.x; lastSeen.z = tp.z;
+        lastSeen.x = tp.x;
+        lastSeen.z = tp.z;
         lastSeenAtS = timeS;
       }
       // PLAYER RE-PRIORITIZATION (controls_gunnery r3): target-keeping was
@@ -856,21 +984,27 @@ export function createAI(entity, opts = {}) {
       if (!target.isPlayer && losClear) {
         for (let i = 0; i < list.length; i++) {
           const p = list[i];
-          if (!p || !p.isPlayer || !enemyAlive(p) || !isVisibleToTeam(p)) continue;
+          if (!p || !p.isPlayer || !enemyAlive(p) || !isVisibleToTeam(p))
+            continue;
           if ((focusCounts.get(p.id) || 0) >= 1) continue;
           const pp = p.state.pos;
-          const pdx = pp.x - ex, pdz = pp.z - ez;
-          const cdx = tp.x - ex, cdz = tp.z - ez;
+          const pdx = pp.x - ex,
+            pdz = pp.z - ez;
+          const cdx = tp.x - ex,
+            cdz = tp.z - ez;
           const pd2 = pdx * pdx + pdz * pdz;
-          const pEff = pd2 * playerDistMult *
-            (pd2 < PLAYER_NEAR_BONUS_D2 ? 0.5 : 1); // r6 near bump
-          if (pEff < cdx * cdx + cdz * cdz &&
-              hasLos(ex, ey, ez, pp.x, eyeY(p), pp.z)) {
+          const pEff =
+            pd2 * playerDistMult * (pd2 < PLAYER_NEAR_BONUS_D2 ? 0.5 : 1); // r6 near bump
+          if (
+            pEff < cdx * cdx + cdz * cdz &&
+            hasLos(ex, ey, ez, pp.x, eyeY(p), pp.z)
+          ) {
             target = p;
             losClear = true;
             acquiredAtS = timeS;
             lastSeenAtS = timeS;
-            lastSeen.x = pp.x; lastSeen.z = pp.z;
+            lastSeen.x = pp.x;
+            lastSeen.z = pp.z;
             nonPenCount = 0;
             probeTimer = 0;
           }
@@ -883,26 +1017,39 @@ export function createAI(entity, opts = {}) {
       // range — securing the kill beats farming a fresh hull. Player targets
       // are never abandoned this way (the r4-r6 pressure plumbing owns that
       // slot), and the 0.4/0.25 hysteresis keeps the switch from flapping.
-      if (!target.isPlayer && losClear && target.combat && target.combat.maxHp &&
-          target.state && target.combat.hp / target.combat.maxHp > 0.4) {
-        const cdx = target.state.pos.x - ex, cdz = target.state.pos.z - ez;
+      if (
+        !target.isPlayer &&
+        losClear &&
+        target.combat &&
+        target.combat.maxHp &&
+        target.state &&
+        target.combat.hp / target.combat.maxHp > 0.4
+      ) {
+        const cdx = target.state.pos.x - ex,
+          cdz = target.state.pos.z - ez;
         const curD2 = cdx * cdx + cdz * cdz;
         for (let i = 0; i < list.length; i++) {
           const e = list[i];
           if (!e || e === target || !enemyAlive(e) || e.isPlayer) continue;
-          if (!e.combat || !e.combat.maxHp ||
-              e.combat.hp / e.combat.maxHp >= 0.25) continue;
+          if (
+            !e.combat ||
+            !e.combat.maxHp ||
+            e.combat.hp / e.combat.maxHp >= 0.25
+          )
+            continue;
           if ((focusCounts.get(e.id) || 0) >= 1) continue;
           if (!isVisibleToTeam(e)) continue;
           const kp = e.state.pos;
-          const kdx = kp.x - ex, kdz = kp.z - ez;
+          const kdx = kp.x - ex,
+            kdz = kp.z - ez;
           if (kdx * kdx + kdz * kdz > curD2 * 1.3) continue;
           if (!hasLos(ex, ey, ez, kp.x, eyeY(e), kp.z)) continue;
           target = e;
           losClear = true;
           acquiredAtS = timeS;
           lastSeenAtS = timeS;
-          lastSeen.x = kp.x; lastSeen.z = kp.z;
+          lastSeen.x = kp.x;
+          lastSeen.z = kp.z;
           nonPenCount = 0;
           probeTimer = 0;
           return;
@@ -913,8 +1060,11 @@ export function createAI(entity, opts = {}) {
       // flash), and dropping it mid-reposition is why three rounds of aggro
       // plumbing still measured zero conversions. lastSeen intentionally
       // stays at the muzzle position (not live-tracked) while unspotted.
-      if (timeS - lastSeenAtS <= TARGET_MEMORY_S ||
-          (target === playerAggro && timeS < playerAggroUntilS)) return;
+      if (
+        timeS - lastSeenAtS <= TARGET_MEMORY_S ||
+        (target === playerAggro && timeS < playerAggroUntilS)
+      )
+        return;
       target = null; // memory expired — rescan below
     } else if (target) {
       target = null;
@@ -923,15 +1073,21 @@ export function createAI(entity, opts = {}) {
 
     // Nearest SPOTTED enemy with personal LOS becomes the target — tanks the
     // team has not lit up are ghosts, exactly like the player's minimap.
-    let best = null, bestD2 = Infinity;
+    let best = null,
+      bestD2 = Infinity;
     for (let i = 0; i < list.length; i++) {
       const e = list[i];
       if (!enemyAlive(e)) continue;
       if (!isVisibleToTeam(e)) continue; // concealment gate (spotting sim)
       const tp = e.state.pos;
-      const dx = tp.x - ex, dz = tp.z - ez;
+      const dx = tp.x - ex,
+        dz = tp.z - ez;
       const d2 = dx * dx + dz * dz;
-      if (timeS < deploymentUntilS && d2 > deploymentEngageM * deploymentEngageM) continue;
+      if (
+        timeS < deploymentUntilS &&
+        d2 > deploymentEngageM * deploymentEngageM
+      )
+        continue;
       // Threat weighting: the player ranks as if 0.59x its true distance
       // (0.35x for the playerHunter fraction — controls_gunnery r4).
       // r6 PRIORITY BUMP: inside 300 m the player counts DOUBLE threat
@@ -939,15 +1095,20 @@ export function createAI(entity, opts = {}) {
       // 100 m allied bot for every controller, not just the hunters.
       // BATTLE-AI r7 (focus low-HP): a nearly-dead target ranks as if ~26%
       // closer (weighted d² down to 0.55x at 0 hp) — WoT bots finish kills.
-      const hpW = e.combat && e.combat.maxHp
-        ? 0.55 + 0.45 * Math.max(0, e.combat.hp / e.combat.maxHp)
-        : 1;
-      const eff = ((e.isPlayer
-        ? d2 * playerDistMult * (d2 < PLAYER_NEAR_BONUS_D2 ? 0.5 : 1)
-        : d2) * hpW) * focusWeight(e);
+      const hpW =
+        e.combat && e.combat.maxHp
+          ? 0.55 + 0.45 * Math.max(0, e.combat.hp / e.combat.maxHp)
+          : 1;
+      const eff =
+        (e.isPlayer
+          ? d2 * playerDistMult * (d2 < PLAYER_NEAR_BONUS_D2 ? 0.5 : 1)
+          : d2) *
+        hpW *
+        focusWeight(e);
       if (eff >= bestD2) continue;
       if (!hasLos(ex, ey, ez, tp.x, eyeY(e), tp.z)) continue;
-      best = e; bestD2 = eff;
+      best = e;
+      bestD2 = eff;
     }
     if (best) {
       target = best;
@@ -965,21 +1126,27 @@ export function createAI(entity, opts = {}) {
       // target (no personal-LOS gate; losBlockedT primes the r5 hard-commit
       // vantage path so the bot drives to a firing position).
       if (timeS - lastEngagedS > ENGAGE_WATCHDOG_S) {
-        let near = null, nearD2 = Infinity;
+        let near = null,
+          nearD2 = Infinity;
         for (let i = 0; i < list.length; i++) {
           const e = list[i];
           if (!enemyAlive(e) || !isVisibleToTeam(e)) continue;
           const tp2 = e.state.pos;
-          const ndx = tp2.x - ex, ndz = tp2.z - ez;
+          const ndx = tp2.x - ex,
+            ndz = tp2.z - ez;
           const d2 = ndx * ndx + ndz * ndz;
-          if (d2 < nearD2) { near = e; nearD2 = d2; }
+          if (d2 < nearD2) {
+            near = e;
+            nearD2 = d2;
+          }
         }
         const wr = timeS < deploymentUntilS ? deploymentEngageM : roleEngageR();
         if (near && nearD2 < wr * wr) {
           target = near;
           acquiredAtS = timeS;
           lastSeenAtS = timeS;
-          lastSeen.x = near.state.pos.x; lastSeen.z = near.state.pos.z;
+          lastSeen.x = near.state.pos.x;
+          lastSeen.z = near.state.pos.z;
           losBlockedT = Math.max(losBlockedT, 5); // vantage seek NOW
           nonPenCount = 0;
           probeTimer = 0;
@@ -996,29 +1163,43 @@ export function createAI(entity, opts = {}) {
   function runProbes() {
     if (!target) return;
     const armor = target.spec && target.spec.armor;
-    if (!armor) { // headless fixtures without armor models: aim center, assume pen
-      aimHFrac = 0.48; aimLatFrac = 0; chosenSlot = 0; cachedPenRatio = 1; penGateOk = true;
+    if (!armor) {
+      // headless fixtures without armor models: aim center, assume pen
+      aimHFrac = 0.48;
+      aimLatFrac = 0;
+      chosenSlot = 0;
+      cachedPenRatio = 1;
+      penGateOk = true;
       return;
     }
     const st = entity.state;
     const tp = target.state.pos;
     const th = target.spec.dims.heightM;
     const tw = target.spec.dims.widthM;
-    const ex = st.pos.x, ey = st.pos.y + selfEyeM, ez = st.pos.z;
+    const ex = st.pos.x,
+      ey = st.pos.y + selfEyeM,
+      ez = st.pos.z;
     // Lateral basis: perpendicular to the line of sight, in the ground plane.
-    let px = tp.z - ez, pz = -(tp.x - ex);
+    let px = tp.z - ez,
+      pz = -(tp.x - ex);
     const pl = Math.hypot(px, pz) || 1;
-    px /= pl; pz /= pl;
+    px /= pl;
+    pz /= pl;
 
     const pose = tankPoseFromState(target.state);
     const set = PROBE_SETS[tier.probeLevel];
-    let bestScore = -Infinity, bestRatio = 0, bestH = 0.48, bestLat = 0, bestSlot = 0;
+    let bestScore = -Infinity,
+      bestRatio = 0,
+      bestH = 0.48,
+      bestLat = 0,
+      bestSlot = 0;
 
     for (let slot = 0; slot <= 1; slot++) {
       const shell = spec.gun.shells[slot];
       if (!shell) continue;
       for (let i = 0; i < set.length; i++) {
-        const h = set[i][0], lat = set[i][1];
+        const h = set[i][0],
+          lat = set[i][1];
         const cx = tp.x + px * lat * tw;
         const cy = tp.y + h * th;
         const cz = tp.z + pz * lat * tw;
@@ -1034,19 +1215,29 @@ export function createAI(entity, opts = {}) {
         // the AI does not chase 3× overkill zones over center mass.
         const score = Math.min(ratio, 1.6) - slot * 0.08 - Math.abs(lat) * 0.02;
         if (score > bestScore) {
-          bestScore = score; bestRatio = ratio; bestH = h; bestLat = lat; bestSlot = slot;
+          bestScore = score;
+          bestRatio = ratio;
+          bestH = h;
+          bestLat = lat;
+          bestSlot = slot;
         }
       }
       if (bestRatio >= 1.05 && bestSlot === 0) break; // standard round already comfortable
     }
 
     if (bestRatio >= 0.9) {
-      aimHFrac = bestH; aimLatFrac = bestLat; chosenSlot = bestSlot;
-      cachedPenRatio = bestRatio; penGateOk = true;
+      aimHFrac = bestH;
+      aimLatFrac = bestLat;
+      chosenSlot = bestSlot;
+      cachedPenRatio = bestRatio;
+      penGateOk = true;
     } else if (bestScore > -Infinity) {
       // Nothing penetrates reliably: lob HE at center mass (splash needs no pen gate).
-      aimHFrac = 0.5; aimLatFrac = 0; chosenSlot = heSlot;
-      cachedPenRatio = bestRatio; penGateOk = false;
+      aimHFrac = 0.5;
+      aimLatFrac = 0;
+      chosenSlot = heSlot;
+      cachedPenRatio = bestRatio;
+      penGateOk = false;
     } else {
       // All probes missed the hull — the target is HULL-DOWN (only the
       // turret crests the fold; the eye-line LOS passes while every hull
@@ -1055,8 +1246,11 @@ export function createAI(entity, opts = {}) {
       // a mutual 380 m stare-down (steppe probe: ready+aligned bots parked
       // silent for 60+ s exactly here). driveEngage escalates to a better
       // firing angle when the probes stay blind (probeMissT).
-      aimHFrac = 0.82; aimLatFrac = 0; chosenSlot = heSlot;
-      cachedPenRatio = 0; penGateOk = false;
+      aimHFrac = 0.82;
+      aimLatFrac = 0;
+      chosenSlot = heSlot;
+      cachedPenRatio = 0;
+      penGateOk = false;
       probeMiss = true;
       return;
     }
@@ -1073,9 +1267,11 @@ export function createAI(entity, opts = {}) {
     if (!target) return false;
     const st = entity.state;
     const tp = target.state.pos;
-    let ax = st.pos.x - tp.x, az = st.pos.z - tp.z;
+    let ax = st.pos.x - tp.x,
+      az = st.pos.z - tp.z;
     const al = Math.hypot(ax, az) || 1;
-    ax /= al; az /= al;
+    ax /= al;
+    az /= al;
     const hSelf = spec.dims.heightM;
     for (let d = 3; d <= 27; d += 3) {
       const cx = st.pos.x + ax * d;
@@ -1085,10 +1281,16 @@ export function createAI(entity, opts = {}) {
       const h2 = hf.getHeightAt(cx - ax * 10, cz - az * 10);
       const crest = Math.max(h1, h2) - hC;
       if (full) {
-        if (crest > hSelf * 0.9 + 0.3) { out.x = cx; out.z = cz; return true; }
+        if (crest > hSelf * 0.9 + 0.3) {
+          out.x = cx;
+          out.z = cz;
+          return true;
+        }
       } else if (crest > hSelf * 0.45 && crest < hSelf * 0.95) {
         if (hasLos(cx, hC + selfEyeM, cz, tp.x, eyeY(target), tp.z)) {
-          out.x = cx; out.z = cz; return true;
+          out.x = cx;
+          out.z = cz;
+          return true;
         }
       }
     }
@@ -1111,10 +1313,11 @@ export function createAI(entity, opts = {}) {
     // a 200-350 m cross-map drive that stall-prone navigation never
     // finished: the r4 unstaged probe showed committed bots pivoting at
     // spd=0 for 60+ s, blkT ever-growing, zero conversions.
-    const bearing = Math.atan2(lastSeen.x - st.pos.x, lastSeen.z - st.pos.z) + vantageBias;
+    const bearing =
+      Math.atan2(lastSeen.x - st.pos.x, lastSeen.z - st.pos.z) + vantageBias;
     // r7: a long-blocked commit widens the fan — inside towns / steppe folds
     // every 35-100 m candidate can be wall-shadowed while a 150 m one clears.
-    for (const r of (losBlockedT > 10 ? [35, 65, 100, 150] : [35, 65, 100])) {
+    for (const r of losBlockedT > 10 ? [35, 65, 100, 150] : [35, 65, 100]) {
       for (let k = -3; k <= 3; k++) {
         const a = bearing + k * 0.35;
         const cx = st.pos.x + Math.sin(a) * r;
@@ -1122,9 +1325,15 @@ export function createAI(entity, opts = {}) {
         if (vantageVetoed(cx, cz)) continue; // r7: nav-proven unreachable
         const cy = hf.getHeightAt(cx, cz) + selfEyeM;
         if (!hasLos(cx, cy, cz, lastSeen.x, ty, lastSeen.z)) continue;
-        const dx = cx - st.pos.x, dz = cz - st.pos.z;
+        const dx = cx - st.pos.x,
+          dz = cz - st.pos.z;
         const d2 = dx * dx + dz * dz;
-        if (d2 < bestD2) { bestD2 = d2; vantage.x = cx; vantage.z = cz; found = true; }
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          vantage.x = cx;
+          vantage.z = cz;
+          found = true;
+        }
       }
       if (found) return true;
     }
@@ -1137,9 +1346,15 @@ export function createAI(entity, opts = {}) {
         if (vantageVetoed(cx, cz)) continue; // r7: nav-proven unreachable
         const cy = hf.getHeightAt(cx, cz) + selfEyeM;
         if (!hasLos(cx, cy, cz, lastSeen.x, ty, lastSeen.z)) continue;
-        const dx = cx - st.pos.x, dz = cz - st.pos.z;
+        const dx = cx - st.pos.x,
+          dz = cz - st.pos.z;
         const d2 = dx * dx + dz * dz;
-        if (d2 < bestD2) { bestD2 = d2; vantage.x = cx; vantage.z = cz; found = true; }
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          vantage.x = cx;
+          vantage.z = cz;
+          found = true;
+        }
       }
       if (found) break;
     }
@@ -1150,19 +1365,20 @@ export function createAI(entity, opts = {}) {
     if (!target) return;
     const st = entity.state;
     const tp = target.state.pos;
-    const dx = st.pos.x - tp.x, dz = st.pos.z - tp.z;
+    const dx = st.pos.x - tp.x,
+      dz = st.pos.z - tp.z;
     const dist = Math.hypot(dx, dz) || 1;
     const r = clamp(dist, 80, 200);
-    const baseAng = Math.atan2(dx, dz);            // bearing target → self
+    const baseAng = Math.atan2(dx, dz); // bearing target → self
     const side = rng() < 0.5 ? 1 : -1;
     for (let i = 0; i < 3; i++) {
-      const a = baseAng + side * (0.6 + 0.6 * i);  // 34°, 69°, 103° around the target
+      const a = baseAng + side * (0.6 + 0.6 * i); // 34°, 69°, 103° around the target
       flankPoints[i].x = tp.x + Math.sin(a) * r;
       flankPoints[i].z = tp.z + Math.cos(a) * r;
     }
     flankIndex = 0;
     flankUntilS = timeS + FLANK_TIMEOUT_S;
-    mode = 'flank';
+    mode = "flank";
   }
 
   /** Aspect angle between the target's nose and the bearing target→self. */
@@ -1180,12 +1396,19 @@ export function createAI(entity, opts = {}) {
   function avoidObstacles(input) {
     const st = entity.state;
     const look = 6 + Math.abs(st.speed) * 1.5;
-    const fx = Math.sin(st.yaw), fz = Math.cos(st.yaw);
+    const fx = Math.sin(st.yaw),
+      fz = Math.cos(st.yaw);
     const px = st.pos.x + fx * look;
     const pz = st.pos.z + fz * look;
     const margin = spec.dims.widthM * 0.5 + 1.2;
     const candidates = deps.queryObstacles
-      ? deps.queryObstacles(px - margin, pz - margin, px + margin, pz + margin, nearbyObstacles)
+      ? deps.queryObstacles(
+          px - margin,
+          pz - margin,
+          px + margin,
+          pz + margin,
+          nearbyObstacles,
+        )
       : obstacles;
     for (let i = 0; i < candidates.length; i++) {
       const o = candidates[i];
@@ -1198,12 +1421,13 @@ export function createAI(entity, opts = {}) {
       // held-press crush threshold (coastal trace: spawn-exit wedge, 30 s at
       // spd 0). WoT hulls flatten small trees on the move.
       if (o.crushable) {
-        if (input.throttle > 0.05) input.throttle = Math.max(input.throttle, 0.7);
+        if (input.throttle > 0.05)
+          input.throttle = Math.max(input.throttle, 0.7);
         continue;
       }
       const cx = (o.min[0] + o.max[0]) * 0.5 - st.pos.x;
       const cz = (o.min[2] + o.max[2]) * 0.5 - st.pos.z;
-      const crossY = fz * cx - fx * cz;          // >0 → obstacle to the right
+      const crossY = fz * cx - fx * cz; // >0 → obstacle to the right
       input.steer = clamp(input.steer - Math.sign(crossY || 1) * 1.0, -1, 1);
       input.throttle *= 0.6;
       return;
@@ -1218,7 +1442,8 @@ export function createAI(entity, opts = {}) {
   function avoidAllies(input) {
     if (!getAllies || input.throttle <= 0.05) return;
     const st = entity.state;
-    const fx = Math.sin(st.yaw), fz = Math.cos(st.yaw);
+    const fx = Math.sin(st.yaw),
+      fz = Math.cos(st.yaw);
     const look = FRIENDLY_SEPARATION_LOOK_M + Math.max(0, st.speed || 0) * 0.8;
     const friends = getAllies();
     const ownR = tankSafetyRadius(entity) * 0.72;
@@ -1228,7 +1453,8 @@ export function createAI(entity, opts = {}) {
     let bestSafe = 0;
     for (let i = 0; i < friends.length; i++) {
       const ally = friends[i];
-      if (!ally || !ally.state || (ally.combat && ally.combat.destroyed)) continue;
+      if (!ally || !ally.state || (ally.combat && ally.combat.destroyed))
+        continue;
       const rx = ally.state.pos.x - st.pos.x;
       const rz = ally.state.pos.z - st.pos.z;
       const along = rx * fx + rz * fz;
@@ -1245,10 +1471,18 @@ export function createAI(entity, opts = {}) {
     const side = Math.sign(bestCross || (entity.id < best.id ? 1 : -1));
     input.steer = clamp(input.steer - side * 0.85, -1, 1);
     const closing = Math.max(0, (st.speed || 0) - (best.state.speed || 0));
-    const cap = bestAlong < bestSafe * 1.15 ? 0.12
-      : bestAlong < bestSafe * 1.8 ? 0.35 : 0.6;
-    input.throttle = Math.min(input.throttle, Math.max(0.08, cap - closing * 0.025));
-    if (bestAlong < bestSafe * 0.9 && Math.abs(st.speed || 0) > 1.5) input.brake = true;
+    const cap =
+      bestAlong < bestSafe * 1.15
+        ? 0.12
+        : bestAlong < bestSafe * 1.8
+          ? 0.35
+          : 0.6;
+    input.throttle = Math.min(
+      input.throttle,
+      Math.max(0.08, cap - closing * 0.025),
+    );
+    if (bestAlong < bestSafe * 0.9 && Math.abs(st.speed || 0) > 1.5)
+      input.brake = true;
   }
 
   // BATTLE-AI r7 CORNER-HOP ROUTER: reactive avoidance + unstick could not
@@ -1279,17 +1513,25 @@ export function createAI(entity, opts = {}) {
     const debuff = entity.state._debuff;
     const powerMult = debuff?.powerMult ?? 1;
     const accelMult = debuff?.accelMult ?? 1;
-    for (let distance = TERRAIN_ROUTE_STEP_M;
-      distance <= TERRAIN_ROUTE_LOOK_M; distance += TERRAIN_ROUTE_STEP_M) {
+    for (
+      let distance = TERRAIN_ROUTE_STEP_M;
+      distance <= TERRAIN_ROUTE_LOOK_M;
+      distance += TERRAIN_ROUTE_STEP_M
+    ) {
       const x = sx + ux * distance;
       const z = sz + uz * distance;
       const height = hf.getHeightAt(x, z);
       const rise = (height - previousH) / TERRAIN_ROUTE_STEP_M;
-      const ground = typeof hf.getGroundType === 'function'
-        ? hf.getGroundType(x, z)
-        : 'medium';
+      const ground =
+        typeof hf.getGroundType === "function"
+          ? hf.getGroundType(x, z)
+          : "medium";
       const cost = terrainTravelCostFactor(
-        spec, ground, rise, powerMult, accelMult,
+        spec,
+        ground,
+        rise,
+        powerMult,
+        accelMult,
       );
       if (!Number.isFinite(cost)) return Infinity;
       if (cost > worstCost) worstCost = cost;
@@ -1319,8 +1561,11 @@ export function createAI(entity, opts = {}) {
       const cz = sz + uz * TERRAIN_ROUTE_LOOK_M;
       if (Math.max(Math.abs(cx), Math.abs(cz)) > 480) continue;
       const side = Math.sign(angle) || 1;
-      const score = Math.hypot(goalX - cx, goalZ - cz) + (terrainCost - 1) * 7 +
-        Math.abs(angle) * 5 + (side === detourSide ? 0 : 8);
+      const score =
+        Math.hypot(goalX - cx, goalZ - cz) +
+        (terrainCost - 1) * 7 +
+        Math.abs(angle) * 5 +
+        (side === detourSide ? 0 : 8);
       if (score < bestScore) {
         bestScore = score;
         bestX = cx;
@@ -1337,91 +1582,137 @@ export function createAI(entity, opts = {}) {
   function planRoute(gx, gz) {
     routeActive = false;
     const st = entity.state;
-    const sx = st.pos.x, sz = st.pos.z;
-    let dx = gx - sx, dz = gz - sz;
+    const sx = st.pos.x,
+      sz = st.pos.z;
+    let dx = gx - sx,
+      dz = gz - sz;
     const dist = Math.hypot(dx, dz);
     if (dist < 12) return;
     const lim = Math.min(dist, ROUTE_LOOK_M);
-    dx /= dist; dz /= dist;
+    dx /= dist;
+    dz /= dist;
     const margin = spec.dims.widthM * 0.5 + 1.4;
     let bestT = Infinity;
     let box = null;
     for (let i = 0; i < obstacles.length; i++) {
       const o = obstacles[i];
       if (o.crushed || o.crushable) continue;
-      const minX = o.min[0] - margin, maxX = o.max[0] + margin;
-      const minZ = o.min[2] - margin, maxZ = o.max[2] + margin;
-      let t0 = 0, t1 = lim;
+      const minX = o.min[0] - margin,
+        maxX = o.max[0] + margin;
+      const minZ = o.min[2] - margin,
+        maxZ = o.max[2] + margin;
+      let t0 = 0,
+        t1 = lim;
       if (Math.abs(dx) < 1e-9) {
         if (sx < minX || sx > maxX) continue;
       } else {
-        let a = (minX - sx) / dx, b = (maxX - sx) / dx;
-        if (a > b) { const tt = a; a = b; b = tt; }
+        let a = (minX - sx) / dx,
+          b = (maxX - sx) / dx;
+        if (a > b) {
+          const tt = a;
+          a = b;
+          b = tt;
+        }
         if (a > t0) t0 = a;
         if (b < t1) t1 = b;
       }
       if (Math.abs(dz) < 1e-9) {
         if (sz < minZ || sz > maxZ) continue;
       } else {
-        let a = (minZ - sz) / dz, b = (maxZ - sz) / dz;
-        if (a > b) { const tt = a; a = b; b = tt; }
+        let a = (minZ - sz) / dz,
+          b = (maxZ - sz) / dz;
+        if (a > b) {
+          const tt = a;
+          a = b;
+          b = tt;
+        }
         if (a > t0) t0 = a;
         if (b < t1) t1 = b;
       }
       if (t0 > t1 || t1 < 0 || t0 > lim) continue;
-      if (t0 < bestT) { bestT = t0; box = o; }
+      if (t0 < bestT) {
+        bestT = t0;
+        box = o;
+      }
     }
     if (!box) {
       if (nowS < terrainRouteUntilS) planTerrainRoute(sx, sz, dx, dz, gx, gz);
       return;
     }
     const m2 = margin + 2.8; // corner clearance: a TURNING hull's diagonal
-                             // swings ~halfL past its track line
+    // swings ~halfL past its track line
     const cs = [
-      [box.min[0] - m2, box.min[2] - m2], [box.max[0] + m2, box.min[2] - m2],
-      [box.min[0] - m2, box.max[2] + m2], [box.max[0] + m2, box.max[2] + m2],
+      [box.min[0] - m2, box.min[2] - m2],
+      [box.max[0] + m2, box.min[2] - m2],
+      [box.min[0] - m2, box.max[2] + m2],
+      [box.max[0] + m2, box.max[2] + m2],
     ];
     // reject corners whose straight approach re-crosses THIS box (a start
     // point near corner A scores the DIAGONAL corner best on d1+d2 — and the
     // segment to it runs through the box face; the coastal spawn-exit trace
     // wedged exactly like that, throttle 0.4 into a rock face for 30 s)
-    const inMinX = box.min[0] - margin * 0.85, inMaxX = box.max[0] + margin * 0.85;
-    const inMinZ = box.min[2] - margin * 0.85, inMaxZ = box.max[2] + margin * 0.85;
+    const inMinX = box.min[0] - margin * 0.85,
+      inMaxX = box.max[0] + margin * 0.85;
+    const inMinZ = box.min[2] - margin * 0.85,
+      inMaxZ = box.max[2] + margin * 0.85;
     const segHitsBox = (ex, ez) => {
-      let ddx = ex - sx, ddz = ez - sz;
+      let ddx = ex - sx,
+        ddz = ez - sz;
       const len = Math.hypot(ddx, ddz) || 1e-9;
-      ddx /= len; ddz /= len;
-      let t0 = 0, t1 = len;
+      ddx /= len;
+      ddz /= len;
+      let t0 = 0,
+        t1 = len;
       if (Math.abs(ddx) < 1e-9) {
         if (sx < inMinX || sx > inMaxX) return false;
       } else {
-        let a = (inMinX - sx) / ddx, b = (inMaxX - sx) / ddx;
-        if (a > b) { const tt = a; a = b; b = tt; }
+        let a = (inMinX - sx) / ddx,
+          b = (inMaxX - sx) / ddx;
+        if (a > b) {
+          const tt = a;
+          a = b;
+          b = tt;
+        }
         if (a > t0) t0 = a;
         if (b < t1) t1 = b;
       }
       if (Math.abs(ddz) < 1e-9) {
         if (sz < inMinZ || sz > inMaxZ) return false;
       } else {
-        let a = (inMinZ - sz) / ddz, b = (inMaxZ - sz) / ddz;
-        if (a > b) { const tt = a; a = b; b = tt; }
+        let a = (inMinZ - sz) / ddz,
+          b = (inMaxZ - sz) / ddz;
+        if (a > b) {
+          const tt = a;
+          a = b;
+          b = tt;
+        }
         if (a > t0) t0 = a;
         if (b < t1) t1 = b;
       }
       return t0 <= t1 && t1 > 0 && t0 < len;
     };
-    let best = Infinity, bx = 0, bz = 0;
+    let best = Infinity,
+      bx = 0,
+      bz = 0;
     for (let i = 0; i < cs.length; i++) {
-      const cx = cs[i][0], cz = cs[i][1];
+      const cx = cs[i][0],
+        cz = cs[i][1];
       if (Math.max(Math.abs(cx), Math.abs(cz)) > 500) continue;
       const d1 = Math.hypot(cx - sx, cz - sz);
       if (d1 < 2) continue; // standing on this corner already
-      if (nowS < lastCorner.untilS &&
-          Math.hypot(cx - lastCorner.x, cz - lastCorner.z) < 3) continue;
+      if (
+        nowS < lastCorner.untilS &&
+        Math.hypot(cx - lastCorner.x, cz - lastCorner.z) < 3
+      )
+        continue;
       if (segHitsBox(cx, cz)) continue; // diagonal-through-the-box corner
-      const score = d1 + Math.hypot(gx - cx, gz - cz) +
-        cornerBias(sx, sz, dx, dz, cx, cz);
-      if (score < best) { best = score; bx = cx; bz = cz; }
+      const score =
+        d1 + Math.hypot(gx - cx, gz - cz) + cornerBias(sx, sz, dx, dz, cx, cz);
+      if (score < best) {
+        best = score;
+        bx = cx;
+        bz = cz;
+      }
     }
     if (best === Infinity) return;
     routeCorner.x = bx;
@@ -1447,46 +1738,68 @@ export function createAI(entity, opts = {}) {
    */
   function escapePocket() {
     const st = entity.state;
-    const sx = st.pos.x, sz = st.pos.z;
+    const sx = st.pos.x,
+      sz = st.pos.z;
     const margin = spec.dims.widthM * 0.5 + 1.0;
-    let bestScore = -Infinity, bx = 0, bz = 0;
+    let bestScore = -Infinity,
+      bx = 0,
+      bz = 0;
     for (let k = 0; k < 8; k++) {
       const a = (k / 8) * TAU + scanPhase;
-      const ux = Math.sin(a), uz = Math.cos(a);
+      const ux = Math.sin(a),
+        uz = Math.cos(a);
       // clear length against solid boxes (crushables are drive-through)
       let clear = 34;
       for (let i = 0; i < obstacles.length; i++) {
         const o = obstacles[i];
         if (o.crushed || o.crushable) continue;
-        const minX = o.min[0] - margin, maxX = o.max[0] + margin;
-        const minZ = o.min[2] - margin, maxZ = o.max[2] + margin;
-        let t0 = 0, t1 = clear;
+        const minX = o.min[0] - margin,
+          maxX = o.max[0] + margin;
+        const minZ = o.min[2] - margin,
+          maxZ = o.max[2] + margin;
+        let t0 = 0,
+          t1 = clear;
         if (Math.abs(ux) < 1e-9) {
           if (sx < minX || sx > maxX) continue;
         } else {
-          let lo = (minX - sx) / ux, hi = (maxX - sx) / ux;
-          if (lo > hi) { const tt = lo; lo = hi; hi = tt; }
+          let lo = (minX - sx) / ux,
+            hi = (maxX - sx) / ux;
+          if (lo > hi) {
+            const tt = lo;
+            lo = hi;
+            hi = tt;
+          }
           if (lo > t0) t0 = lo;
           if (hi < t1) t1 = hi;
         }
         if (Math.abs(uz) < 1e-9) {
           if (sz < minZ || sz > maxZ) continue;
         } else {
-          let lo = (minZ - sz) / uz, hi = (maxZ - sz) / uz;
-          if (lo > hi) { const tt = lo; lo = hi; hi = tt; }
+          let lo = (minZ - sz) / uz,
+            hi = (maxZ - sz) / uz;
+          if (lo > hi) {
+            const tt = lo;
+            lo = hi;
+            hi = tt;
+          }
           if (lo > t0) t0 = lo;
           if (hi < t1) t1 = hi;
         }
         if (t0 <= t1 && t1 > 0 && t0 < clear) clear = Math.max(0, t0);
       }
       if (clear < 12) continue;
-      const ex = sx + ux * clear, ez = sz + uz * clear;
+      const ex = sx + ux * clear,
+        ez = sz + uz * clear;
       if (Math.max(Math.abs(ex), Math.abs(ez)) > 470) continue;
       const h0 = hf.getHeightAt(sx, sz);
       const terrainCost = terrainLineCost(sx, sz, h0, ux, uz);
       if (!Number.isFinite(terrainCost)) continue;
       const score = clear - (terrainCost - 1) * 4 + rng() * 3;
-      if (score > bestScore) { bestScore = score; bx = ex; bz = ez; }
+      if (score > bestScore) {
+        bestScore = score;
+        bx = ex;
+        bz = ez;
+      }
     }
     if (bestScore === -Infinity) return false;
     scootPoint.x = bx;
@@ -1515,11 +1828,12 @@ export function createAI(entity, opts = {}) {
   function trackNavProgress(x, z, dist) {
     driveIntent = true;
     if (Math.abs(x - navGoalX) > 15 || Math.abs(z - navGoalZ) > 15) {
-      navGoalX = x; navGoalZ = z;   // new leg — fresh baseline
+      navGoalX = x;
+      navGoalZ = z; // new leg — fresh baseline
       navBestD = dist;
       navNoProgressT = 0;
     } else if (dist < navBestD - 1.5) {
-      navBestD = dist;              // genuine approach — reset the clock
+      navBestD = dist; // genuine approach — reset the clock
       navNoProgressT = 0;
     }
   }
@@ -1530,7 +1844,8 @@ export function createAI(entity, opts = {}) {
    */
   function driveToXZ(input, x, z, speedScale) {
     const st = entity.state;
-    let dx = x - st.pos.x, dz = z - st.pos.z;
+    let dx = x - st.pos.x,
+      dz = z - st.pos.z;
     let dist = Math.hypot(dx, dz);
     trackNavProgress(x, z, dist); // r6 wedge watchdog (see update())
     if (dist < ARRIVE_DIST_M) {
@@ -1542,8 +1857,11 @@ export function createAI(entity, opts = {}) {
     // r7 CORNER-HOP ROUTER (see planRoute): re-plan when the goal moved or
     // the recheck timer lapsed; while a solid blocker sits on the straight
     // line, the steering goal becomes the corner around it.
-    if (routeTimer <= 0 ||
-        Math.abs(x - routeGoalX) > 12 || Math.abs(z - routeGoalZ) > 12) {
+    if (
+      routeTimer <= 0 ||
+      Math.abs(x - routeGoalX) > 12 ||
+      Math.abs(z - routeGoalZ) > 12
+    ) {
       routeGoalX = x;
       routeGoalZ = z;
       routeTimer = ROUTE_RECHECK_S;
@@ -1572,10 +1890,12 @@ export function createAI(entity, opts = {}) {
       // Blocked-route detour (see detourUntilS): steer for a point offset
       // sideways from the real target so the hull clears the blocking face.
       // (Fallback for wedges the router cannot see — tank pile-ups.)
-      const px = dz / dist, pz = -dx / dist; // perp of the bearing
+      const px = dz / dist,
+        pz = -dx / dist; // perp of the bearing
       x += px * 55 * detourSide;
       z += pz * 55 * detourSide;
-      dx = x - st.pos.x; dz = z - st.pos.z;
+      dx = x - st.pos.x;
+      dz = z - st.pos.z;
       dist = Math.hypot(dx, dz);
     }
     const bearing = Math.atan2(dx, dz);
@@ -1609,8 +1929,10 @@ export function createAI(entity, opts = {}) {
   const chasePoint = { x: 0, z: 0 };
   let chaseUntilS = -1;
   function chaseToXZ(input, x, z, speedScale) {
-    if (nowS >= chaseUntilS ||
-        Math.hypot(x - chasePoint.x, z - chasePoint.z) > CHASE_REPICK_DIST_M) {
+    if (
+      nowS >= chaseUntilS ||
+      Math.hypot(x - chasePoint.x, z - chasePoint.z) > CHASE_REPICK_DIST_M
+    ) {
       chasePoint.x = x;
       chasePoint.z = z;
       chaseUntilS = nowS + CHASE_COMMIT_MIN_S + rng() * CHASE_COMMIT_VAR_S;
@@ -1665,7 +1987,11 @@ export function createAI(entity, opts = {}) {
   function drivePatrol(input) {
     if (waypoints.length === 0) {
       if (!autoPatrolBuilt) buildAutoPatrol();
-      if (waypoints.length === 0) { input.throttle = 0; input.steer = 0; return; }
+      if (waypoints.length === 0) {
+        input.throttle = 0;
+        input.steer = 0;
+        return;
+      }
     }
     const wp = waypoints[wpIndex];
     // Full throttle before first contact (nowS is sim time): the opening
@@ -1682,9 +2008,12 @@ export function createAI(entity, opts = {}) {
     const st = entity.state;
     if (!target) {
       // Chase the last known position, then fall back to patrol.
-      if (timeS - lastSeenAtS < TARGET_MEMORY_S + 6 &&
-          !chaseToXZ(input, lastSeen.x, lastSeen.z, 0.9)) return;
-      mode = 'patrol';
+      if (
+        timeS - lastSeenAtS < TARGET_MEMORY_S + 6 &&
+        !chaseToXZ(input, lastSeen.x, lastSeen.z, 0.9)
+      )
+        return;
+      mode = "patrol";
       drivePatrol(input);
       return;
     }
@@ -1712,7 +2041,11 @@ export function createAI(entity, opts = {}) {
     // threat and the turret keeps firing the whole way.
     if (timeS < fallbackUntilS) {
       if (fallbackReverse) {
-        reverseFacing(input, Math.atan2(navX - st.pos.x, navZ - st.pos.z), -0.75);
+        reverseFacing(
+          input,
+          Math.atan2(navX - st.pos.x, navZ - st.pos.z),
+          -0.75,
+        );
       } else {
         driveToXZ(input, fallbackPoint.x, fallbackPoint.z, 1.0);
       }
@@ -1751,14 +2084,15 @@ export function createAI(entity, opts = {}) {
       // r4 aggro'd bot sat in the blocked chase for 5+ s per attempt and
       // never converted aggro into a firing position (probe: zero shells at
       // the player across 90 s while "chasing" it).
-      const vantageAfterS =
-        (target.isPlayer || timeS < pressUntilS) ? 2 : 5;
+      const vantageAfterS = target.isPlayer || timeS < pressUntilS ? 2 : 5;
       if (losBlockedT > vantageAfterS && findVantage()) {
         hasVantage = true;
         driveToXZ(input, vantage.x, vantage.z, 1.0);
         return;
       }
-      if (chaseToXZ(input, lastSeen.x, lastSeen.z, target.isPlayer ? 1.0 : 0.9)) {
+      if (
+        chaseToXZ(input, lastSeen.x, lastSeen.z, target.isPlayer ? 1.0 : 0.9)
+      ) {
         // BATTLE-AI r7 BLOCKED-ARRIVAL ESCALATION: parked ON the last-seen
         // point with still no ray — the contact moved behind the next fold/
         // block. The r7 flow probe measured bots oscillating here for 60+ s
@@ -1767,7 +2101,9 @@ export function createAI(entity, opts = {}) {
         // centroid (route intel, same softness rule as the stalemate
         // breaker — never precise live coordinates) via the vantage drive.
         const list = deps.getEnemies();
-        let cx = 0, cz = 0, n = 0;
+        let cx = 0,
+          cz = 0,
+          n = 0;
         for (let i = 0; i < list.length; i++) {
           const e = list[i];
           if (!enemyAlive(e)) continue;
@@ -1778,7 +2114,8 @@ export function createAI(entity, opts = {}) {
         if (n > 0) {
           const qx = Math.round(cx / n / 50) * 50;
           const qz = Math.round(cz / n / 50) * 50;
-          const b = Math.atan2(qx - st.pos.x, qz - st.pos.z) + (rng() - 0.5) * 0.6;
+          const b =
+            Math.atan2(qx - st.pos.x, qz - st.pos.z) + (rng() - 0.5) * 0.6;
           vantage.x = st.pos.x + Math.sin(b) * 90;
           vantage.z = st.pos.z + Math.cos(b) * 90;
           hasVantage = true;
@@ -1792,9 +2129,14 @@ export function createAI(entity, opts = {}) {
     // its cooldown misses half the flicker duels the urban probe measured).
     // Three back-to-back fruitless settles yield to the normal maneuver
     // logic for a while (the shot may simply not exist from this cell).
-    if (timeS - lastFiredAtS > 8 && timeS >= settleUntilS &&
-        timeS >= settleCdUntilS &&
-        entity.combat && entity.combat.reload && entity.combat.reload.t <= 0.5) {
+    if (
+      timeS - lastFiredAtS > 8 &&
+      timeS >= settleUntilS &&
+      timeS >= settleCdUntilS &&
+      entity.combat &&
+      entity.combat.reload &&
+      entity.combat.reload.t <= 0.5
+    ) {
       settleStreak = timeS - settleUntilS < 1.5 ? settleStreak + 1 : 0;
       if (settleStreak >= 3) {
         settleStreak = 0;
@@ -1807,31 +2149,40 @@ export function createAI(entity, opts = {}) {
     // attacker-of-record and during a stalemate push — not only while the
     // 15 s underFire window happens to be live. BATTLE-AI r7: the base
     // envelope is role-scaled (snipers commit from further out).
-    const engageR = roleEngageR() +
-      ((timeS < underFireUntilS ||
-        (target.isPlayer && timeS < playerAggroUntilS) ||
-        timeS < pressUntilS) ? UNDER_FIRE_RANGE_BONUS_M : 0);
+    const engageR =
+      roleEngageR() +
+      (timeS < underFireUntilS ||
+      (target.isPlayer && timeS < playerAggroUntilS) ||
+      timeS < pressUntilS
+        ? UNDER_FIRE_RANGE_BONUS_M
+        : 0);
     if (distToTarget > engageR) {
       // BATTLE-AI r7 NO-SUICIDE GUARD: a lone hull does not free-run into a
       // covered group — it halts at the envelope edge and snipes until a
       // teammate is on station (the stalemate breaker still overrides, so a
       // pressing push never deadlocks; scouts are exempt — speed is their
       // armor and spotting the group is their job).
-      if (role !== 'scout' && timeS >= pressUntilS &&
-          distToTarget < engageR + 90 && outnumberedSolo()) {
+      if (
+        role !== "scout" &&
+        timeS >= pressUntilS &&
+        distToTarget < engageR + 90 &&
+        outnumberedSolo()
+      ) {
         faceYaw(input, Math.atan2(navX - st.pos.x, navZ - st.pos.z));
         return;
       }
       chaseToXZ(input, navX, navZ, 1.0); // committed leg (r3) — leadable mover
       return;
     }
-    if (hasMoveTarget) {                          // roll into the hull-down spot
-      if (driveToXZ(input, moveTarget.x, moveTarget.z, 0.6)) hasMoveTarget = false;
+    if (hasMoveTarget) {
+      // roll into the hull-down spot
+      if (driveToXZ(input, moveTarget.x, moveTarget.z, 0.6))
+        hasMoveTarget = false;
       return;
     }
     // BATTLE-AI r7 scout doctrine: never brawl, never park — kite out of
     // knife range and orbit the band with flipping sides (active spotting).
-    if (role === 'scout') {
+    if (role === "scout") {
       scoutMove(input, timeS, distToTarget, navX, navZ);
       return;
     }
@@ -1848,9 +2199,9 @@ export function createAI(entity, opts = {}) {
       // BATTLE-AI r7 TRADE WINDOW (brawlers): the target's gun is visibly
       // cycling (it just fired — its reload state is the observable muzzle
       // flash) and ours is seated — heavies push the reload window hard.
-      const tgtCycling = target.combat && target.combat.reload &&
-        target.combat.reload.t > 1.5;
-      if (role === 'brawler' && tgtCycling && (!rl || rl.t <= 0.3)) {
+      const tgtCycling =
+        target.combat && target.combat.reload && target.combat.reload.t > 1.5;
+      if (role === "brawler" && tgtCycling && (!rl || rl.t <= 0.3)) {
         chaseToXZ(input, navX, navZ, 0.85);
         return;
       }
@@ -1859,7 +2210,7 @@ export function createAI(entity, opts = {}) {
         // creep into it), flankers advance on an angled slip toward the next
         // cover line, brawlers close straight in; nobody dives a covered
         // group alone (outnumberedSolo pins the advance to the band edge).
-        if (role === 'sniper') {
+        if (role === "sniper") {
           faceYaw(input, Math.atan2(navX - st.pos.x, navZ - st.pos.z));
           return;
         }
@@ -1867,11 +2218,16 @@ export function createAI(entity, opts = {}) {
           faceYaw(input, Math.atan2(navX - st.pos.x, navZ - st.pos.z));
           return;
         }
-        if (role === 'flanker') {
-          const lx2 = navZ - st.pos.z, lz2 = -(navX - st.pos.x);
+        if (role === "flanker") {
+          const lx2 = navZ - st.pos.z,
+            lz2 = -(navX - st.pos.x);
           const ll = Math.hypot(lx2, lz2) || 1;
-          chaseToXZ(input, navX + (lx2 / ll) * 48 * angleSide,
-            navZ + (lz2 / ll) * 48 * angleSide, 0.7);
+          chaseToXZ(
+            input,
+            navX + (lx2 / ll) * 48 * angleSide,
+            navZ + (lz2 / ll) * 48 * angleSide,
+            0.7,
+          );
           return;
         }
         chaseToXZ(input, navX, navZ, 0.6); // close distance during the reload
@@ -1888,19 +2244,21 @@ export function createAI(entity, opts = {}) {
     const bearing = Math.atan2(navX - st.pos.x, navZ - st.pos.z);
     const rl2 = entity.combat && entity.combat.reload;
     const mods = entity.combat && entity.combat.modules;
-    const gunOut = mods && mods.gun && mods.gun.state === 'red';
+    const gunOut = mods && mods.gun && mods.gun.state === "red";
     // casemates NEVER pull back mid-duel — their fire solution IS the hull
     // facing, and the reverse dance left them 300-800 mrad off-axis when the
     // reload seated (steppe probe); they hold the lay and trust the armor.
-    if (((rl2 && rl2.t > 1.2 && role !== 'brawler' && !casemate) || gunOut) &&
-        distToTarget > 55) {
+    if (
+      ((rl2 && rl2.t > 1.2 && role !== "brawler" && !casemate) || gunOut) &&
+      distToTarget > 55
+    ) {
       reverseFacing(input, bearing, -0.45); // bow on the threat, backing out
       return;
     }
     // r7: a damaged turret ring traverses slowly or not at all — swing the
     // HULL square onto the target so the gun still comes to bear (probe:
     // ring-jammed heavies parked 100-900 mrad off-axis, never firing).
-    const ringOut = mods && mods.turretRing && mods.turretRing.state !== 'ok';
+    const ringOut = mods && mods.turretRing && mods.turretRing.state !== "ok";
     faceYaw(input, bearing + (ringOut ? 0 : angleRad * angleSide));
   }
 
@@ -1930,7 +2288,10 @@ export function createAI(entity, opts = {}) {
       if (dx * dx + dz * dz < 200 * 200) near++;
       if (near >= 2) break;
     }
-    if (near < 2) { guardT = 0; return false; }
+    if (near < 2) {
+      guardT = 0;
+      return false;
+    }
     const st = entity.state;
     const tp = target.state.pos;
     const myD = Math.hypot(tp.x - st.pos.x, tp.z - st.pos.z);
@@ -1940,9 +2301,15 @@ export function createAI(entity, opts = {}) {
       if (!f || !f.state) continue;
       const dx = f.state.pos.x - st.pos.x;
       const dz = f.state.pos.z - st.pos.z;
-      if (dx * dx + dz * dz < 170 * 170) { guardT = 0; return false; }
+      if (dx * dx + dz * dz < 170 * 170) {
+        guardT = 0;
+        return false;
+      }
       const fd = Math.hypot(tp.x - f.state.pos.x, tp.z - f.state.pos.z);
-      if (fd < myD + 40) { guardT = 0; return false; } // line abreast = support
+      if (fd < myD + 40) {
+        guardT = 0;
+        return false;
+      } // line abreast = support
     }
     const step = nowS - guardLastS;
     guardT = step < 0.12 ? guardT + Math.max(0, step) : 0; // consecutive ticks only
@@ -1971,13 +2338,19 @@ export function createAI(entity, opts = {}) {
       for (let i = 0; i < list.length; i++) {
         const e = list[i];
         if (!enemyAlive(e)) continue;
-        const dx = e.state.pos.x - st.pos.x, dz = e.state.pos.z - st.pos.z;
+        const dx = e.state.pos.x - st.pos.x,
+          dz = e.state.pos.z - st.pos.z;
         const d2 = dx * dx + dz * dz;
-        if (d2 < nd2) { nd2 = d2; nearest = e; }
+        if (d2 < nd2) {
+          nd2 = d2;
+          nearest = e;
+        }
       }
       if (nearest && nd2 < SCOUT_KITE_M * SCOUT_KITE_M) {
-        const away = Math.atan2(st.pos.x - nearest.state.pos.x,
-          st.pos.z - nearest.state.pos.z);
+        const away = Math.atan2(
+          st.pos.x - nearest.state.pos.x,
+          st.pos.z - nearest.state.pos.z,
+        );
         const esc = away + orbitSide * 0.7;
         kitePoint.x = st.pos.x + Math.sin(esc) * 150;
         kitePoint.z = st.pos.z + Math.cos(esc) * 150;
@@ -1996,8 +2369,14 @@ export function createAI(entity, opts = {}) {
     const bearing = Math.atan2(navX - st.pos.x, navZ - st.pos.z);
     // tangential orbit with a spiral bias: >90° off the bearing when inside
     // the band (opens distance), <90° when outside (closes it)
-    const orb = bearing + orbitSide * (Math.PI / 2) * (dist < holdR ? 1.2 : 0.8);
-    driveToXZ(input, st.pos.x + Math.sin(orb) * 60, st.pos.z + Math.cos(orb) * 60, 0.95);
+    const orb =
+      bearing + orbitSide * (Math.PI / 2) * (dist < holdR ? 1.2 : 0.8);
+    driveToXZ(
+      input,
+      st.pos.x + Math.sin(orb) * 60,
+      st.pos.z + Math.cos(orb) * 60,
+      0.95,
+    );
   }
 
   /**
@@ -2016,7 +2395,10 @@ export function createAI(entity, opts = {}) {
     const st = entity.state;
     const tp = target.state.pos;
     const ty = eyeY(target);
-    let bx = 0, bz = 0, found = false, bestScore = -Infinity;
+    let bx = 0,
+      bz = 0,
+      found = false,
+      bestScore = -Infinity;
     for (const r of [18, 30, 45]) {
       for (let k = 0; k < 8; k++) {
         const a = (k / 8) * TAU;
@@ -2028,11 +2410,19 @@ export function createAI(entity, opts = {}) {
         const cy = hf.getHeightAt(cx, cz) + selfEyeM;
         const sight = hasLos(cx, cy, cz, tp.x, ty, tp.z) ? 1 : 0;
         const score = sight * 100 + ny * 10 - r * 0.1;
-        if (score > bestScore) { bestScore = score; bx = cx; bz = cz; found = true; }
+        if (score > bestScore) {
+          bestScore = score;
+          bx = cx;
+          bz = cz;
+          found = true;
+        }
       }
       if (found && bestScore >= 100) break; // flat AND sighted — take it
     }
-    if (found) { scootPoint.x = bx; scootPoint.z = bz; }
+    if (found) {
+      scootPoint.x = bx;
+      scootPoint.z = bz;
+    }
     return found;
   }
 
@@ -2044,11 +2434,17 @@ export function createAI(entity, opts = {}) {
    */
   function pickScoot() {
     const st = entity.state;
-    const tb = target && target.state
-      ? Math.atan2(target.state.pos.x - st.pos.x, target.state.pos.z - st.pos.z)
-      : st.yaw;
+    const tb =
+      target && target.state
+        ? Math.atan2(
+            target.state.pos.x - st.pos.x,
+            target.state.pos.z - st.pos.z,
+          )
+        : st.yaw;
     const ty = hf.getHeightAt(lastSeen.x, lastSeen.z) + 1.5;
-    let fx = 0, fz = 0, found = false;
+    let fx = 0,
+      fz = 0,
+      found = false;
     for (let k = 0; k < 6; k++) {
       // ±(94°..152°) off the contact bearing — sideways-to-rear arcs
       const a = tb + (k % 2 ? -1 : 1) * (1.65 + 0.5 * ((k / 2) | 0));
@@ -2058,10 +2454,17 @@ export function createAI(entity, opts = {}) {
       if (Math.max(Math.abs(cx), Math.abs(cz)) > 470) continue;
       const cy = hf.getHeightAt(cx, cz) + selfEyeM;
       const sight = hasLos(cx, cy, cz, lastSeen.x, ty, lastSeen.z);
-      if (!found || sight) { fx = cx; fz = cz; found = true; }
+      if (!found || sight) {
+        fx = cx;
+        fz = cz;
+        found = true;
+      }
       if (sight) break;
     }
-    if (found) { scootPoint.x = fx; scootPoint.z = fz; }
+    if (found) {
+      scootPoint.x = fx;
+      scootPoint.z = fz;
+    }
     return found;
   }
 
@@ -2071,13 +2474,19 @@ export function createAI(entity, opts = {}) {
   function pickFriendlyFireLane() {
     if (!target || !target.state) return false;
     const st = entity.state;
-    const tx = target.state.pos.x, tz = target.state.pos.z;
-    let dx = tx - st.pos.x, dz = tz - st.pos.z;
+    const tx = target.state.pos.x,
+      tz = target.state.pos.z;
+    let dx = tx - st.pos.x,
+      dz = tz - st.pos.z;
     const d = Math.hypot(dx, dz) || 1;
-    dx /= d; dz /= d;
-    const px = dz, pz = -dx;
+    dx /= d;
+    dz /= d;
+    const px = dz,
+      pz = -dx;
     const friends = getAllies ? getAllies() : [];
-    let bestScore = -Infinity, bx = 0, bz = 0;
+    let bestScore = -Infinity,
+      bx = 0,
+      bz = 0;
     for (const r of [22, 34, 46]) {
       for (const side of [angleSide, -angleSide]) {
         const cx = st.pos.x + px * r * side - dx * 4;
@@ -2090,11 +2499,18 @@ export function createAI(entity, opts = {}) {
         for (let i = 0; i < friends.length; i++) {
           const f = friends[i];
           if (!f || !f.state) continue;
-          clearance = Math.min(clearance,
-            Math.hypot(f.state.pos.x - cx, f.state.pos.z - cz));
+          clearance = Math.min(
+            clearance,
+            Math.hypot(f.state.pos.x - cx, f.state.pos.z - cz),
+          );
         }
-        const score = Math.min(40, clearance) - r * 0.12 + (side === angleSide ? 1 : 0);
-        if (score > bestScore) { bestScore = score; bx = cx; bz = cz; }
+        const score =
+          Math.min(40, clearance) - r * 0.12 + (side === angleSide ? 1 : 0);
+        if (score > bestScore) {
+          bestScore = score;
+          bx = cx;
+          bz = cz;
+        }
       }
       if (bestScore > 18) break;
     }
@@ -2123,18 +2539,27 @@ export function createAI(entity, opts = {}) {
     const tp = target.state.pos;
     const th = target.spec.dims.heightM;
     const tw = target.spec.dims.widthM;
-    const ex = st.pos.x, ey = st.pos.y + selfEyeM, ez = st.pos.z;
+    const ex = st.pos.x,
+      ey = st.pos.y + selfEyeM,
+      ez = st.pos.z;
 
     // Lateral basis for the aim-zone offset (perpendicular to LOS, ground plane).
-    let px = tp.z - ez, pz = -(tp.x - ex);
+    let px = tp.z - ez,
+      pz = -(tp.x - ex);
     const pl = Math.hypot(px, pz) || 1;
-    px /= pl; pz /= pl;
+    px /= pl;
+    pz /= pl;
 
     // Base aim point on the chosen zone.
-    _vC.set(tp.x + px * aimLatFrac * tw, tp.y + aimHFrac * th, tp.z + pz * aimLatFrac * tw);
+    _vC.set(
+      tp.x + px * aimLatFrac * tw,
+      tp.y + aimHFrac * th,
+      tp.z + pz * aimLatFrac * tw,
+    );
 
     // Travel-time lead, iterated twice (§3.6).
-    const shell = spec.gun.shells[clamp(chosenSlot, 0, spec.gun.shells.length - 1)];
+    const shell =
+      spec.gun.shells[clamp(chosenSlot, 0, spec.gun.shells.length - 1)];
     const tvx = Math.sin(target.state.yaw) * target.state.speed;
     const tvz = Math.cos(target.state.yaw) * target.state.speed;
     _vD.copy(_vC);
@@ -2154,9 +2579,13 @@ export function createAI(entity, opts = {}) {
     // pressure for the whole battle (r4 unstaged probe, seed 2). Rate is
     // naturally capped by the reload; the aim point is the INTEL position
     // (lastSeen ground line), never the live unspotted target.
-    const blindFire = !losClear && target.isPlayer &&
-      playerShotsInWindow >= 2 && timeS < playerAggroUntilS &&
-      losBlockedT > 15 && dist <= MAX_FIRE_RANGE_M;
+    const blindFire =
+      !losClear &&
+      target.isPlayer &&
+      playerShotsInWindow >= 2 &&
+      timeS < playerAggroUntilS &&
+      losBlockedT > 15 &&
+      dist <= MAX_FIRE_RANGE_M;
     // BLIND LOCK (camo_spotting r5): the return-fire lock can hold a player
     // target the spotting sim does NOT currently show (double-flash claim,
     // or the reveal lapsed mid-lock) with losClear coming from the raw
@@ -2167,12 +2596,19 @@ export function createAI(entity, opts = {}) {
     // live-tracked while hidden) with the blind-fire spread on top: the bot
     // shells the known bush like a WoT player would, and a target that
     // crawled away inside concealment is safe.
-    const blindLock = losClear && target.isPlayer && spotting &&
+    const blindLock =
+      losClear &&
+      target.isPlayer &&
+      spotting &&
       !isVisibleToTeam(target) &&
       (timeS < playerLockUntilS ||
         (playerShotsInWindow >= 2 && timeS < playerAggroUntilS));
     if (blindFire || blindLock) {
-      _vD.set(lastSeen.x, hf.getHeightAt(lastSeen.x, lastSeen.z) + 1.2, lastSeen.z);
+      _vD.set(
+        lastSeen.x,
+        hf.getHeightAt(lastSeen.x, lastSeen.z) + 1.2,
+        lastSeen.z,
+      );
     }
 
     // Difficulty aim error (persistent, resampled periodically).
@@ -2207,14 +2643,17 @@ export function createAI(entity, opts = {}) {
 
     input.aimPoint.copy(_vD);
     input.shellSlot = /** @type {0|1|2} */ (
-      clamp(chosenSlot, 0, Math.min(2, spec.gun.shells.length - 1)));
+      clamp(chosenSlot, 0, Math.min(2, spec.gun.shells.length - 1))
+    );
 
     // ---- fire gates ----
     const reactionOk = timeS - acquiredAtS >= tier.reactionS;
     // r7: a RED gun cannot fire (tryFire hard-blocks it) — the AI must know,
     // or it stands "ready" in the open for the whole 10 s repair.
-    const gunRed = cb && cb.modules && cb.modules.gun && cb.modules.gun.state === 'red';
-    const reloadReady = !cb || (cb.reload && cb.reload.t <= 1e-3 && !cb.destroyed && !gunRed);
+    const gunRed =
+      cb && cb.modules && cb.modules.gun && cb.modules.gun.state === "red";
+    const reloadReady =
+      !cb || (cb.reload && cb.reload.t <= 1e-3 && !cb.destroyed && !gunRed);
     const rangeOk = dist <= MAX_FIRE_RANGE_M;
 
     // Dispersion gate: reticle smaller than half the target width × difficulty factor.
@@ -2233,17 +2672,22 @@ export function createAI(entity, opts = {}) {
     // using the same YXZ hull composition as movement and rendering. A linear
     // pitch/roll approximation can be more than a degree wrong on a sidehill.
     const gy = st.pos.y + selfGunM;
-    const dxA = input.aimPoint.x - ex, dyA = input.aimPoint.y - gy, dzA = input.aimPoint.z - ez;
+    const dxA = input.aimPoint.x - ex,
+      dyA = input.aimPoint.y - gy,
+      dzA = input.aimPoint.z - ez;
     const horiz = Math.hypot(dxA, dzA) || 1e-6;
     const wantYaw = Math.atan2(dxA, dzA);
     const wantPitch = Math.atan2(dyA, horiz);
-    _hullEuler.set(-(st.visualPitch || 0), st.yaw, st.visualRoll || 0, 'YXZ');
+    _hullEuler.set(-(st.visualPitch || 0), st.yaw, st.visualRoll || 0, "YXZ");
     _hullQuat.setFromEuler(_hullEuler);
-    _vF.set(
-      Math.sin(st.turretYaw) * Math.cos(st.gunPitch),
-      Math.sin(st.gunPitch),
-      Math.cos(st.turretYaw) * Math.cos(st.gunPitch),
-    ).applyQuaternion(_hullQuat).normalize();
+    _vF
+      .set(
+        Math.sin(st.turretYaw) * Math.cos(st.gunPitch),
+        Math.sin(st.gunPitch),
+        Math.cos(st.turretYaw) * Math.cos(st.gunPitch),
+      )
+      .applyQuaternion(_hullQuat)
+      .normalize();
     const gunYaw = Math.atan2(_vF.x, _vF.z);
     const gunPitch = Math.atan2(_vF.y, Math.hypot(_vF.x, _vF.z));
     const yawErr = Math.abs(wrapAngle(wantYaw - gunYaw));
@@ -2261,7 +2705,11 @@ export function createAI(entity, opts = {}) {
     // r7: the clamp flag is NOT required — a slope's attitude composite can
     // hold the solution outside the barrel's reach without atGunLimit ever
     // latching (probe: 227 mrad pitch error, lim=false, parked 45 s).
-    if ((st.atGunLimit || pitchErr > 0.1) && gunReady && pitchErr >= tol * 1.5) {
+    if (
+      (st.atGunLimit || pitchErr > 0.1) &&
+      gunReady &&
+      pitchErr >= tol * 1.5
+    ) {
       arcLimitedT += dt;
     } else if ((!st.atGunLimit && pitchErr <= 0.1) || pitchErr < tol * 1.5) {
       arcLimitedT = 0;
@@ -2278,7 +2726,7 @@ export function createAI(entity, opts = {}) {
         scootUntilS = timeS + 10;
         hasMoveTarget = false;
         hasCoverPoint = false;
-        if (mode === 'seekCover') mode = 'engage';
+        if (mode === "seekCover") mode = "engage";
       }
       arcLimitedT = 0;
     }
@@ -2293,14 +2741,30 @@ export function createAI(entity, opts = {}) {
     else dispGateT = Math.max(0, dispGateT - dt * 2);
     const dispersionPass = dispersionOk || dispGateT > 2.5;
 
-    const wouldFire = (gunReady && dispersionPass && alignOk &&
+    const wouldFire =
+      (gunReady &&
+        dispersionPass &&
+        alignOk &&
         (penGateOk || chosenSlot === heSlot)) ||
       // blind bush-fire skips LOS/pen/dispersion gates — the lay itself is
       // the message — but still demands reaction time, a seated shell and
       // the gun actually pointed at the intel position.
       (blindFire && reactionOk && reloadReady && rangeOk && alignOk);
-    const friendlyRisk = wouldFire && getAllies
-      ? botFriendlyFireRisk(entity, input.aimPoint, shell, getAllies()) : null;
+    // W06b: shells launch along the live bore (_vF), not toward
+    // input.aimPoint - mid-traverse the rays diverge, so a corridor cleared
+    // on aimPoint can still sweep an ally (and vice versa). Project the
+    // intended range along the live bore and run the same rule there; the
+    // authoritative tryFire gate applies the identical launch-ray check.
+    let friendlyRisk = null;
+    if (wouldFire && getAllies) {
+      const layLen = Math.max(4, dist);
+      _vG.set(
+        st.pos.x + _vF.x * layLen,
+        input.aimPoint.y,
+        st.pos.z + _vF.z * layLen,
+      );
+      friendlyRisk = botFriendlyFireRisk(entity, _vG, shell, getAllies());
+    }
     if (friendlyRisk) {
       if (friendlyBlockT <= 0) friendlyBlockCount++;
       friendlyBlockT += dt;
@@ -2313,11 +2777,15 @@ export function createAI(entity, opts = {}) {
     if (input.fire) lastFiredAtS = timeS; // STALEMATE BREAKER bookkeeping (r5)
     // controls_gunnery r5 debug surface (headless probes): why is/isn't this
     // bot firing right now? Plain snapshot object — no live references.
-    _dbg.losClear = losClear; _dbg.reactionOk = reactionOk;
-    _dbg.reloadReady = reloadReady; _dbg.rangeOk = rangeOk;
-    _dbg.dispersionOk = dispersionOk; _dbg.dispGateT = +dispGateT.toFixed(1);
+    _dbg.losClear = losClear;
+    _dbg.reactionOk = reactionOk;
+    _dbg.reloadReady = reloadReady;
+    _dbg.rangeOk = rangeOk;
+    _dbg.dispersionOk = dispersionOk;
+    _dbg.dispGateT = +dispGateT.toFixed(1);
     _dbg.alignOk = alignOk;
-    _dbg.penGateOk = penGateOk; _dbg.slot = chosenSlot;
+    _dbg.penGateOk = penGateOk;
+    _dbg.slot = chosenSlot;
     _dbg.friendlyBlocked = !!friendlyRisk;
     _dbg.friendlyBlockKind = friendlyRisk ? friendlyRisk.kind : null;
     _dbg.friendlyBlockId = friendlyRisk ? friendlyRisk.allyId : null;
@@ -2334,31 +2802,35 @@ export function createAI(entity, opts = {}) {
     const cb = entity.combat;
 
     switch (mode) {
-      case 'patrol':
+      case "patrol":
         if (target && losClear) {
-          mode = 'engage';
+          mode = "engage";
           hasMoveTarget = false;
           coverTimer = 0;
         }
         break;
 
-      case 'engage': {
+      case "engage": {
         if (!target && timeS - lastSeenAtS > TARGET_MEMORY_S + 6) {
-          mode = 'patrol';
+          mode = "patrol";
           break;
         }
         // Hull-down search on a slow cadence (coverIQ gates how often it
         // happens; r5 — decays over the battle + zero during a forced push).
         if (target && losClear && coverTimer <= 0) {
           coverTimer = COVER_INTERVAL_S;
-          if (rng() < effCoverIQ() && findCrest(moveTarget, false)) hasMoveTarget = true;
+          if (rng() < effCoverIQ() && findCrest(moveTarget, false))
+            hasMoveTarget = true;
         }
         // Long reload + low commitment → duck into full cover.
         if (target && cb && cb.reload && cb.reload.t > 2.0) {
-          if (!coverRolled) { coverRolled = true; coverRollPassed = rng() < effCoverIQ(); }
+          if (!coverRolled) {
+            coverRolled = true;
+            coverRollPassed = rng() < effCoverIQ();
+          }
           if (coverRollPassed && findCrest(coverPoint, true)) {
             hasCoverPoint = true;
-            mode = 'seekCover';
+            mode = "seekCover";
           }
         } else if (cb && cb.reload && cb.reload.t <= 1e-3) {
           coverRolled = false;
@@ -2366,10 +2838,10 @@ export function createAI(entity, opts = {}) {
         break;
       }
 
-      case 'seekCover': {
+      case "seekCover": {
         const reloading = cb && cb.reload && cb.reload.t > 0.6;
         if (!reloading || !hasCoverPoint) {
-          mode = 'engage';
+          mode = "engage";
           hasMoveTarget = false;
           hasCoverPoint = false;
           coverRolled = false;
@@ -2377,14 +2849,18 @@ export function createAI(entity, opts = {}) {
         break;
       }
 
-      case 'flank': {
+      case "flank": {
         if (!target || !enemyAlive(target)) {
-          mode = target ? 'engage' : 'patrol';
+          mode = target ? "engage" : "patrol";
           nonPenCount = 0;
           break;
         }
-        if (timeS > flankUntilS || aspectAngle() > FLANK_ASPECT_RAD || flankIndex >= 3) {
-          mode = 'engage';
+        if (
+          timeS > flankUntilS ||
+          aspectAngle() > FLANK_ASPECT_RAD ||
+          flankIndex >= 3
+        ) {
+          mode = "engage";
           nonPenCount = 0;
           hasMoveTarget = false;
           probeTimer = 0;
@@ -2401,10 +2877,23 @@ export function createAI(entity, opts = {}) {
     // essentially on the gun already.
     const st = entity.state;
     const aimP = entity.input.aimPoint;
-    const yawPinned = st.atGunLimit && aimP &&
-      Math.abs(wrapAngle(
-        Math.atan2(aimP.x - st.pos.x, aimP.z - st.pos.z) - st.yaw - st.turretYaw)) > 0.02;
-    if (mode === 'engage' && target && losClear && st.atGunLimit && !yawPinned) {
+    const yawPinned =
+      st.atGunLimit &&
+      aimP &&
+      Math.abs(
+        wrapAngle(
+          Math.atan2(aimP.x - st.pos.x, aimP.z - st.pos.z) -
+            st.yaw -
+            st.turretYaw,
+        ),
+      ) > 0.02;
+    if (
+      mode === "engage" &&
+      target &&
+      losClear &&
+      st.atGunLimit &&
+      !yawPinned
+    ) {
       gunLimitT += dt;
       if (gunLimitT > GUN_LIMIT_NUDGE_S && timeS >= nudgeUntilS) {
         nudgeUntilS = timeS + 1.2;
@@ -2433,7 +2922,7 @@ export function createAI(entity, opts = {}) {
     } else {
       routeTimer = UNSTICK_TIME_S + 6;
     }
-    if (mode === 'patrol' && waypoints.length > 1) {
+    if (mode === "patrol" && waypoints.length > 1) {
       if (wpIndex < waypoints.length - 1) wpIndex++;
       else if (loopWaypoints) wpIndex = 0;
     } else if (hasMoveTarget) {
@@ -2458,7 +2947,10 @@ export function createAI(entity, opts = {}) {
     const cb = entity.combat;
 
     if (cb && cb.destroyed) {
-      input.throttle = 0; input.steer = 0; input.brake = false; input.fire = false;
+      input.throttle = 0;
+      input.steer = 0;
+      input.brake = false;
+      input.fire = false;
       return;
     }
 
@@ -2474,7 +2966,11 @@ export function createAI(entity, opts = {}) {
       lastHp = cb.hp;
     }
 
-    losTimer -= dt; probeTimer -= dt; coverTimer -= dt; errTimer -= dt; obstacleTimer -= dt;
+    losTimer -= dt;
+    probeTimer -= dt;
+    coverTimer -= dt;
+    errTimer -= dt;
+    obstacleTimer -= dt;
     routeTimer -= dt; // r7 corner-hop replan cadence
 
     if (obstacleTimer <= 0) {
@@ -2496,8 +2992,11 @@ export function createAI(entity, opts = {}) {
     if (errTimer <= 0) resampleAimError();
 
     // Blocked-sightline timer for the vantage seek (driveEngage).
-    if (mode === 'engage' && target && !losClear) losBlockedT += dt;
-    else { losBlockedT = 0; if (losClear) hasVantage = false; }
+    if (mode === "engage" && target && !losClear) losBlockedT += dt;
+    else {
+      losBlockedT = 0;
+      if (losClear) hasVantage = false;
+    }
 
     // STALEMATE BREAKER (controls_gunnery r5): a bot with a known living
     // contact that has not pulled the trigger for STALEMATE_SILENT_S is
@@ -2506,14 +3005,18 @@ export function createAI(entity, opts = {}) {
     // is blocked sample a fresh vantage immediately. Keeps mid-battle
     // tracer traffic alive instead of decaying to 1-2 shells/10 s.
     {
-      const hasContact = (target && enemyAlive(target)) ||
-        (timeS - lastSeenAtS < TARGET_MEMORY_S + 6);
-      if (hasContact && timeS - lastFiredAtS > STALEMATE_SILENT_S &&
-          timeS >= pressUntilS) {
+      const hasContact =
+        (target && enemyAlive(target)) ||
+        timeS - lastSeenAtS < TARGET_MEMORY_S + 6;
+      if (
+        hasContact &&
+        timeS - lastFiredAtS > STALEMATE_SILENT_S &&
+        timeS >= pressUntilS
+      ) {
         pressUntilS = timeS + STALEMATE_PUSH_S;
         hasMoveTarget = false;
         hasCoverPoint = false;
-        if (mode === 'seekCover' || mode === 'patrol') mode = 'engage';
+        if (mode === "seekCover" || mode === "patrol") mode = "engage";
         if (target && !losClear && findVantage()) hasVantage = true;
         // r7 SHOT STARVATION SETTLE: contact held, ray clear, still no shot
         // for 12+ s — the dispersion/alignment churn from constant micro-
@@ -2522,21 +3025,29 @@ export function createAI(entity, opts = {}) {
         // made it WORSE — more churn). Force a clean 3.5 s halt: the
         // settled-shot timeout (dispGateT) then takes the wide shot.
         if (target && losClear) settleUntilS = timeS + 3.5;
-      } else if (timeS >= deploymentUntilS && !hasContact &&
-                 timeS - lastFiredAtS > 25 &&
-                 timeS >= pressUntilS) {
+      } else if (
+        timeS >= deploymentUntilS &&
+        !hasContact &&
+        timeS - lastFiredAtS > 25 &&
+        timeS >= pressUntilS
+      ) {
         // NO contact and a long quiet stretch: re-route the patrol toward
         // the nearest living opponent's AREA (route intel only — spotting
         // still gates acquisition), so late battles never decay into two
         // survivors idling on opposite map rims with dead airwaves.
         const list = deps.getEnemies();
-        let bestE = null, bestD2 = Infinity;
+        let bestE = null,
+          bestD2 = Infinity;
         for (let i = 0; i < list.length; i++) {
           const e = list[i];
           if (!enemyAlive(e)) continue;
-          const dx = e.state.pos.x - st.pos.x, dz = e.state.pos.z - st.pos.z;
+          const dx = e.state.pos.x - st.pos.x,
+            dz = e.state.pos.z - st.pos.z;
           const d2 = dx * dx + dz * dz;
-          if (d2 < bestD2) { bestD2 = d2; bestE = e; }
+          if (d2 < bestD2) {
+            bestD2 = d2;
+            bestE = e;
+          }
         }
         if (bestE) {
           pressUntilS = timeS + STALEMATE_PUSH_S;
@@ -2556,7 +3067,7 @@ export function createAI(entity, opts = {}) {
           wpIndex = 0;
           autoPatrolBuilt = true;
           loopWaypoints = false;
-          if (mode === 'seekCover') mode = 'engage';
+          if (mode === "seekCover") mode = "engage";
         }
       }
     }
@@ -2581,14 +3092,18 @@ export function createAI(entity, opts = {}) {
           shotsFromSpot = 0;
         }
         shotsFromSpot++;
-        if (tune.scootAfter > 0 && shotsFromSpot >= tune.scootAfter &&
-            timeS >= scootUntilS && pickScoot()) {
+        if (
+          tune.scootAfter > 0 &&
+          shotsFromSpot >= tune.scootAfter &&
+          timeS >= scootUntilS &&
+          pickScoot()
+        ) {
           scootUntilS = timeS + 14; // window bounds the drive, arrival ends it
           // the relocation IS the survival play — drop any competing
           // cover/hull-down intention so the leg actually happens
           hasMoveTarget = false;
           hasCoverPoint = false;
-          if (mode === 'seekCover') mode = 'engage';
+          if (mode === "seekCover") mode = "engage";
         }
       }
       prevReloadT = rt;
@@ -2603,7 +3118,7 @@ export function createAI(entity, opts = {}) {
           scootUntilS = timeS + 10;
           hasMoveTarget = false;
           hasCoverPoint = false;
-          if (mode === 'seekCover') mode = 'engage';
+          if (mode === "seekCover") mode = "engage";
         }
         probeMissT = 0;
       }
@@ -2612,21 +3127,37 @@ export function createAI(entity, opts = {}) {
       // dead (finish it). A burst retreat requires the gun to be cycling or
       // the hull to be genuinely isolated, so a supported loaded brawler does
       // not abandon a favorable trade after every penetration.
-      if (timeS >= fallbackUntilS && timeS >= fallbackCdS &&
-          mode === 'engage' && target && getAllies) {
+      if (
+        timeS >= fallbackUntilS &&
+        timeS >= fallbackCdS &&
+        mode === "engage" &&
+        target &&
+        getAllies
+      ) {
         const hpFrac = cb && cb.maxHp ? cb.hp / cb.maxHp : 1;
-        const trackRed = cb && cb.modules &&
-          ((cb.modules.trackL && cb.modules.trackL.state === 'red') ||
-           (cb.modules.trackR && cb.modules.trackR.state === 'red'));
-        const tgtNearDead = target.combat && target.combat.maxHp &&
+        const trackRed =
+          cb &&
+          cb.modules &&
+          ((cb.modules.trackL && cb.modules.trackL.state === "red") ||
+            (cb.modules.trackR && cb.modules.trackR.state === "red"));
+        const tgtNearDead =
+          target.combat &&
+          target.combat.maxHp &&
           target.combat.hp / target.combat.maxHp < 0.18;
         const reloading = cb && cb.reload && cb.reload.t > 0.8;
-        const burstHit = cb && cb.maxHp && timeS <= burstDamageUntilS &&
+        const burstHit =
+          cb &&
+          cb.maxHp &&
+          timeS <= burstDamageUntilS &&
           burstDamage / cb.maxHp >= BURST_RETREAT_FRAC &&
           (reloading || outnumberedSolo());
-        if ((hpFrac < FALLBACK_HP_FRAC[role] || trackRed || burstHit) &&
-            !tgtNearDead && distToTarget < roleHoldR() * 1.35) {
-          let f = null, fd2 = Infinity;
+        if (
+          (hpFrac < FALLBACK_HP_FRAC[role] || trackRed || burstHit) &&
+          !tgtNearDead &&
+          distToTarget < roleHoldR() * 1.35
+        ) {
+          let f = null,
+            fd2 = Infinity;
           const friends = getAllies();
           for (let i = 0; i < friends.length; i++) {
             const a = friends[i];
@@ -2634,23 +3165,30 @@ export function createAI(entity, opts = {}) {
             const fdx = a.state.pos.x - st.pos.x;
             const fdz = a.state.pos.z - st.pos.z;
             const d2 = fdx * fdx + fdz * fdz;
-            if (d2 > 25 * 25 && d2 < fd2) { fd2 = d2; f = a; }
+            if (d2 > 25 * 25 && d2 < fd2) {
+              fd2 = d2;
+              f = a;
+            }
           }
           if (f && fd2 < 400 * 400) {
             fallbackPoint.x = f.state.pos.x;
             fallbackPoint.z = f.state.pos.z;
             // reverse when the support is behind (rear ~160° cone): the bow
             // armor stays on the threat while the hull backs out
-            const toF = Math.atan2(fallbackPoint.x - st.pos.x,
-              fallbackPoint.z - st.pos.z);
-            fallbackReverse = Math.abs(wrapAngle(toF - st.yaw)) > Math.PI * 0.55;
+            const toF = Math.atan2(
+              fallbackPoint.x - st.pos.x,
+              fallbackPoint.z - st.pos.z,
+            );
+            fallbackReverse =
+              Math.abs(wrapAngle(toF - st.yaw)) > Math.PI * 0.55;
           } else {
             // No support in reach: create distance from the known threat
             // instead of remaining exposed merely because the team is gone.
             let ax = st.pos.x - target.state.pos.x;
             let az = st.pos.z - target.state.pos.z;
             const al = Math.hypot(ax, az) || 1;
-            ax /= al; az /= al;
+            ax /= al;
+            az /= al;
             fallbackPoint.x = clamp(st.pos.x + ax * 75, -470, 470);
             fallbackPoint.z = clamp(st.pos.z + az * 75, -470, 470);
             fallbackReverse = true;
@@ -2668,14 +3206,19 @@ export function createAI(entity, opts = {}) {
     // not a blocked trigger forever. Movement begins on the tick after the
     // fire-discipline gate observes the corridor, keeping AI/fire ordering
     // deterministic and identical for both teams.
-    if (friendlyBlockT >= FRIENDLY_LANE_RELOCATE_S && target && losClear &&
-        timeS >= scootUntilS && pickFriendlyFireLane()) {
+    if (
+      friendlyBlockT >= FRIENDLY_LANE_RELOCATE_S &&
+      target &&
+      losClear &&
+      timeS >= scootUntilS &&
+      pickFriendlyFireLane()
+    ) {
       scootUntilS = timeS + 7;
       friendlyBlockT = 0;
       friendlyLaneMoves++;
       hasMoveTarget = false;
       hasCoverPoint = false;
-      if (mode === 'seekCover') mode = 'engage';
+      if (mode === "seekCover") mode = "engage";
     }
 
     // ---- movement by mode ----
@@ -2684,8 +3227,13 @@ export function createAI(entity, opts = {}) {
     if (timeS < settleUntilS && target && losClear) {
       // r7 SHOT-STARVATION SETTLE (see the stalemate breaker): a clean halt
       // facing the contact so the settled-shot timeout can take the shot.
-      faceYaw(input, Math.atan2(
-        target.state.pos.x - st.pos.x, target.state.pos.z - st.pos.z));
+      faceYaw(
+        input,
+        Math.atan2(
+          target.state.pos.x - st.pos.x,
+          target.state.pos.z - st.pos.z,
+        ),
+      );
     } else if (timeS < scootUntilS) {
       // BATTLE-AI r7 SHOOT-AND-SCOOT: an active relocation leg overrides mode
       // movement in every mode (the turret keeps aiming/firing via
@@ -2700,12 +3248,18 @@ export function createAI(entity, opts = {}) {
       }
     } else {
       switch (mode) {
-        case 'patrol':    drivePatrol(input); break;
-        case 'engage':    driveEngage(input, timeS, distToTarget); break;
-        case 'seekCover':
-          if (driveToXZ(input, coverPoint.x, coverPoint.z, 0.9)) { /* wait out the reload */ }
+        case "patrol":
+          drivePatrol(input);
           break;
-        case 'flank': {
+        case "engage":
+          driveEngage(input, timeS, distToTarget);
+          break;
+        case "seekCover":
+          if (driveToXZ(input, coverPoint.x, coverPoint.z, 0.9)) {
+            /* wait out the reload */
+          }
+          break;
+        case "flank": {
           const fp = flankPoints[Math.min(flankIndex, 2)];
           if (driveToXZ(input, fp.x, fp.z, 1.0)) flankIndex++;
           break;
@@ -2761,8 +3315,10 @@ export function createAI(entity, opts = {}) {
       lowSpeedT = 0;
       navNoProgressT = 0; // r6: reversing away — give the goal a fresh chance
       navBestD = Infinity;
-    } else if (driveIntent &&
-               (Math.abs(st.speed) < 0.3 || progressRate < 0.45)) {
+    } else if (
+      driveIntent &&
+      (Math.abs(st.speed) < 0.3 || progressRate < 0.45)
+    ) {
       // r6: arming keys on driveIntent, NOT |throttle|>0.25 — avoidObstacles'
       // x0.6 damping and the arrival ease-in put wedged bots at 0.07-0.24
       // throttle, which is exactly when the unstick must be armable (probe:
@@ -2838,11 +3394,16 @@ export function createAI(entity, opts = {}) {
     if (!hitEvent) return;
     if (target && hitEvent.targetId === target.id) {
       const k = hitEvent.kind;
-      if (k === 'nonpen' || k === 'ricochet' || k === 'spaced_absorb' || k === 'era') {
+      if (
+        k === "nonpen" ||
+        k === "ricochet" ||
+        k === "spaced_absorb" ||
+        k === "era"
+      ) {
         nonPenCount++;
         probeTimer = 0; // re-evaluate aim zone / shell slot immediately
-        if (nonPenCount >= 2 && mode !== 'flank') startFlank(nowS);
-      } else if (k === 'pen' || k === 'he_pen') {
+        if (nonPenCount >= 2 && mode !== "flank") startFlank(nowS);
+      } else if (k === "pen" || k === "he_pen") {
         nonPenCount = 0;
       }
     }
@@ -2857,8 +3418,14 @@ export function createAI(entity, opts = {}) {
    * @param {object} shooterEnt TankEntity that fired the shell
    */
   function notifyUnderFire(shooterEnt) {
-    if (!shooterEnt || !shooterEnt.state || !shooterEnt.combat ||
-        shooterEnt.combat.destroyed || shooterEnt.team === entity.team) return;
+    if (
+      !shooterEnt ||
+      !shooterEnt.state ||
+      !shooterEnt.combat ||
+      shooterEnt.combat.destroyed ||
+      shooterEnt.team === entity.team
+    )
+      return;
     if (shooterEnt.isPlayer) {
       // sticky attacker-of-record slot (r4) — teammate hits can't erase it
       playerAggro = shooterEnt;
@@ -2873,21 +3440,26 @@ export function createAI(entity, opts = {}) {
     // player's escorts instead (r5 probe: aggro'd bots stalled mid-chase,
     // 76 enemy shells / 2 aimed at the player). The intel position now only
     // updates when the shooter IS — or here BECOMES — the target.
-    const takesSlot = !target || !enemyAlive(target) ||
-        shooterEnt === target ||
-        (shooterEnt.isPlayer && target !== shooterEnt);
+    const takesSlot =
+      !target ||
+      !enemyAlive(target) ||
+      shooterEnt === target ||
+      (shooterEnt.isPlayer && target !== shooterEnt);
     if (takesSlot) {
       lastSeen.x = shooterEnt.state.pos.x;
       lastSeen.z = shooterEnt.state.pos.z;
       lastSeenAtS = nowS;
     }
-    if (!target || !enemyAlive(target) ||
-        (shooterEnt.isPlayer && target !== shooterEnt)) {
+    if (
+      !target ||
+      !enemyAlive(target) ||
+      (shooterEnt.isPlayer && target !== shooterEnt)
+    ) {
       target = shooterEnt;
       acquiredAtS = nowS;
       nonPenCount = 0;
       probeTimer = 0;
-      if (mode === 'patrol') mode = 'engage';
+      if (mode === "patrol") mode = "engage";
     }
   }
 
@@ -2908,15 +3480,26 @@ export function createAI(entity, opts = {}) {
    *   receivers (0 = nearest enemy to the player; state.js sorts the fan-out)
    */
   function notifyPlayerFired(shooterEnt, rank = 99) {
-    if (!shooterEnt || !shooterEnt.state || !shooterEnt.combat ||
-        shooterEnt.combat.destroyed || shooterEnt.team === entity.team) return;
+    if (
+      !shooterEnt ||
+      !shooterEnt.state ||
+      !shooterEnt.combat ||
+      shooterEnt.combat.destroyed ||
+      shooterEnt.team === entity.team
+    )
+      return;
     // REPEAT-OFFENDER COUNT (controls_gunnery r2): shots inside one intel
     // window accumulate; the count resets when the window lapses.
     if (nowS > playerAggroUntilS) playerShotsInWindow = 0;
     playerShotsInWindow += 1;
     playerAggro = shooterEnt;
-    playerAggroUntilS = Math.max(playerAggroUntilS, nowS +
-      (playerShotsInWindow >= 2 ? MUZZLE_INTEL_REPEAT_WINDOW_S : MUZZLE_INTEL_WINDOW_S));
+    playerAggroUntilS = Math.max(
+      playerAggroUntilS,
+      nowS +
+        (playerShotsInWindow >= 2
+          ? MUZZLE_INTEL_REPEAT_WINDOW_S
+          : MUZZLE_INTEL_WINDOW_S),
+    );
     const sp = shooterEnt.state.pos;
     // RETURN-FIRE LOCK (controls_gunnery r4): one of the nearest ranked
     // enemies with a clear personal ray converts the muzzle flash into a
@@ -2925,11 +3508,21 @@ export function createAI(entity, opts = {}) {
     // courtesy: shot 1 from a formally unspotted bush only locks bots the
     // spotting sim shows the player to; a SECOND flash from the same window
     // is unambiguous and locks regardless (r2 hardClaim precedent).
-    if (rank <= PLAYER_LOCK_RANK &&
-        (isVisibleToTeam(shooterEnt) || playerShotsInWindow >= 2)) {
+    if (
+      rank <= PLAYER_LOCK_RANK &&
+      (isVisibleToTeam(shooterEnt) || playerShotsInWindow >= 2)
+    ) {
       const st = entity.state;
-      if (hasLos(st.pos.x, st.pos.y + selfEyeM, st.pos.z,
-                 sp.x, eyeY(shooterEnt), sp.z)) {
+      if (
+        hasLos(
+          st.pos.x,
+          st.pos.y + selfEyeM,
+          st.pos.z,
+          sp.x,
+          eyeY(shooterEnt),
+          sp.z,
+        )
+      ) {
         playerLockUntilS = nowS + PLAYER_LOCK_S;
         if (target !== shooterEnt) {
           target = shooterEnt;
@@ -2938,12 +3531,13 @@ export function createAI(entity, opts = {}) {
           probeTimer = 0;
         }
         losClear = true;
-        lastSeen.x = sp.x; lastSeen.z = sp.z;
+        lastSeen.x = sp.x;
+        lastSeen.z = sp.z;
         lastSeenAtS = nowS;
         hasMoveTarget = false;
         hasCoverPoint = false;
         hasVantage = false;
-        if (mode !== 'engage' && mode !== 'flank') mode = 'engage';
+        if (mode !== "engage" && mode !== "flank") mode = "engage";
         return;
       }
     }
@@ -2952,7 +3546,8 @@ export function createAI(entity, opts = {}) {
     // or BECOMES the target, so a bot mid-duel with an allied bot keeps its
     // own chase intel.
     if (target === shooterEnt) {
-      lastSeen.x = sp.x; lastSeen.z = sp.z;
+      lastSeen.x = sp.x;
+      lastSeen.z = sp.z;
       lastSeenAtS = nowS;
     }
     if (!target || !enemyAlive(target)) {
@@ -2970,11 +3565,16 @@ export function createAI(entity, opts = {}) {
         acquiredAtS = nowS;
         nonPenCount = 0;
         probeTimer = 0;
-        lastSeen.x = sp.x; lastSeen.z = sp.z;
+        lastSeen.x = sp.x;
+        lastSeen.z = sp.z;
         lastSeenAtS = nowS;
-        if (mode === 'patrol') mode = 'engage';
+        if (mode === "patrol") mode = "engage";
       }
-    } else if (playerShotsInWindow >= 2 && target !== shooterEnt && !target.isPlayer) {
+    } else if (
+      playerShotsInWindow >= 2 &&
+      target !== shooterEnt &&
+      !target.isPlayer
+    ) {
       // controls_gunnery r2: a player who keeps firing inside one intel
       // window takes the target slot OUTRIGHT — even from an ENGAGED bot and
       // even without personal LOS. r5's design left engaged bots on their
@@ -2988,9 +3588,10 @@ export function createAI(entity, opts = {}) {
       acquiredAtS = nowS;
       nonPenCount = 0;
       probeTimer = 0;
-      lastSeen.x = sp.x; lastSeen.z = sp.z; // chase the MUZZLE position (r4)
+      lastSeen.x = sp.x;
+      lastSeen.z = sp.z; // chase the MUZZLE position (r4)
       lastSeenAtS = nowS;
-      if (mode === 'patrol' || mode === 'seekCover') mode = 'engage';
+      if (mode === "patrol" || mode === "seekCover") mode = "engage";
     }
   }
 
@@ -3010,35 +3611,46 @@ export function createAI(entity, opts = {}) {
     notifyUnderFire,
     notifyPlayerFired,
     notifyFriendlyBlocked,
-    get targetId() { return target ? target.id : null; },
+    get targetId() {
+      return target ? target.id : null;
+    },
     /** Headless-probe introspection (controls_gunnery r5): gate snapshot. */
     debugInfo: () => ({
-      mode, targetId: target ? target.id : null,
+      mode,
+      targetId: target ? target.id : null,
       targetIsPlayer: !!(target && target.isPlayer),
       // BATTLE-AI r7 doctrine surface: class role + measurable signals
       // (sniper relocations, live scoot/kite/fallback windows) for probes.
-      role, relocations, shotsFromSpot,
+      role,
+      relocations,
+      shotsFromSpot,
       scooting: nowS < scootUntilS,
       kiting: nowS < kiteUntilS,
       fallingBack: nowS < fallbackUntilS,
-      hpFrac: entity.combat && entity.combat.maxHp
-        ? +(entity.combat.hp / entity.combat.maxHp).toFixed(2) : 1,
+      hpFrac:
+        entity.combat && entity.combat.maxHp
+          ? +(entity.combat.hp / entity.combat.maxHp).toFixed(2)
+          : 1,
       burstDamage: Math.round(burstDamage),
       friendlyBlockT: +friendlyBlockT.toFixed(2),
       friendlyBlockCount,
       friendlyLaneMoves,
       friendlyBlockKind: lastFriendlyRisk ? lastFriendlyRisk.kind : null,
       friendlyBlockId: lastFriendlyRisk ? lastFriendlyRisk.allyId : null,
-      losBlockedT: +losBlockedT.toFixed(1), hasVantage,
-      navT: +navNoProgressT.toFixed(1), strikes: stuckStrikes, // r6 watchdog
-      playerBudgetT: +(nowS - lastPlayerEngageS).toFixed(1),   // r6 budget arm
+      losBlockedT: +losBlockedT.toFixed(1),
+      hasVantage,
+      navT: +navNoProgressT.toFixed(1),
+      strikes: stuckStrikes, // r6 watchdog
+      playerBudgetT: +(nowS - lastPlayerEngageS).toFixed(1), // r6 budget arm
       pressing: nowS < pressUntilS,
       playerShotsInWindow, // r2: repeat-offender aggro count (intel window)
       playerLocked: nowS < playerLockUntilS, // r4 RETURN-FIRE LOCK live
       // camo_spotting r7: chase-intel snapshot for the acquisition selftest —
       // asserts a hardClaim keeps the MUZZLE stamp, never the live position,
       // while the spotting sim hides the shooter.
-      lastSeenX: lastSeen.x, lastSeenZ: lastSeen.z, lastSeenAtS,
+      lastSeenX: lastSeen.x,
+      lastSeenZ: lastSeen.z,
+      lastSeenAtS,
       ..._dbg,
     }),
     state: mode,

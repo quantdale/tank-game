@@ -24,7 +24,7 @@
  */
 import * as THREE from 'three';
 import { createRenderer, onResize } from './engine/renderer.js';
-import { createOffscreenSceneWarmer } from './engine/offscreenWarm.js';
+import { createOffscreenSceneWarmer, compileParticleFamilies } from './engine/offscreenWarm.js';
 import {
   disposeObject3DResources, residentResourceLimits,
 } from './engine/resourceLifetime.js';
@@ -5477,7 +5477,36 @@ await bootStage('post', async () => {
   const t0 = performance.now();
   try { renderer.compile(scene, camera, scene); } catch (_) { /* first render is fallback */ }
   BOOT_TIMINGS.postCompile = Math.round(performance.now() - t0);
+  // W02 cold-boot: the scene compile above never covers the POST chain's own
+  // fullscreen-quad programs (aerial/GTAO/bloom/grade/SMAA/FSR/copy blits).
+  // They used to first-link serially inside post.render below — the measured
+  // ~18.9 s cold `postFirstRender` storm. Submit them all now (cheap, no link
+  // wait) so the parallel window that follows can link every family at once.
+  try {
+    const submitted = post.submitPrograms(renderer);
+    BOOT_TIMINGS.postSubmit = submitted.submitMs;
+    if (typeof window !== 'undefined') {
+      window.__POST_WARM_STATS = submitted;
+    }
+  } catch (_) { /* first render is fallback */ }
   await nextFrame();
+  // W02 cold-boot: breathe real frames until all programs report linked
+  // (KHR_parallel_shader_compile), then run deferred uniform discovery so
+  // the first composer render pays zero first-use uniform work. Without the
+  // extension this returns immediately and the legacy behavior below is the
+  // byte-identical fallback.
+  try {
+    const settled = await post.settleProgramLinks(renderer, nextFrame);
+    BOOT_TIMINGS.postLinkWait = settled.ms;
+    BOOT_TIMINGS.postLinkParallel = settled.parallel;
+    BOOT_TIMINGS.postLinkDiscovered = settled.discovered;
+    if (typeof window !== 'undefined' && window.__POST_WARM_STATS) {
+      window.__POST_WARM_STATS.linkWaitMs = settled.ms;
+      window.__POST_WARM_STATS.linkParallel = settled.parallel;
+      window.__POST_WARM_STATS.programsBeforeFirstRender =
+        (renderer.info.programs || []).length;
+    }
+  } catch (_) { /* first render is fallback */ }
   // SA-11 attribution marks: at ff4708af this stage read ~27 s on the Windows
   // cert host while postCompile was only ~0.14 s — split the remainder so
   // __BOOT_TIMINGS names whether the cascade pre-render or the first composer
@@ -5488,6 +5517,16 @@ await bootStage('post', async () => {
   const tFirstRender = performance.now();
   post.render(SIM_DT);
   BOOT_TIMINGS.postFirstRender = Math.round(performance.now() - tFirstRender);
+  // W02 cold-boot: prove the claim — the first composer render must now find
+  // ZERO unlinked/new post-chain programs (they were submitted and linked in
+  // the windows above). A nonzero delta means a family escaped the inventory.
+  try {
+    if (typeof window !== 'undefined' && window.__POST_WARM_STATS) {
+      window.__POST_WARM_STATS.firstRenderNewPrograms = Math.max(0,
+        (renderer.info.programs || []).length
+        - (window.__POST_WARM_STATS.programsBeforeFirstRender || 0));
+    }
+  } catch (_) { /* telemetry only */ }
   // W2-B: that first render only links passes that DREW on it. LateFx.Copy
   // (skips while soft FX are idle), FSR1.EASU (skips at 1:1 raster) and
   // SceneAA.Copy (MSAA-only resolve path) would otherwise first-link on a
@@ -5824,6 +5863,19 @@ function* warmCombatPipelineSteps() {
       // rendered frame after the pools flip visible (program/texture
       // first-use lands in that frame's rAF wait, not in the emit itself).
       warmTrace.stages.fxMuzzleCall = Math.round(performance.now() - _fxT0);
+      // B14 (fx first-use staging): pay every particle pool's GPU program
+      // first-use HERE, inside this hidden warm slice — the pools flip
+      // visible on claim() and renderer.compile() traverses visible objects
+      // only, so without this sweep the next presented frame's rAF wait
+      // absorbed ALL families' links+uploads in one stall (measured
+      // fxMuzzleWait 0.7 s quiet → 21.8 s co-tenant). The sweep forces each
+      // pool visible for compile traversal only, restores visibility/mask
+      // exactly, and presents nothing; programs persist across the toggle.
+      try {
+        const _pc0 = performance.now();
+        compileParticleFamilies(renderer, fx.group, camera, scene);
+        warmTrace.stages.fxPoolCompile = Math.round(performance.now() - _pc0);
+      } catch (_) { /* warm only */ }
       // MOBILE-QA r11 (idle profiler): the volley ran as ONE generator slice
       // (~1.1 s of garage-idle jank — every family's lazy sprite/atlas bake
       // in a single task). Yields between effect families; call order and
@@ -5855,6 +5907,15 @@ function* warmCombatPipelineSteps() {
       fx.propCrush(wp, _v3, 7);
       yield;
       markWarmStage('fxFamilies'); // SA-11: attribute inside 'effects'
+      // B14: families emitted after the muzzle sweep claim their own pools
+      // late (impacts/destruct/props). Re-sweep so any straggler first-use
+      // also lands in this hidden slice instead of a presented frame —
+      // post-first-sweep this is nearly free (program cache hits).
+      try {
+        const _ps0 = performance.now();
+        compileParticleFamilies(renderer, fx.group, camera, scene);
+        warmTrace.stages.fxPoolCompile2 = Math.round(performance.now() - _ps0);
+      } catch (_) { /* warm only */ }
       // perf-r2e: one scar stamp per fielded visual — the impact-decal
       // system bakes its shared scar canvases (heightToNormal/roughness
       // getImageData work) per FAMILY on the first stamp, which used to be

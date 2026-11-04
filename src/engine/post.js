@@ -1774,6 +1774,10 @@ export function createPost(renderer, scene, camera) {
   // sceneTarget's own in stock mode). Assigning the same reference in stock
   // mode is free and keeps preset/bisect mode switches instantly consistent.
   const sceneDepthRepointers = [];
+  // W02 cold-boot: materials created locally inside createPost's blocks below
+  // (AO EMA/composite) that the program submit must also cover. Function-scoped
+  // so the return-object methods can collect the complete chain inventory.
+  const localWarmMaterials = [];
   const sceneAA = new SceneAAPass(scene, camera, sceneTarget);
   const lateFx = new LateFxPass(scene, camera, sceneTarget, lateTarget, softState);
   sceneDepthRepointers.push((d) => { lateFx.sceneDepthTexture = d; });
@@ -1983,6 +1987,7 @@ export function createPost(renderer, scene, camera) {
       blending: THREE.NoBlending,
     });
     sceneDepthRepointers.push((d) => { emaMat.uniforms.tDepth.value = d; });
+    localWarmMaterials.push(emaMat);
     let emaPrev = gtao.pdRenderTarget.clone();
     let emaCur = gtao.pdRenderTarget.clone();
     // PERF (full-frame copy): stock OUTPUT.Default spends two fullscreen
@@ -2015,6 +2020,7 @@ export function createPost(renderer, scene, camera) {
       blending: THREE.NoBlending,
       toneMapped: false,
     });
+    localWarmMaterials.push(aoCompositeMaterial);
     let emaLastMs = -1e9; // >250 ms without an AO render → history is stale
     const prevViewProj = emaMat.uniforms.uPrevViewProj.value;
     const origSetSize = gtao.setSize.bind(gtao);
@@ -2744,6 +2750,112 @@ export function createPost(renderer, scene, camera) {
      * @param {THREE.WebGLRenderer} renderer2
      * @returns {number} ms spent (for __BOOT_TIMINGS)
      */
+    /**
+     * W02 cold-boot: complete inventory of post-chain fullscreen materials.
+     * The scene compile in main.js only covers `scene` objects — every pass
+     * quad program (aerial/GTAO/bloom/grade/SMAA/FSR/copy blits) was absent
+     * from it and first-linked serially inside the first composer render,
+     * which is exactly the cold `postFirstRender` link storm (~0.5 s per
+     * program on the reference ANGLE host, W2-A measurement).
+     * TAA is deliberately excluded: the SA-12 gate keeps it unreachable from
+     * persisted state (same contract as warmDeferredPrograms). GTAOPass'
+     * normalMaterial is excluded: `_renderGBuffer` is permanently false here
+     * (external depth G-buffer), so that program would be born dead.
+     * @returns {THREE.Material[]}
+     */
+    postProgramMaterials() {
+      const mats = localWarmMaterials.slice();
+      const push = (m) => { if (m && m.isMaterial && !mats.includes(m)) mats.push(m); };
+      push(aerial.material);
+      push(gtao.gtaoMaterial);
+      push(gtao.pdMaterial);
+      push(gtao.copyMaterial);
+      push(gtao.blendMaterial);
+      push(bloom.materialHighPassFilter);
+      if (Array.isArray(bloom.separableBlurMaterials)) for (const m of bloom.separableBlurMaterials) push(m);
+      push(bloom.blendMaterial);
+      push(grade.material);
+      push(smaa._materialEdges);
+      push(smaa._materialWeights);
+      push(smaa._materialBlend);
+      push(upscaler.easuMaterial);
+      push(upscaler.rcasMaterial);
+      push(lateFx.copyMaterial);
+      push(sceneAA.copyMaterial);
+      return mats;
+    },
+
+    /**
+     * W02 cold-boot: submit EVERY post-chain program to the driver WITHOUT
+     * blocking on its link, so the KHR_parallel_shader_compile window opened
+     * by settlePostProgramLinks() can link them concurrently while boot does
+     * other work. Mirrors the forward-warm insight (W2-A): renderer.compile()
+     * submits cheaply; only uniform discovery / first draw use blocked.
+     *
+     * Two target families are submitted because three's program cache keys
+     * include the output color space of the CURRENT draw target: passes that
+     * draw into composer ping-pong/HalfFloat targets key as linear-working
+     * (bound renderTarget1 — same key family warmDeferredPrograms relies on),
+     * while the final renderToScreen pass (FSR RCAS → canvas) keys against
+     * the default framebuffer's output transform. Compiling both families up
+     * front guarantees the first real post.render finds zero new programs.
+     * @param {THREE.WebGLRenderer} renderer2
+     * @returns {{materials:number, submitMs:number, newPrograms:number}}
+     */
+    submitPrograms(renderer2) {
+      const startedAt = performance.now();
+      const stats = { materials: 0, submitMs: 0, newPrograms: 0 };
+      const mats = this.postProgramMaterials();
+      stats.materials = mats.length;
+      if (mats.length === 0) return stats;
+      const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      const geo = new THREE.PlaneGeometry(2, 2); // compile never rasterizes; shape is irrelevant
+      const scratch = new THREE.Scene();
+      const meshes = mats.map((m) => {
+        const mesh = new THREE.Mesh(geo, m);
+        scratch.add(mesh);
+        return mesh;
+      });
+      const priorTarget = renderer2.getRenderTarget();
+      const beforeTotal = (renderer2.info.programs || []).length;
+      try {
+        for (const target of [composer.renderTarget1, null]) {
+          renderer2.setRenderTarget(target);
+          try { renderer2.compile(scratch, cam); } catch (_) { /* first real render owns fallback */ }
+        }
+        // W02 r2: the FIRST composer render also rasterizes the REAL scene
+        // into the composer buffer (SceneAAPass), and three's program cache
+        // keys include the current target family — a scene program compiled
+        // against the default framebuffer re-links under its render-target
+        // sibling at first post.render (the exact effect documented by
+        // compileHiddenVariantSteps' srgb/srgb-linear note). Submit the real
+        // scene bound to the gameplay target so the whole scene roster has
+        // BOTH key families ready before the veil lifts.
+        renderer2.setRenderTarget(composer.renderTarget1);
+        try { renderer2.compile(scene, camera, scene); } catch (_) { /* first real render owns fallback */ }
+        stats.submitMs = Math.round(performance.now() - startedAt);
+        stats.newPrograms = Math.max(0, (renderer2.info.programs || []).length - beforeTotal);
+      } finally {
+        renderer2.setRenderTarget(priorTarget);
+        scratch.clear();
+        geo.dispose();
+      }
+      return stats;
+    },
+
+    /**
+     * W02 cold-boot: breathe REAL frames until every submitted program
+     * reports linked, then run deferred uniform discovery so the first
+     * composer render pays zero first-use getUniforms work. Delegates to the
+     * exported settleProgramLinks() (same contract; Node-testable).
+     * @param {THREE.WebGLRenderer} renderer2
+     * @param {() => Promise<void>} breathe - one true frame boundary
+     * @returns {Promise<{parallel:boolean, rounds:number, ms:number, discovered:number}>}
+     */
+    settleProgramLinks(renderer2, breathe) {
+      return settleProgramLinks(renderer2, breathe);
+    },
+
     warmDeferredPrograms(renderer2) {
       const startedAt = performance.now();
       const priorTarget = renderer2.getRenderTarget();
@@ -2868,4 +2980,55 @@ export function createPost(renderer, scene, camera) {
     /** QA hook (probes): force a trim rung, bypassing the strike windows. */
     forcePerfTrim(level) { setPerfTrim(level); },
   };
+}
+
+/**
+ * W02 cold-boot: breathe REAL frames until every known program reports
+ * linked (KHR_parallel_shader_compile COMPLETION_STATUS_KHR), then run
+ * deferred uniform discovery over all programs so the first composer render
+ * pays zero first-use getUniforms work — the same r5c guarantee the forward
+ * warm (main.js W2-A) gives combat frames, applied to the boot post stage.
+ *
+ * Bounded in rounds and wall time; without the extension (or when `breathe`
+ * is missing) it returns immediately with parallel:false and today's legacy
+ * behavior — the first real render resolving links serially — is the
+ * byte-identical fallback. Discovery covers every known program, not just
+ * new ones; already-discovered programs return their cached uniform maps.
+ *
+ * Module-scope so Node selftests can pin the contract with fake renderers.
+ * @param {THREE.WebGLRenderer} renderer2
+ * @param {(() => Promise<void>) | null} breathe - one true frame boundary
+ * @returns {Promise<{parallel:boolean, rounds:number, ms:number, discovered:number}>}
+ */
+export async function settleProgramLinks(renderer2, breathe) {
+  const result = { parallel: false, rounds: 0, ms: 0, discovered: 0 };
+  let ext = null;
+  try { ext = renderer2.getContext().getExtension('KHR_parallel_shader_compile'); } catch (_) { /* no GL */ }
+  const startedAt = performance.now();
+  if (!ext || typeof breathe !== 'function') return result;
+  const gl = renderer2.getContext();
+  const MAX_ROUNDS = 300; // ~5 s of 60 Hz frames behind the loading veil
+  const MAX_MS = 8000;
+  const pendingAny = () => {
+    const progs = renderer2.info.programs || [];
+    for (const pr of progs) {
+      try {
+        if (gl.getProgramParameter(pr.program, ext.COMPLETION_STATUS_KHR) === false) return true;
+      } catch (_) { /* treat as done — discovery below owns the fallback */ }
+    }
+    return false;
+  };
+  while (pendingAny()) {
+    if (result.rounds >= MAX_ROUNDS || performance.now() - startedAt > MAX_MS) break;
+    result.parallel = true;
+    await breathe();
+    result.rounds++;
+  }
+  // Deferred discovery: links are (nominally) complete, so these are
+  // metadata reads rather than link waits. Covers scene + post families.
+  for (const pr of (renderer2.info.programs || [])) {
+    try { pr.getUniforms(); result.discovered++; } catch (_) { /* warm only */ }
+  }
+  result.ms = Math.round(performance.now() - startedAt);
+  return result;
 }
