@@ -114,3 +114,9 @@ Refresh generated blocks with `KEVIN_WIKI_ROOT=/Users/kevinliu/repos/Kevin-Wiki-
 npm run agent-docs -- scaffold .`, then run the corresponding `doctor --json`.
 Edit prose only below `agent-docs:fill` markers; generated auto blocks are owned
 by the scaffold command.
+
+## Cross-project UX, DX, and AX principles
+
+Cut taglines, helper text and secondary labels. If a screen needs them to make sense, fix the layout.
+
+Make the best decision that will elevate all three: the user experience (UX), developer experience (DX), and agent experience (AX) always, without breaking anything.

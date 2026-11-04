@@ -1,0 +1,1 @@
+Resume the active repository goal. Read repository instructions, `.agent/PLANNER_HANDOFF.md`, `.agent/EXECUTION_PROMPT.md` if present, and native state; reconcile current Git; resume an ACTIVE prompt from the first incomplete requirement through validation/state/commit/push, otherwise use native continuation or require planning.
