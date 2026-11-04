@@ -231,6 +231,7 @@ async function runNodeLeg({ mapsArg, seedCount, limitS, out }) {
       pointBlankWorldImpacts: 0,
       friendlySplash: [],
       friendlyDirect: [],
+      friendlyIncidents: [],
     };
     const firedAtS = new Map(); // shellId -> timeS
     const deathAt = new Map(); // entityId -> timeS
@@ -269,6 +270,14 @@ async function runNodeLeg({ mapsArg, seedCount, limitS, out }) {
     const maxSpinStreak = new Float64Array(n);
     const everStuckLong = new Uint8Array(n);
     let worstStuckWhere = null;
+
+    // W06c diagnostics: 1 Hz per-entity history ring (~25 s) feeding
+    // incident forensics (friendly-direct geometry at fire/hit time) plus a
+    // per-second trace of any wedge exceeding the stuck bound so a grade
+    // stall is decidable from a route-planner loop.
+    const hist = match.entities.map(() => []);
+    let stuckTraceIdx = -1;
+    let stuckTrace = null;
 
     // P1 acquisition sampling: first play-second each entity held a target,
     // against a bound derived from actual spawn separation.
@@ -333,10 +342,28 @@ async function runNodeLeg({ mapsArg, seedCount, limitS, out }) {
                 const kind = ev.kind ?? "unknown";
                 if (kind === "he_splash")
                   tel.friendlySplash.push(ev.damage || 0);
-                else
+                else {
                   tel.friendlyDirect.push(
                     `${s?.specId}/${t?.specId}:${kind}:${ev.damage}`,
                   );
+                  // W06c forensics: geometry around the shot - flight time,
+                  // and both hulls' recent motion (positions/yaw/speed/mode)
+                  // so "crossed the bore after launch" vs "gate miss" is
+                  // decidable from the artifact.
+                  tel.friendlyIncidents.push({
+                    timeS: ev.timeS,
+                    shellId: ev.shellId,
+                    shooter: s.id,
+                    victim: t.id,
+                    kind,
+                    damage: ev.damage || 0,
+                    flightS: firedAtS.has(ev.shellId)
+                      ? +(ev.timeS - firedAtS.get(ev.shellId)).toFixed(2)
+                      : null,
+                    shooterHistory: hist[match.entities.indexOf(s)].slice(-16),
+                    victimHistory: hist[match.entities.indexOf(t)].slice(-16),
+                  });
+                }
               }
             }
             break;
@@ -394,6 +421,22 @@ async function runNodeLeg({ mapsArg, seedCount, limitS, out }) {
         prevPos[i].copy(p);
         const dYaw = Math.abs(e.state.yaw - (e._lastYaw ?? e.state.yaw));
         e._lastYaw = e.state.yaw;
+        // W06c: 1 Hz history ring for incident forensics.
+        {
+          const h = hist[i];
+          h.push({
+            s: sec,
+            x: +p.x.toFixed(1),
+            z: +p.z.toFixed(1),
+            y: +p.y.toFixed(1),
+            yaw: +(e.state.yaw || 0).toFixed(2),
+            spd: +(e.state.speed || 0).toFixed(1),
+            thr: +(e.input.throttle || 0).toFixed(2),
+            fire: !!e.input.fire,
+            m: e.aiCtl?.state ?? null,
+          });
+          if (h.length > 25) h.shift();
+        }
         const slow = moved < 0.35;
         if (slow && Math.abs(e.input.throttle || 0) > 0.35) {
           stuckNow[i]++;
@@ -402,11 +445,44 @@ async function runNodeLeg({ mapsArg, seedCount, limitS, out }) {
           if (stuckNow[i] > STUCK_FAIL_S && !worstStuckWhere) {
             worstStuckWhere = `${e.specId}@(${Math.round(p.x)},${Math.round(p.z)})y${Math.round(p.y)}`;
           }
+          if (
+            stuckNow[i] > STUCK_FAIL_S &&
+            stuckTraceIdx === -1 &&
+            !stuckTrace
+          ) {
+            stuckTraceIdx = i;
+            stuckTrace = {
+              specId: e.specId,
+              id: e.id,
+              startedS: sec,
+              samples: [],
+            };
+          }
+          if (stuckTraceIdx === i && stuckTrace) {
+            const last = stuckTrace.samples[stuckTrace.samples.length - 1];
+            if (!last || last.s !== sec) {
+              stuckTrace.samples.push({
+                s: sec,
+                x: +p.x.toFixed(1),
+                z: +p.z.toFixed(1),
+                y: +p.y.toFixed(1),
+                yaw: +(e.state.yaw || 0).toFixed(2),
+                spd: +(e.state.speed || 0).toFixed(1),
+                thr: +(e.input.throttle || 0).toFixed(2),
+                str: +(e.input.steer || 0).toFixed(2),
+                m: e.aiCtl?.state ?? null,
+              });
+            }
+          }
           spinStreak[i] = dYaw > 0.25 ? spinStreak[i] + 1 : 0;
           maxSpinStreak[i] = Math.max(maxSpinStreak[i], spinStreak[i]);
         } else {
           stuckNow[i] = 0;
           spinStreak[i] = 0;
+          if (stuckTraceIdx === i && stuckTrace) {
+            stuckTrace.recoveredS = sec;
+            stuckTraceIdx = -1;
+          }
         }
       }
     }
@@ -526,6 +602,9 @@ async function runNodeLeg({ mapsArg, seedCount, limitS, out }) {
       maxSpinStreakS: maxSpinS,
       cpuMsPerKTicks: +((wallMs / ticks) * 1000).toFixed(1),
     };
+    if (stuckTrace) row.stuckTrace = stuckTrace;
+    if (tel.friendlyIncidents.length === 0) delete row.friendlyIncidents;
+    return row;
   }
 
   const rows = [];
@@ -607,6 +686,10 @@ async function runNodeLeg({ mapsArg, seedCount, limitS, out }) {
   );
   console.log(`per-map: ${JSON.stringify(mapVerdicts)}`);
   console.log(`evidence: ${out}`);
+  // W06c: a failing Leg A must fail the process - CI/gates read the exit
+  // code, not the log banner. WARN stays exit-0 unless --strict.
+  const strict = process.argv.includes("--strict");
+  if (failCount > 0 || (strict && warnCount > 0)) process.exitCode = 1;
 }
 
 // ==== LEG B — headed browser skeleton (phase 2; NOT run in this phase) =======
